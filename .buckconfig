@@ -1,0 +1,10 @@
+[repositories]
+root = .
+prelude = prelude
+toolchains = toolchains
+
+[build]
+execution_platforms = //platforms:default
+
+[parser]
+target_platform_detector_spec = target:root//platforms:default
