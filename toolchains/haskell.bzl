@@ -237,6 +237,10 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     
     out = ctx.actions.declare_output(ctx.attrs.name)
     
+    # Output directories for intermediate files (keeps source tree clean)
+    obj_dir = ctx.actions.declare_output("objs", dir = True)
+    hi_dir = ctx.actions.declare_output("hi", dir = True)
+    
     # Collect dependency info
     dep_hi_dirs = []
     dep_libs = []
@@ -257,6 +261,10 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     cmd = cmd_args([ghc])
     cmd.add("-package-env=-")
     cmd.add("-O2")
+    
+    # Output directories (intermediate .o/.hi files go to buck-out, not source tree)
+    cmd.add("-odir", obj_dir.as_output())
+    cmd.add("-hidir", hi_dir.as_output())
     
     # Mandatory flags (non-negotiable)
     cmd.add(MANDATORY_GHC_FLAGS)
@@ -501,8 +509,16 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         cxx_objects.append(obj)
     
     # Step 2: Compile Haskell and link
+    # Output directories for intermediate files (keeps source tree clean)
+    obj_dir = ctx.actions.declare_output("hs_objs", dir = True)
+    hi_dir = ctx.actions.declare_output("hs_hi", dir = True)
+    
     ghc_cmd = cmd_args([ghc])
     ghc_cmd.add("-O2", "-threaded")
+    
+    # Output directories (intermediate .o/.hi files go to buck-out, not source tree)
+    ghc_cmd.add("-odir", obj_dir.as_output())
+    ghc_cmd.add("-hidir", hi_dir.as_output())
     
     # Mandatory flags (non-negotiable)
     ghc_cmd.add(MANDATORY_GHC_FLAGS)
@@ -555,7 +571,15 @@ def _haskell_script_impl(ctx: AnalysisContext) -> list[Provider]:
     
     out = ctx.actions.declare_output(ctx.attrs.name)
     
+    # Output directories for intermediate files (keeps source tree clean)
+    obj_dir = ctx.actions.declare_output("objs", dir = True)
+    hi_dir = ctx.actions.declare_output("hi", dir = True)
+    
     cmd = cmd_args([ghc])
+    
+    # Output directories (intermediate .o/.hi files go to buck-out, not source tree)
+    cmd.add("-odir", obj_dir.as_output())
+    cmd.add("-hidir", hi_dir.as_output())
     
     # Mandatory flags (non-negotiable)
     cmd.add(MANDATORY_GHC_FLAGS)

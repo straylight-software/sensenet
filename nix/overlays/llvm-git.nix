@@ -8,7 +8,7 @@
 #   - SM120 (Blackwell) support requires bleeding edge LLVM
 #
 { inputs }:
-final: prev:
+_final: prev:
 let
   inherit (prev) lib stdenv;
   is-linux = stdenv.isLinux;
