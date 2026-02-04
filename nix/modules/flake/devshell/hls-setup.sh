@@ -21,11 +21,16 @@ echo "Generated hie.yaml"
 # Pre-compile project files to generate .hie files for go-to-definition
 echo "Generating .hie files for project code..."
 find src -name "*.hs" -type f ! -path "*/.haskell-sources/*" ! -path "*/buck-out/*" 2>/dev/null | while read -r hs_file; do
-  hie_file=".hie/$(basename "$hs_file" .hs).hie"
+  # Preserve directory structure in .hie folder to avoid name collisions
+  hie_file=".hie/$hs_file"
+  hie_dir=$(dirname "$hie_file")
+  mkdir -p "$hie_dir"
+
   if [ ! -f "$hie_file" ]; then
     dir=$(dirname "$hs_file")
     file=$(basename "$hs_file")
-    (cd "$dir" && ghc -fwrite-ide-info -hiedir=../../.hie -package-db="$PKG_DB" -c "$file" 2>/dev/null) || true
+    hie_outdir="$(pwd)/.hie/$dir"
+    (cd "$dir" && ghc -fwrite-ide-info -hiedir="$hie_outdir" -package-db="$PKG_DB" -c "$file" 2>/dev/null) || true
   fi
 done
 
