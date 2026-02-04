@@ -107,39 +107,122 @@ def nv_link_flags(nv_toolchain_info: NvToolchainInfo) -> list[str]:
         "-lcudart",
     ]
 
-def nv_binary(name: str, srcs: list[str], deps: list[str] = [], visibility: list[str] = []):
+def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     """
     Build an NVIDIA binary using clang (NOT nvcc).
-
-    Compiles .cpp files with CUDA support via clang's native CUDA frontend.
-    Reads nvidia-sdk paths from .buckconfig.local [nv] section.
+    
+    Uses unwrapped clang to avoid NixOS hardening flags that are
+    incompatible with nvptx64 targets (e.g., -fzero-call-used-regs).
     """
     # Read nvidia-sdk paths from config
     nvidia_sdk_path = read_root_config("nv", "nvidia_sdk_path", "/usr/local/cuda")
     nvidia_sdk_include = read_root_config("nv", "nvidia_sdk_include", "/usr/local/cuda/include")
     nvidia_sdk_lib = read_root_config("nv", "nvidia_sdk_lib", "/usr/local/cuda/lib64")
     
+    # Use unwrapped clang for CUDA (no NixOS hardening flags)
+    clang = read_root_config("nv", "clang", "clang++")
+    
+    # C++ stdlib paths for unwrapped clang
+    gcc_include = read_root_config("cxx", "gcc_include", "")
+    gcc_include_arch = read_root_config("cxx", "gcc_include_arch", "")
+    glibc_include = read_root_config("cxx", "glibc_include", "")
+    clang_resource_dir = read_root_config("cxx", "clang_resource_dir", "")
+    gcc_lib = read_root_config("cxx", "gcc_lib", "")
+    gcc_lib_base = read_root_config("cxx", "gcc_lib_base", "")
+    glibc_lib = read_root_config("cxx", "glibc_lib", "")
+    ld = read_root_config("cxx", "ld", "ld.lld")
+    
     # Target architectures from config (comma-separated)
     nv_archs_str = read_root_config("nv", "archs", "sm_90")
-    arch_flags = ["--cuda-gpu-arch=" + arch.strip() for arch in nv_archs_str.split(",")]
+    nv_archs = nv_archs_str.split(",")
+    
+    # mdspan include path (Kokkos reference implementation for device code)
+    mdspan_include = read_root_config("nv", "mdspan_include", "")
+    
+    # Compile flags for CUDA with unwrapped clang
+    compile_flags = [
+        "-x", "cuda",
+        "--cuda-path=" + nvidia_sdk_path,
+        "-isystem", nvidia_sdk_include,
+        "-std=c++23",
+        # Allow newer CUDA versions than clang officially supports
+        "-Wno-unknown-cuda-version",
+        "-c",
+    ]
+    
+    # Add mdspan include if configured
+    if mdspan_include:
+        compile_flags.extend(["-isystem", mdspan_include])
+    
+    # Add target architectures
+    for arch in nv_archs:
+        compile_flags.extend(["--cuda-gpu-arch=" + arch.strip()])
+    
+    # Add stdlib paths for unwrapped clang
+    if clang_resource_dir:
+        compile_flags.extend(["-resource-dir=" + clang_resource_dir])
+    if gcc_include:
+        compile_flags.extend(["-isystem", gcc_include])
+    if gcc_include_arch:
+        compile_flags.extend(["-isystem", gcc_include_arch])
+    if glibc_include:
+        compile_flags.extend(["-isystem", glibc_include])
+    
+    # Compile each source file to object
+    objects = []
+    for src in ctx.attrs.srcs:
+        obj_name = src.short_path.replace(".cu", ".o").replace(".cpp", ".o")
+        obj = ctx.actions.declare_output(obj_name)
+        
+        cmd = cmd_args([clang] + compile_flags + [
+            "-o", obj.as_output(),
+            src,
+        ])
+        
+        ctx.actions.run(cmd, category = "nv_compile", identifier = src.short_path)
+        objects.append(obj)
+    
+    # Link flags
+    link_flags = [
+        "-fuse-ld=" + ld,
+        "-L" + nvidia_sdk_lib,
+        "-Wl,-rpath," + nvidia_sdk_lib,
+        "-lcudart",
+    ]
+    # Add -B flags to find crt*.o files
+    if gcc_lib:
+        link_flags.extend(["-B" + gcc_lib, "-L" + gcc_lib])
+    if gcc_lib_base:
+        link_flags.extend(["-L" + gcc_lib_base, "-Wl,-rpath," + gcc_lib_base])
+    if glibc_lib:
+        link_flags.extend([
+            "-B" + glibc_lib,
+            "-L" + glibc_lib,
+            "-Wl,-rpath," + glibc_lib,
+            # Set dynamic linker explicitly (lld needs this for unwrapped clang)
+            "-Wl,--dynamic-linker=" + glibc_lib + "/ld-linux-x86-64.so.2",
+        ])
+    
+    # Link into binary
+    out = ctx.actions.declare_output(ctx.attrs.name)
+    link_cmd = cmd_args([clang] + link_flags + [
+        "-o", out.as_output(),
+    ] + objects)
+    
+    ctx.actions.run(link_cmd, category = "nv_link", identifier = ctx.attrs.name)
+    
+    return [
+        DefaultInfo(default_output = out),
+        RunInfo(args = cmd_args([out])),
+    ]
 
-    native.cxx_binary(
-        name = name,
-        srcs = srcs,
-        deps = deps,
-        compiler_flags = [
-            "-x", "cuda",
-            "--cuda-path=" + nvidia_sdk_path,
-            "-isystem", nvidia_sdk_include,
-            "-std=c++23",
-        ] + arch_flags,
-        linker_flags = [
-            "-L" + nvidia_sdk_lib,
-            "-Wl,-rpath," + nvidia_sdk_lib,
-            "-lcudart",
-        ],
-        visibility = visibility,
-    )
+nv_binary = rule(
+    impl = _nv_binary_impl,
+    attrs = {
+        "srcs": attrs.list(attrs.source()),
+        "deps": attrs.list(attrs.dep(), default = []),
+    },
+)
 
 # Provider for nv_library outputs
 NvLibraryInfo = provider(

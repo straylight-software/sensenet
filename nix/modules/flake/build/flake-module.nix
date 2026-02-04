@@ -81,13 +81,13 @@ in
     # ──────────────────────────────────────────────────────────────────────────
     aleph.nixpkgs.overlays = mk-before [
       # LLVM 22 overlay (for llvm-git package)
-      (import ../../../overlays/llvm-git.nix inputs)
+      (import ../../../overlays/llvm-git.nix { inherit inputs; })
       # Packages overlay (for mdspan)
       (final: _prev: {
-        mdspan = final."callPackage" ../../../overlays/packages/mdspan.nix { };
+        mdspan = final."callPackage" ../../../packages/mdspan.nix { };
       })
       # NVIDIA SDK overlay
-      (import ../../../overlays/nixpkgs-nvidia-sdk.nix)
+      (import ../../../overlays/nvidia-sdk.nix { inherit inputs; })
     ];
 
     # ──────────────────────────────────────────────────────────────────────────

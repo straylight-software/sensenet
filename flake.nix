@@ -13,15 +13,38 @@
       flake = false;
     };
 
+    # Buck2 prelude (straylight fork with NVIDIA support)
+    buck2-prelude = {
+      url = "github:weyl-ai/straylight-buck2-prelude";
+      flake = false;
+    };
+
     # NativeLink - Local/Remote Execution for Buck2
     nativelink.url = "github:TraceMachina/nativelink";
+
+    # ghc-source-gen from git (Hackage version doesn't support GHC 9.12)
+    # Required for grapesy -> proto-lens-protoc -> ghc-source-gen
+    ghc-source-gen-src = {
+      url = "github:google/ghc-source-gen";
+      flake = false;
+    };
+
+    # NVIDIA SDK - CUDA 13.0 runtime libraries for libtorch
+    nvidia-sdk = {
+      url = "github:weyl-ai/nvidia-sdk";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = inputs@{ flake-parts, ... }:
+  outputs =
+    inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = import inputs.systems;
 
-      imports = [ ./nix/modules/flake/_index.nix ];
+      imports = [
+        ./nix/modules/flake/_index.nix
+        (import ./nix/modules/flake/buck2/default.nix { inherit inputs; })
+      ];
 
       # Export overlays
       flake.overlays = (import ./nix/overlays inputs).flake.overlays;
@@ -31,7 +54,8 @@
         default = import ./nix/modules/flake/default.nix { inherit inputs; };
         formatter = import ./nix/modules/flake/formatter.nix { inherit inputs; };
         lint = ./nix/modules/flake/lint.nix;
-        buck2 = ./nix/modules/flake/buck2.nix;
+        buck2 = import ./nix/modules/flake/buck2/default.nix { inherit inputs; };
+        buck2-old = ./nix/modules/flake/buck2.nix;
         build = ./nix/modules/flake/build/flake-module.nix;
         devshell = ./nix/modules/flake/devshell.nix;
         nativelink = ./nix/modules/flake/nativelink/flake-module.nix;
@@ -43,26 +67,106 @@
         buck2 = import ./nix/lib/buck2.nix { inherit inputs; };
       };
 
-      # Export lint configs
-      flake.lintConfigs = {
-        clang-format = ./nix/configs/.clang-format;
-        clang-tidy = ./nix/configs/.clang-tidy;
-        ruff = ./nix/configs/ruff.toml;
-        biome = ./nix/configs/biome.json;
-        stylua = ./nix/configs/.stylua.toml;
-        rustfmt = ./nix/configs/.rustfmt.toml;
-        taplo = ./nix/configs/taplo.toml;
-      };
-
-      # Export lint rules
+      # Lint configs exported by lint.nix module
+      # Lint rules exported here (no module for this yet)
       flake.lintRules = ./linter/rules;
 
       # Export Dhall prelude
       flake.dhall = ./dhall;
 
-      # Self-use: enable formatter for this repo
-      perSystem = { pkgs, ... }: {
-        packages.aleph-lint = pkgs.callPackage ./nix/packages/aleph-lint.nix { };
-      };
+      # Self-use: packages and minimal devshell for this repo
+      perSystem =
+        { pkgs, ... }:
+        let
+          # GHC 9.12 with haskell overlay applied (via std.nix)
+          inherit (pkgs.haskell.packages) ghc912;
+        in
+        {
+          packages.aleph-lint = pkgs.callPackage ./nix/packages/aleph-lint.nix { };
+
+          # Declare examples as a Buck2 project
+          buck2.projects.examples = {
+            src = ./.;
+            targets = [
+              "//src/examples/cxx:hello-cxx"
+              "//src/examples/haskell:hello-hs"
+              "//src/examples/rust:hello-rs"
+              "//src/examples/lean:hello-lean"
+              "//src/examples/blake:blake"
+            ];
+            toolchain = {
+              cxx.enable = true;
+              haskell = {
+                enable = true;
+                ghcPackages = ghc912;
+                packages = hp: [
+                  hp.aeson
+                  hp.bytestring
+                  hp.containers
+                  hp.directory
+                  hp.process
+                  hp.text
+                  hp.crypton
+                  hp.memory
+                  hp.hasktorch
+                ];
+              };
+              rust.enable = true;
+              lean.enable = true;
+              python.enable = true;
+              nv.enable = true;
+            };
+            remoteExecution = {
+              enable = true;
+              scheduler = "aleph-scheduler.fly.dev";
+              schedulerPort = 443;
+              cas = "aleph-cas.fly.dev";
+              casPort = 443;
+              tls = true;
+              instanceName = "main";
+            };
+            devShellPackages = [
+              pkgs.ast-grep
+              pkgs.dhall
+              pkgs.dhall-json
+              ghc912.haskell-language-server
+            ];
+          };
+
+          # Example with NativeLink remote execution enabled
+          # Usage: nix develop .#buck2-examples-remote
+          #        buck2 build --prefer-remote //src/examples/cxx:hello-cxx
+          buck2.projects.examples-remote = {
+            src = ./.;
+            targets = [
+              "//src/examples/cxx:hello-cxx"
+              "//src/examples/haskell:hello-hs"
+              "//src/examples/rust:hello-rs"
+            ];
+            toolchain = {
+              cxx.enable = true;
+              haskell = {
+                enable = true;
+                ghcPackages = ghc912;
+                packages = hp: [
+                  hp.aeson
+                  hp.bytestring
+                  hp.containers
+                  hp.text
+                ];
+              };
+              rust.enable = true;
+            };
+            remoteExecution = {
+              enable = true;
+              scheduler = "aleph-scheduler.fly.dev";
+              schedulerPort = 443;
+              cas = "aleph-cas.fly.dev";
+              casPort = 443;
+              tls = true;
+              instanceName = "main";
+            };
+          };
+        };
     };
 }

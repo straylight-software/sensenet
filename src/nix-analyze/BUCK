@@ -18,9 +18,8 @@ haskell_binary(
         # All from base/GHC boot libs or common Hackage
         # aeson, bytestring, text, containers, directory, process
     ],
-    ghc_flags = [
+    ghc_options = [
         "-O2",
-        "-Wall",
     ],
     visibility = ["PUBLIC"],
 )

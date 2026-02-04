@@ -11,7 +11,6 @@
 #   - perSystem.packages.lint-configs: directory with all configs
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-_:
 let
   lint-configs = {
     clang-format = ../../configs/.clang-format;
@@ -43,13 +42,34 @@ in
       { pkgs, ... }:
       let
         configs-dir = pkgs.linkFarm "aleph-lint-configs" [
-          { name = ".clang-format"; path = lint-configs.clang-format; }
-          { name = ".clang-tidy"; path = lint-configs.clang-tidy; }
-          { name = "ruff.toml"; path = lint-configs.ruff; }
-          { name = "biome.json"; path = lint-configs.biome; }
-          { name = ".stylua.toml"; path = lint-configs.stylua; }
-          { name = ".rustfmt.toml"; path = lint-configs.rustfmt; }
-          { name = "taplo.toml"; path = lint-configs.taplo; }
+          {
+            name = ".clang-format";
+            path = lint-configs.clang-format;
+          }
+          {
+            name = ".clang-tidy";
+            path = lint-configs.clang-tidy;
+          }
+          {
+            name = "ruff.toml";
+            path = lint-configs.ruff;
+          }
+          {
+            name = "biome.json";
+            path = lint-configs.biome;
+          }
+          {
+            name = ".stylua.toml";
+            path = lint-configs.stylua;
+          }
+          {
+            name = ".rustfmt.toml";
+            path = lint-configs.rustfmt;
+          }
+          {
+            name = "taplo.toml";
+            path = lint-configs.taplo;
+          }
         ];
       in
       {

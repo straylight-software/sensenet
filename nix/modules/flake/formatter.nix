@@ -289,10 +289,18 @@ in
               # Exclude:
               # - prelude/lib: FP primitives where rec/or-null are legitimate
               # - nixos modules: no access to Dhall prelude for templating
+              # - packages/overlays: bootstrap code that doesn't have access to prelude
+              # - flake.nix: root bootstrap file that defines the prelude
+              # - devshell/buck2: shell hook generation uses replaceVars (no prelude access)
               excludes = [
                 "nix/prelude/*"
                 "nix/lib/*"
                 "nix/modules/nixos/*"
+                "nix/packages/*"
+                "nix/overlays/*"
+                "nix/modules/flake/devshell/*"
+                "nix/modules/flake/buck2/*"
+                "flake.nix"
               ];
             };
 

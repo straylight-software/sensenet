@@ -35,6 +35,10 @@ let
   replace-strings = builtins."replaceStrings";
   unsafe-discard-string-context = builtins."unsafeDiscardStringContext";
 
+  # Dhall helpers
+  map-attrs-prime = lib."mapAttrs'";
+  name-value-pair = lib."nameValuePair";
+
   # Script directory
   scripts-dir = ./scripts;
 
@@ -300,6 +304,58 @@ in
         description = "Domain allowlist for proxy (empty = allow all)";
       };
     };
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Buck2 RE Client: configuration for connecting to NativeLink
+    # Generates .buckconfig.local settings for remote execution
+    # ──────────────────────────────────────────────────────────────────────────
+    buck2 = {
+      engine-address = mk-option {
+        type = types.str;
+        default = "grpc://${cfg.fly.app-prefix}-scheduler.fly.dev:443";
+        defaultText = "grpc://aleph-scheduler.fly.dev:443";
+        description = "gRPC address for NativeLink scheduler (execution engine)";
+      };
+
+      cas-address = mk-option {
+        type = types.str;
+        default = "grpc://${cfg.fly.app-prefix}-cas.fly.dev:443";
+        defaultText = "grpc://aleph-cas.fly.dev:443";
+        description = "gRPC address for NativeLink CAS (content-addressed storage)";
+      };
+
+      action-cache-address = mk-option {
+        type = types.nullOr types.str;
+        default = null;
+        description = "gRPC address for action cache (defaults to cas-address if null)";
+      };
+
+      tls = mk-option {
+        type = types.bool;
+        default = true;
+        description = "Enable TLS for gRPC connections (disable for local testing)";
+      };
+
+      instance-name = mk-option {
+        type = types.str;
+        default = "main";
+        description = "NativeLink instance name";
+      };
+
+      platform-properties = {
+        os-family = mk-option {
+          type = types.str;
+          default = "linux";
+          description = "OS family for worker matching";
+        };
+
+        container-image = mk-option {
+          type = types.str;
+          default = "nix-worker";
+          description = "Container image tag for worker matching";
+        };
+      };
+    };
   };
 
   config = mk-if cfg.enable {
@@ -314,6 +370,23 @@ in
         write-text = pkgs."writeText";
         write-shell-application = pkgs."writeShellApplication";
         with-packages = pkgs.python312."withPackages";
+
+        # Render Dhall template with environment variables
+        render-dhall =
+          name: _src: vars:
+          let
+            # Convert vars attrset to env var exports
+            # Dhall expects UPPER_SNAKE_CASE env vars
+            env-vars = map-attrs-prime (
+              k: v: name-value-pair (replace-strings [ "-" ] [ "_" ] (lib.toUpper k)) (to-string v)
+            ) vars;
+          in
+          pkgs.runCommand name ({ nativeBuildInputs = [ pkgs.haskellPackages.dhall ]; } // env-vars) ''
+            dhall text --file ''${src} > $out
+          '';
+
+        # Convert bool to string for Dhall
+        bool-to-string = b: if b then "true" else "false";
 
         # Get nativelink binary from flake input
         # NOTE: Use inputs.*.packages.${system} directly, NOT inputs'
@@ -525,6 +598,8 @@ in
             }
             # FastSlow store: inline filesystem for fast, ref_store for slow
             # NativeLink 0.7.10 requires inline store defs in fast, ref_store in slow
+            # IMPORTANT: content_path must be on same filesystem as work_directory
+            # to allow hardlinks (avoids EXDEV "Cross-device link" errors)
             {
               name = "CAS_FAST_SLOW";
               "fast_slow" = {
@@ -552,7 +627,9 @@ in
                 "worker_api_endpoint" = {
                   uri = "grpc://${cfg.fly.app-prefix}-scheduler.internal:50061";
                 };
-                "work_directory" = "/tmp/nativelink-worker";
+                # Work directory MUST be on same filesystem as CAS fast tier
+                # to allow hardlinks. /tmp is tmpfs, /data is the Fly volume.
+                "work_directory" = "/data/work";
                 "cas_fast_slow_store" = "CAS_FAST_SLOW";
                 "upload_action_result" = {
                   "ac_store" = "REMOTE_AC";
@@ -596,7 +673,9 @@ in
           name = "nativelink-worker";
           "runtimeInputs" = [ nativelink ];
           text = ''
-            mkdir -p /tmp/nativelink-worker
+            # Work directory must be on same filesystem as CAS fast tier (/data)
+            # to allow hardlinks between CAS content and work directory
+            mkdir -p /data/work /data/cas-content /data/cas-temp
             exec nativelink ${worker-config}
           '';
         };
@@ -844,6 +923,28 @@ in
           );
         };
 
+        # ──────────────────────────────────────────────────────────────────────
+        # Buck2 RE Client Configuration
+        # Generate .buckconfig.local snippet for connecting to NativeLink
+        # ──────────────────────────────────────────────────────────────────────
+
+        # Action cache defaults to CAS address if not specified
+        action-cache-addr =
+          if cfg.buck2.action-cache-address != null then
+            cfg.buck2.action-cache-address
+          else
+            cfg.buck2.cas-address;
+
+        buckconfig-re-snippet = render-dhall "buckconfig-re.local" ./buckconfig-re.dhall {
+          inherit (cfg.buck2) engine-address;
+          inherit (cfg.buck2) cas-address;
+          action-cache-address = action-cache-addr;
+          tls = bool-to-string cfg.buck2.tls;
+          inherit (cfg.buck2) instance-name;
+          inherit (cfg.buck2.platform-properties) os-family;
+          inherit (cfg.buck2.platform-properties) container-image;
+        };
+
       in
       optional-attrs (nativelink != null) {
         # ────────────────────────────────────────────────────────────────────
@@ -985,6 +1086,10 @@ in
           # Operations scripts
           nativelink-status = status-script;
           nativelink-logs = logs-script;
+
+          # Buck2 RE client configuration
+          # Usage: cat $(nix build .#nativelink-buckconfig --print-out-paths) >> .buckconfig.local
+          nativelink-buckconfig = buckconfig-re-snippet;
         };
       };
   };

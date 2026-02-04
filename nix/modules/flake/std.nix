@@ -12,6 +12,8 @@
 let
   cfg = config.aleph;
   llvm-git-overlay = import ../../overlays/llvm-git.nix { inherit inputs; };
+  nvidia-sdk-overlay = import ../../overlays/nvidia-sdk.nix { inherit inputs; };
+  haskell-overlay = import ../../overlays/haskell.nix { inherit inputs; };
 in
 {
   _class = "flake";
@@ -21,6 +23,16 @@ in
       type = lib.types.bool;
       default = true;
       description = "Allow unfree packages";
+    };
+
+    llvm-git.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Enable LLVM 22 from git overlay.
+        Required for SM120 Blackwell support and clean CUDA compilation.
+        Disabled by default as it requires building from source (~30min).
+      '';
     };
 
     overlays.extra = lib.mkOption {
@@ -33,10 +45,17 @@ in
   config.perSystem =
     { system, ... }:
     let
+      llvm-overlays = lib.optionals cfg.llvm-git.enable [ llvm-git-overlay ];
       pkgs-configured = import inputs.nixpkgs {
         inherit system;
         config.allowUnfree = cfg.nixpkgs.allow-unfree;
-        overlays = [ llvm-git-overlay ] ++ cfg.overlays.extra;
+        overlays =
+          llvm-overlays
+          ++ [
+            nvidia-sdk-overlay
+            haskell-overlay
+          ]
+          ++ cfg.overlays.extra;
       };
     in
     {

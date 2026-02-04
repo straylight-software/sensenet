@@ -103,10 +103,12 @@ def _llvm_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     # Build link flags from config paths
     # ════════════════════════════════════════════════════════════════════════════
     # Get the bin directory from the linker path for -B
+    # NOTE: -B must come BEFORE -fuse-ld so clang knows where to find lld
     llvm_bin_dir = ld.rsplit("/", 1)[0] if "/" in ld else None
-    extra_link_flags = ["-fuse-ld=lld"]
+    extra_link_flags = []
     if llvm_bin_dir:
         extra_link_flags.append("-B" + llvm_bin_dir)
+    extra_link_flags.append("-fuse-ld=lld")
 
     # glibc_lib: contains CRT files (Scrt1.o, crti.o, crtn.o) and libc, libm, libpthread
     glibc_lib = read_root_config("cxx", "glibc_lib", None)

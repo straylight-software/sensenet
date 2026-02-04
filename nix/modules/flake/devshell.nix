@@ -18,7 +18,6 @@
 # as the single source of truth. Devshell adds testing/dev packages on top.
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-_:
 { config, lib, ... }:
 let
   # lisp-case aliases for lib functions
