@@ -27,3 +27,4 @@ bin/
 .direnv
 .devshell
 .cache/
+.haskell-sources/

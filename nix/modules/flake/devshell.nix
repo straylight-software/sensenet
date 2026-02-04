@@ -205,6 +205,11 @@ in
                     echo "builtins.wasm: $(${pkgs.aleph.nix.nix}/bin/nix eval --expr 'builtins ? wasm')"
                   fi
                 '';
+
+                hie-yaml-hook = ''
+                  GHC_WITH_DEPS="${ghc-with-all-deps}"
+                  ${builtins.readFile ./devshell/hls-setup.sh}
+                '';
               in
               ''
                 echo "━━━ aleph devshell ━━━"
@@ -213,6 +218,7 @@ in
                 ${config.aleph.build.shellHook or ""}
                 ${config.aleph.shortlist.shellHook or ""}
                 ${config.aleph.lre.shellHook or ""}
+                ${hie-yaml-hook}
                 ${cfg.extra-shell-hook}
               '';
           }
