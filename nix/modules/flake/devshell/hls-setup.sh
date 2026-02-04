@@ -18,6 +18,17 @@ HIEEOF
 mkdir -p .hie
 echo "Generated hie.yaml"
 
+# Pre-compile project files to generate .hie files for go-to-definition
+echo "Generating .hie files for project code..."
+find src -name "*.hs" -type f ! -path "*/.haskell-sources/*" ! -path "*/buck-out/*" 2>/dev/null | while read -r hs_file; do
+  hie_file=".hie/$(basename "$hs_file" .hs).hie"
+  if [ ! -f "$hie_file" ]; then
+    dir=$(dirname "$hs_file")
+    file=$(basename "$hs_file")
+    (cd "$dir" && ghc -fwrite-ide-info -hiedir=../../.hie -package-db="$PKG_DB" -c "$file" 2>/dev/null) || true
+  fi
+done
+
 echo "Checking library sources for HLS..."
 mkdir -p .haskell-sources
 
