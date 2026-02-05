@@ -15,5 +15,7 @@
   ];
 
   # Enable devshell for this repo
+  # NOTE: aleph.build.enable requires scripts/ directory which is missing
   aleph.devshell.enable = true;
+  aleph.devshell.nv.enable = true;
 }

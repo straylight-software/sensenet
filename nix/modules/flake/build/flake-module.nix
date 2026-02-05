@@ -88,6 +88,8 @@ in
       })
       # NVIDIA SDK overlay
       (import ../../../overlays/nvidia-sdk.nix { inherit inputs; })
+      # libtorch for aarch64-linux (extracted from PyTorch wheel)
+      (import ../../../overlays/libtorch-aarch64.nix)
     ];
 
     # ──────────────────────────────────────────────────────────────────────────
