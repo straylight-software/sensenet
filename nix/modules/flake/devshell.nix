@@ -209,6 +209,10 @@ in
                 hie-yaml-hook = ''
                   GHC_WITH_DEPS="${ghc-with-all-deps}"
                   ${builtins.readFile ./devshell/hls-setup.sh}
+                  # Sync .hie files from buck-out if they exist
+                  if [ -d buck-out ] && [ -x bin/sync-hie.sh ]; then
+                    ./bin/sync-hie.sh 2>/dev/null || true
+                  fi
                 '';
               in
               ''
