@@ -51,6 +51,7 @@ HaskellLibraryInfo = provider(fields = {
     "hi_dir": provider_field(Artifact | None, default = None),
     "object_dir": provider_field(Artifact | None, default = None),
     "stub_dir": provider_field(Artifact | None, default = None),
+    "hie_dir": provider_field(Artifact | None, default = None),  # For IDE support
     "objects": provider_field(list, default = []),
     "modules": provider_field(list, default = []),  # Source files for source-based deps
 })
@@ -162,6 +163,11 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     cmd.add("-hidir", hi_dir.as_output())
     cmd.add("-stubdir", stub_dir.as_output())
     
+    # Generate .hie files for IDE support (go-to-definition, etc.)
+    hie_dir = ctx.actions.declare_output("hie", dir = True)
+    cmd.add("-fwrite-ide-info")
+    cmd.add("-hiedir", hie_dir.as_output())
+    
     # Mandatory flags (non-negotiable)
     cmd.add(MANDATORY_GHC_FLAGS)
     
@@ -201,6 +207,7 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 "hi": [DefaultInfo(default_outputs = [hi_dir])],
                 "stubs": [DefaultInfo(default_outputs = [stub_dir])],
                 "objects": [DefaultInfo(default_outputs = [obj_dir])],
+                "hie": [DefaultInfo(default_outputs = [hie_dir])],
             },
         ),
         HaskellLibraryInfo(
@@ -208,6 +215,7 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             hi_dir = hi_dir,
             object_dir = lib,
             stub_dir = stub_dir,
+            hie_dir = hie_dir,
             objects = [],
             modules = ctx.attrs.srcs,
         ),
@@ -266,6 +274,11 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     cmd.add("-odir", obj_dir.as_output())
     cmd.add("-hidir", hi_dir.as_output())
     
+    # Generate .hie files for IDE support (go-to-definition, etc.)
+    hie_dir = ctx.actions.declare_output("hie", dir = True)
+    cmd.add("-fwrite-ide-info")
+    cmd.add("-hiedir", hie_dir.as_output())
+    
     # Mandatory flags (non-negotiable)
     cmd.add(MANDATORY_GHC_FLAGS)
     cmd.add("-XGHC2024")
@@ -305,7 +318,13 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     ctx.actions.run(cmd, category = "ghc", identifier = ctx.attrs.name)
     
     return [
-        DefaultInfo(default_output = out),
+        DefaultInfo(
+            default_output = out,
+            sub_targets = {
+                "hi": [DefaultInfo(default_outputs = [hi_dir])],
+                "hie": [DefaultInfo(default_outputs = [hie_dir])],
+            },
+        ),
         RunInfo(args = cmd_args(out)),
     ]
 
