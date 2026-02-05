@@ -4,35 +4,18 @@ set -e
 GHC_VERSION=$(ghc --numeric-version)
 PKG_DB="${GHC_WITH_DEPS}/lib/ghc-${GHC_VERSION}/lib/package.conf.d"
 
+# Generate hie.yaml pointing to Buck2-generated .hie files
 cat >hie.yaml <<HIEEOF
 cradle:
   direct:
     arguments:
       - -package-db=${PKG_DB}
-      - -fwrite-ide-info
-      - -hiedir=.hie
       - -Wall
       - -Wno-unused-imports
 HIEEOF
 
 mkdir -p .hie
-echo "Generated hie.yaml"
-
-# Pre-compile project files to generate .hie files for go-to-definition
-echo "Generating .hie files for project code..."
-find src -name "*.hs" -type f ! -path "*/.haskell-sources/*" ! -path "*/buck-out/*" 2>/dev/null | while read -r hs_file; do
-  # Preserve directory structure in .hie folder to avoid name collisions
-  hie_file=".hie/$hs_file"
-  hie_dir=$(dirname "$hie_file")
-  mkdir -p "$hie_dir"
-
-  if [ ! -f "$hie_file" ]; then
-    dir=$(dirname "$hs_file")
-    file=$(basename "$hs_file")
-    hie_outdir="$(pwd)/.hie/$dir"
-    (cd "$dir" && ghc -fwrite-ide-info -hiedir="$hie_outdir" -package-db="$PKG_DB" -c "$file" 2>/dev/null) || true
-  fi
-done
+echo "Generated hie.yaml (Buck2 will generate .hie files in buck-out/)"
 
 echo "Checking library sources for HLS..."
 mkdir -p .haskell-sources
@@ -66,3 +49,4 @@ for pkg_conf in "$PKG_DB"/*.conf; do
 done
 
 echo "Library sources ready in .haskell-sources/"
+echo "Note: Buck2 will generate .hie files during build (run: buck2 build //...)"
