@@ -70,8 +70,7 @@ auto test_dynamic_extents() -> bool {
 
   // element [1][2][3] = 1*12 + 2*4 + 3 = 23
   if (tensor[1, 2, 3] != 23) {
-    std::printf("mdspan: 3d access failed, got %d expected 23\n",
-                tensor[1, 2, 3]);
+    std::printf("mdspan: 3d access failed, got %d expected 23\n", tensor[1, 2, 3]);
     return false;
   }
 
@@ -88,8 +87,7 @@ auto test_layout_stride() -> bool {
 
   // 2x3 matrix in column-major order
   using col_major = std::layout_left;
-  std::mdspan<float, std::extents<std::size_t, 2, 3>, col_major> matrix{
-      data.data()};
+  std::mdspan<float, std::extents<std::size_t, 2, 3>, col_major> matrix{data.data()};
 
   // in column major, [1][0] should be element 1 (second element of first
   // column)
@@ -100,8 +98,7 @@ auto test_layout_stride() -> bool {
 
   // [0][1] should be element 2 (first element of second column)
   if (matrix[0, 1] != 2.0f) {
-    std::printf("mdspan: column major [0,1] failed, got %f\n",
-                static_cast<double>(matrix[0, 1]));
+    std::printf("mdspan: column major [0,1] failed, got %f\n", static_cast<double>(matrix[0, 1]));
     return false;
   }
 
@@ -118,8 +115,7 @@ auto test_mixed_extents() -> bool {
 
   // batch of 4x8 matrices where batch size is dynamic
   // extents<size_t, dynamic_extent, 4, 8> means [?, 4, 8]
-  using batch_matrix_extents =
-      std::extents<std::size_t, std::dynamic_extent, 4, 8>;
+  using batch_matrix_extents = std::extents<std::size_t, std::dynamic_extent, 4, 8>;
   std::mdspan batch{data.data(), batch_matrix_extents{1}}; // 1 batch
 
   if (batch.extent(0) != 1 || batch.extent(1) != 4 || batch.extent(2) != 8) {
@@ -171,8 +167,7 @@ auto test_submdspan() -> bool {
 
   // column 2 elements: 2, 6, 10
   if (col2[0] != 2 || col2[1] != 6 || col2[2] != 10) {
-    std::printf("submdspan: column elements wrong: %d %d %d\n", col2[0],
-                col2[1], col2[2]);
+    std::printf("submdspan: column elements wrong: %d %d %d\n", col2[0], col2[1], col2[2]);
     return false;
   }
 
@@ -230,6 +225,6 @@ auto implementation() -> int {
 
 } // namespace straylight::examples
 
-auto main(int argc, char *argv[]) -> int {
+auto main(int argc, char* argv[]) -> int {
   return straylight::examples::implementation();
 }

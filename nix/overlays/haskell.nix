@@ -31,8 +31,12 @@ let
   # CUDA libraries needed for libtorch at runtime
   # Use nvidia-sdk (CUDA 13.0) which has SONAME 12 matching libtorch 2.9.0
   # Must come from prev (nixpkgs overlay), not inputs.nvidia-sdk, to match cache
-  nvidia-sdk = prev.nvidia-sdk or (throw "nvidia-sdk not available - add nvidia-sdk overlay");
-  cuda-lib-path = "${nvidia-sdk}/lib";
+  #
+  # nvidia-sdk may not be available on all platforms (e.g., aarch64-linux has
+  # upstream hash issues). In that case, hasktorch won't be available.
+  has-nvidia-sdk = prev ? nvidia-sdk;
+  nvidia-sdk = prev.nvidia-sdk or null;
+  cuda-lib-path = if has-nvidia-sdk then "${nvidia-sdk}/lib" else "";
 
   # GHC 9.12 package set with overrides
   hs-pkgs = prev.haskell.packages.ghc912.override {
@@ -63,6 +67,16 @@ let
       tree-sitter-tsx = do-jailbreak hsuper.tree-sitter-tsx;
       tree-sitter-haskell = do-jailbreak hsuper.tree-sitter-haskell;
       tree-sitter-rust = do-jailbreak hsuper.tree-sitter-rust;
+
+      # ────────────────────────────────────────────────────────────────────────
+      # crc32c - upstream meta.platforms incorrectly excludes aarch64-linux
+      # but it builds fine. Required by: snappy-c -> grpc-spec -> grapesy
+      # ────────────────────────────────────────────────────────────────────────
+      crc32c = hsuper.crc32c.overrideAttrs (old: {
+        meta = (old.meta or { }) // {
+          platforms = (old.meta.platforms or [ ]) ++ [ "aarch64-linux" ];
+        };
+      });
 
       # ────────────────────────────────────────────────────────────────────────
       # grapesy stack - specific versions required for compatibility
@@ -116,12 +130,16 @@ let
       #   libtorch 2.9.0 is a prebuilt binary from PyTorch built against CUDA
       #   13.0 (SONAME .so.12). nixpkgs cudaPackages_12_8 provides SONAME .so.11.
       #
-      # hasktorch: GHC loads libtorch-ffi at compile time, which dlopens
-      #   libtorch.so, which needs CUDA libs. We set LD_LIBRARY_PATH at the
-      #   derivation level to point to nvidia-sdk/lib.
+      # On aarch64-linux, libtorch-bin is patched with autoPatchelfHook to have
+      # proper RPATH for OpenBLAS and other dependencies. On x86_64-linux,
+      # nixpkgs libtorch-bin already has the correct dependencies.
+      #
+      # NOTE: These packages are only available when nvidia-sdk is present.
+      # On platforms where nvidia-sdk has issues, hasktorch will not be available.
       # ────────────────────────────────────────────────────────────────────────
       libtorch-ffi-helper = do-jailbreak hsuper.libtorch-ffi-helper;
-
+    }
+    // prev.lib.optionalAttrs has-nvidia-sdk {
       libtorch-ffi =
         let
           base = do-jailbreak hsuper.libtorch-ffi;
@@ -142,11 +160,7 @@ let
           '';
         });
 
-      hasktorch =
-        (dont-check (do-jailbreak (add-build-depends hsuper.hasktorch [ nvidia-sdk ]))).overrideAttrs
-          (_old: {
-            LD_LIBRARY_PATH = cuda-lib-path;
-          });
+      hasktorch = dont-check (do-jailbreak (add-build-depends hsuper.hasktorch [ nvidia-sdk ]));
     };
   };
 in

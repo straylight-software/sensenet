@@ -15,4 +15,6 @@ auto main_impl() -> int {
 
 } // namespace straylight::examples
 
-auto main() -> int { return straylight::examples::main_impl(); }
+auto main() -> int {
+  return straylight::examples::main_impl();
+}

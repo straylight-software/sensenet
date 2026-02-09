@@ -12,13 +12,13 @@
 // This example parses a mock Twitter API response structure,
 // extracting user info and tweet text from nested JSON.
 
-#include <simdjson.h>
-
 #include <chrono>
 #include <cstdio>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <simdjson.h>
 
 namespace straylight::examples {
 
@@ -227,8 +227,7 @@ auto benchmark_parsing(std::string_view json, int iterations) -> double {
   }
 
   auto end = std::chrono::high_resolution_clock::now();
-  auto duration =
-      std::chrono::duration<double, std::milli>(end - start).count();
+  auto duration = std::chrono::duration<double, std::milli>(end - start).count();
 
   // Prevent optimization from removing the loop
   if (total_likes == 0) {
@@ -244,20 +243,15 @@ auto benchmark_parsing(std::string_view json, int iterations) -> double {
 
 auto implementation() -> int {
   std::printf("════════════════════════════════════════════════════════════\n");
-  std::printf("  simdjson %s - SIMD-accelerated JSON parsing\n",
-              SIMDJSON_VERSION);
-  std::printf(
-      "════════════════════════════════════════════════════════════\n\n");
+  std::printf("  simdjson %s - SIMD-accelerated JSON parsing\n", SIMDJSON_VERSION);
+  std::printf("════════════════════════════════════════════════════════════\n\n");
 
   // Show implementation info
-  std::printf("Implementation: %s\n",
-              simdjson::get_active_implementation()->name().data());
-  std::printf("Description: %s\n\n",
-              simdjson::get_active_implementation()->description().data());
+  std::printf("Implementation: %s\n", simdjson::get_active_implementation()->name().data());
+  std::printf("Description: %s\n\n", simdjson::get_active_implementation()->description().data());
 
   // Parse tweets
-  std::printf("Parsing Twitter API response (%zu bytes)...\n\n",
-              kTwitterResponse.size());
+  std::printf("Parsing Twitter API response (%zu bytes)...\n\n", kTwitterResponse.size());
 
   auto tweets = parse_tweets(kTwitterResponse);
   auto users = parse_users(kTwitterResponse);
@@ -266,10 +260,10 @@ auto implementation() -> int {
   std::printf("Found %zu tweets:\n", tweets.size());
   std::printf("────────────────────────────────────────────────────────────\n");
 
-  for (const auto &tweet : tweets) {
+  for (const auto& tweet : tweets) {
     // Find author
     std::string author_name = "unknown";
-    for (const auto &user : users) {
+    for (const auto& user : users) {
       if (user.id == tweet.author_id) {
         author_name = user.name;
         if (user.verified) {
@@ -295,19 +289,15 @@ auto implementation() -> int {
   }
 
   // Benchmark
-  std::printf(
-      "\n════════════════════════════════════════════════════════════\n");
+  std::printf("\n════════════════════════════════════════════════════════════\n");
   std::printf("  Performance benchmark\n");
-  std::printf(
-      "════════════════════════════════════════════════════════════\n\n");
+  std::printf("════════════════════════════════════════════════════════════\n\n");
 
   constexpr int kIterations = 100000;
   double ms = benchmark_parsing(kTwitterResponse, kIterations);
 
-  double bytes_processed =
-      static_cast<double>(kTwitterResponse.size()) * kIterations;
-  double gb_per_sec =
-      (bytes_processed / (1024.0 * 1024.0 * 1024.0)) / (ms / 1000.0);
+  double bytes_processed = static_cast<double>(kTwitterResponse.size()) * kIterations;
+  double gb_per_sec = (bytes_processed / (1024.0 * 1024.0 * 1024.0)) / (ms / 1000.0);
 
   std::printf("Parsed %d iterations in %.2f ms\n", kIterations, ms);
   std::printf("Throughput: %.2f GB/s\n", gb_per_sec);
@@ -322,4 +312,6 @@ auto implementation() -> int {
 
 } // namespace straylight::examples
 
-auto main() -> int { return straylight::examples::implementation(); }
+auto main() -> int {
+  return straylight::examples::implementation();
+}

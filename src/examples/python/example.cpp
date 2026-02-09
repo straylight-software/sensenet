@@ -6,14 +6,14 @@
 // - Expose via nanobind bindings
 // - Call from Python with zero-copy where possible
 
-#include <nanobind/nanobind.h>
-#include <nanobind/stl/string.h>
-#include <nanobind/stl/vector.h>
-
 #include <cmath>
 #include <numeric>
 #include <string>
 #include <vector>
+
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
 
 namespace nb = nanobind;
 
@@ -24,15 +24,17 @@ namespace nb = nanobind;
 namespace aleph {
 
 // Simple function: add two numbers
-int add(int a, int b) { return a + b; }
+int add(int a, int b) {
+  return a + b;
+}
 
 // String manipulation
-std::string greet(const std::string &name) {
+std::string greet(const std::string& name) {
   return "Hello from aleph, " + name + "!";
 }
 
 // Vector operations (demonstrates zero-copy potential)
-double dot_product(const std::vector<double> &a, const std::vector<double> &b) {
+double dot_product(const std::vector<double>& a, const std::vector<double>& b) {
   if (a.size() != b.size()) {
     throw std::runtime_error("Vector sizes must match");
   }
@@ -40,7 +42,7 @@ double dot_product(const std::vector<double> &a, const std::vector<double> &b) {
 }
 
 // Compute norm
-double norm(const std::vector<double> &v) {
+double norm(const std::vector<double>& v) {
   return std::sqrt(dot_product(v, v));
 }
 
@@ -76,11 +78,10 @@ NB_MODULE(example, m) {
   m.def("greet", &aleph::greet, "Generate a greeting", nb::arg("name"));
 
   // Vector functions
-  m.def("dot_product", &aleph::dot_product,
-        "Compute dot product of two vectors", nb::arg("a"), nb::arg("b"));
+  m.def("dot_product", &aleph::dot_product, "Compute dot product of two vectors", nb::arg("a"),
+        nb::arg("b"));
 
-  m.def("norm", &aleph::norm, "Compute Euclidean norm of a vector",
-        nb::arg("v"));
+  m.def("norm", &aleph::norm, "Compute Euclidean norm of a vector", nb::arg("v"));
 
   // Class binding
   nb::class_<aleph::Counter>(m, "Counter")

@@ -8,12 +8,15 @@
 //   - libcudart links correctly
 //   - device code executes on sm_90+
 
-#include <cstdio>
 #include <cuda_runtime.h>
+
+#include <cstdio>
 
 // device kernel - runs on nv hardware
 // cppcheck-suppress unusedFunction ; called via CUDA launch syntax
-__global__ void straylight_kernel(int *result) { *result = 42; }
+__global__ void straylight_kernel(int* result) {
+  *result = 42;
+}
 
 // host code
 auto main() -> int {
@@ -34,7 +37,7 @@ auto main() -> int {
   }
 
   // allocate device memory
-  int *device_result = nullptr;
+  int* device_result = nullptr;
   cudaMalloc(&device_result, sizeof(int));
 
   // launch kernel
@@ -49,8 +52,7 @@ auto main() -> int {
   cudaFree(device_result);
 
   if (host_result == 42) {
-    std::printf("straylight nv toolchain operational (device returned %d)\n",
-                host_result);
+    std::printf("straylight nv toolchain operational (device returned %d)\n", host_result);
     return 0;
   } else {
     std::printf("straylight nv toolchain: unexpected result %d\n", host_result);

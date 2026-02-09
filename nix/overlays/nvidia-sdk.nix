@@ -5,5 +5,5 @@
 #
 { inputs }:
 final: _prev: {
-  nvidia-sdk = inputs.nvidia-sdk.packages.${final.stdenv.hostPlatform.system}.nvidia-sdk;
+  inherit (inputs.nvidia-sdk.packages.${final.stdenv.hostPlatform.system}) nvidia-sdk;
 }

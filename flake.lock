@@ -449,11 +449,11 @@
         "nixpkgs-master": "nixpkgs-master"
       },
       "locked": {
-        "lastModified": 1769209936,
-        "narHash": "sha256-GxZ/Xyy1148c7zp4Q0/u3I2GwU5MXOxxwDxAiAkZ+R8=",
+        "lastModified": 1770262007,
+        "narHash": "sha256-JLCT16i7w5O4wZh119NUqciYKnoqMY3XCljmbiwhDOw=",
         "owner": "weyl-ai",
         "repo": "nvidia-sdk",
-        "rev": "802a5208e5d246615e0da334c3c61db467db1920",
+        "rev": "4ce3b9cada85aca1ef818d8183aa0d50cddc5eb5",
         "type": "github"
       },
       "original": {

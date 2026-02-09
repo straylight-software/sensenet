@@ -99,6 +99,8 @@ haskell_toolchain(
         "-Wall",
         "-Werror",
         "-XGHC2024",
+        "-fwrite-ide-info",
+        "-hiedir=buck-out/hie",
     ],
     visibility = ["PUBLIC"],
 )

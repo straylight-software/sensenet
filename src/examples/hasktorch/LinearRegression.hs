@@ -80,7 +80,6 @@ trainLoop ::
     IO (Tensor, Tensor)
 trainLoop w b _ _ _ 0 = return (w, b)
 trainLoop w b x y lr n = do
-
     -- Forward: yHat = w*x + b
     let yHat = w * x + b
 
@@ -116,7 +115,6 @@ trainLoop w b x y lr n = do
                 ++ show bVal
 
     trainLoop wNew bNew x y lr (n - 1)
-
   where
     when True action = action
     when False _ = return ()

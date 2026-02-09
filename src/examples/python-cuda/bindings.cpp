@@ -7,13 +7,14 @@
 //   - Device memory management
 
 #include <cuda_runtime.h>
+
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
 // From kernels.cu
-void launch_vector_scale(float *data, float scale, int n);
-void launch_saxpy(float *y, float a, const float *x, int n);
-void launch_dot_product(float *result, const float *a, const float *b, int n);
+void launch_vector_scale(float* data, float scale, int n);
+void launch_saxpy(float* y, float a, const float* x, int n);
+void launch_dot_product(float* result, const float* a, const float* b, int n);
 
 namespace py = pybind11;
 
@@ -29,10 +30,10 @@ py::array_t<float> scale_array(py::array_t<float> input, float scale) {
   }
 
   int n = static_cast<int>(buf.size);
-  float *ptr = static_cast<float *>(buf.ptr);
+  float* ptr = static_cast<float*>(buf.ptr);
 
   // Allocate device memory
-  float *d_data;
+  float* d_data;
   cudaMalloc(&d_data, n * sizeof(float));
   cudaMemcpy(d_data, ptr, n * sizeof(float), cudaMemcpyHostToDevice);
 
@@ -76,8 +77,7 @@ py::array_t<float> saxpy(py::array_t<float> y, float a, py::array_t<float> x) {
   launch_saxpy(d_y, a, d_x, n);
 
   auto result = py::array_t<float>(n);
-  cudaMemcpy(result.request().ptr, d_y, n * sizeof(float),
-             cudaMemcpyDeviceToHost);
+  cudaMemcpy(result.request().ptr, d_y, n * sizeof(float), cudaMemcpyDeviceToHost);
 
   cudaFree(d_x);
   cudaFree(d_y);
@@ -154,11 +154,10 @@ PYBIND11_MODULE(gpu_module, m) {
 
   m.def("nv_device_name", &nv_device_name, "Get the name of the CUDA device");
 
-  m.def("scale_array", &scale_array, "Scale array elements on GPU",
-        py::arg("input"), py::arg("scale"));
+  m.def("scale_array", &scale_array, "Scale array elements on GPU", py::arg("input"),
+        py::arg("scale"));
 
-  m.def("saxpy", &saxpy, "SAXPY: y = a*x + y on GPU", py::arg("y"),
-        py::arg("a"), py::arg("x"));
+  m.def("saxpy", &saxpy, "SAXPY: y = a*x + y on GPU", py::arg("y"), py::arg("a"), py::arg("x"));
 
   m.def("dot", &dot, "Dot product on GPU", py::arg("a"), py::arg("b"));
 }

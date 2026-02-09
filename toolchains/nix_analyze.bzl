@@ -114,7 +114,7 @@ def _nix_cxx_binary_impl(ctx):
     # We pass the analyzer path via $ANALYZER env var since we can't
     # interpolate cmd_args artifacts directly into script strings.
     script_lines = [
-        "#!/bin/bash",
+        "#!/usr/bin/env bash",
         "set -e",
         "",
         "# Resolve nix dependencies using Haskell analyzer",
@@ -158,7 +158,7 @@ def _nix_cxx_binary_impl(ctx):
     analyzer_cmd = cmd_args(analyzer_run_info.args)
     
     ctx.actions.run(
-        cmd_args(["/bin/bash", "-e", script], hidden = [srcs_dir, analyzer_cmd]),
+        cmd_args(["bash", "-e", script], hidden = [srcs_dir, analyzer_cmd]),
         env = {
             "OUT": out.as_output(),
             "SRCDIR": srcs_dir,

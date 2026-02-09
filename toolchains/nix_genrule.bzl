@@ -91,7 +91,14 @@ def _nix_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         toolchain_flags.append("-isystem" + glibc_include)
     
     # Build link flags from config
-    link_flags = ["-fuse-ld=lld"]
+    # NOTE: -B must come BEFORE -fuse-ld so clang knows where to find lld
+    ld = read_root_config("cxx", "ld", "ld.lld")
+    llvm_bin_dir = ld.rsplit("/", 1)[0] if "/" in ld else None
+    
+    link_flags = []
+    if llvm_bin_dir:
+        link_flags.append("-B" + llvm_bin_dir)
+    link_flags.append("-fuse-ld=lld")
     
     glibc_lib = read_root_config("cxx", "glibc_lib", None)
     if glibc_lib:

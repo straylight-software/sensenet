@@ -13,6 +13,8 @@ let
   cfg = config.aleph;
   llvm-git-overlay = import ../../overlays/llvm-git.nix { inherit inputs; };
   nvidia-sdk-overlay = import ../../overlays/nvidia-sdk.nix { inherit inputs; };
+  libtorch-aarch64-overlay = import ../../overlays/libtorch-aarch64.nix;
+
   haskell-overlay = import ../../overlays/haskell.nix { inherit inputs; };
 in
 {
@@ -53,6 +55,8 @@ in
           llvm-overlays
           ++ [
             nvidia-sdk-overlay
+            libtorch-aarch64-overlay
+
             haskell-overlay
           ]
           ++ cfg.overlays.extra;

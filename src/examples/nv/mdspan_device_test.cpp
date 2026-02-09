@@ -9,9 +9,10 @@
 //
 // compiled with: clang++ -x cuda --cuda-path=... --cuda-gpu-arch=sm_90
 
+#include <cuda_runtime.h>
+
 #include <array>
 #include <cstdio>
-#include <cuda_runtime.h>
 #include <numeric>
 
 // use kokkos mdspan for device compatibility
@@ -29,9 +30,8 @@ namespace straylight::examples {
 // matrix multiply kernel using mdspan for type-safe indexing
 // A[M,K] * B[K,N] = C[M,N]
 template <typename T>
-__global__ void matmul_kernel(const T *__restrict__ a_data,
-                              const T *__restrict__ b_data,
-                              T *__restrict__ c_data, int M, int K, int N) {
+__global__ void matmul_kernel(const T* __restrict__ a_data, const T* __restrict__ b_data,
+                              T* __restrict__ c_data, int M, int K, int N) {
   // create mdspan views inside kernel
   using matrix_t = stdex::mdspan<const T, stdex::dextents<int, 2>>;
   using out_matrix_t = stdex::mdspan<T, stdex::dextents<int, 2>>;
@@ -55,7 +55,7 @@ __global__ void matmul_kernel(const T *__restrict__ a_data,
 
 // simple reduction kernel
 template <typename T>
-__global__ void reduce_sum_kernel(const T *data, T *result, int n) {
+__global__ void reduce_sum_kernel(const T* data, T* result, int n) {
   __shared__ T shared_data[256];
 
   int tid = threadIdx.x;
@@ -81,7 +81,7 @@ __global__ void reduce_sum_kernel(const T *data, T *result, int n) {
 // host-side test runner
 // ════════════════════════════════════════════════════════════════════════════════
 
-auto check_cuda_error(cudaError_t error, const char *operation) -> bool {
+auto check_cuda_error(cudaError_t error, const char* operation) -> bool {
   if (error != cudaSuccess) {
     std::printf("  %s failed: %s\n", operation, cudaGetErrorString(error));
     return false;
@@ -143,8 +143,8 @@ auto test_matmul() -> bool {
   for (int i = 0; i < M && passed; ++i) {
     for (int j = 0; j < N && passed; ++j) {
       if (h_c[i * N + j] != expected_row_sums[i]) {
-        std::printf("  matmul C[%d,%d] = %f, expected %f\n", i, j,
-                    h_c[i * N + j], expected_row_sums[i]);
+        std::printf("  matmul C[%d,%d] = %f, expected %f\n", i, j, h_c[i * N + j],
+                    expected_row_sums[i]);
         passed = false;
       }
     }
@@ -214,16 +214,14 @@ auto main_impl() -> int {
 
   if (error != cudaSuccess || device_count == 0) {
     std::printf("nv mdspan tests: no devices available\n");
-    std::printf(
-        "compilation succeeded - mdspan device code compiled correctly\n");
+    std::printf("compilation succeeded - mdspan device code compiled correctly\n");
     return 0; // success - testing toolchain, not hardware
   }
 
   // get device info
   cudaDeviceProp props;
   cudaGetDeviceProperties(&props, 0);
-  std::printf("nv mdspan tests on: %s (sm_%d%d)\n", props.name, props.major,
-              props.minor);
+  std::printf("nv mdspan tests on: %s (sm_%d%d)\n", props.name, props.major, props.minor);
 
   int failures = 0;
 
@@ -252,4 +250,6 @@ auto main_impl() -> int {
 
 } // namespace straylight::examples
 
-auto main() -> int { return straylight::examples::main_impl(); }
+auto main() -> int {
+  return straylight::examples::main_impl();
+}

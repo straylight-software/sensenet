@@ -76,10 +76,11 @@
 
       # Self-use: packages and minimal devshell for this repo
       perSystem =
-        { pkgs, config, ... }:
+        { pkgs, ... }:
         let
           # GHC 9.12 with haskell overlay applied (via std.nix)
-          ghc912 = pkgs.haskell.packages.ghc912;
+          inherit (pkgs.haskell.packages) ghc912;
+
         in
         {
           packages.aleph-lint = pkgs.callPackage ./nix/packages/aleph-lint.nix { };
@@ -168,8 +169,6 @@
             };
           };
 
-          # Default devshell uses the examples project
-          devShells.default = config.devShells.buck2-examples;
         };
     };
 }
