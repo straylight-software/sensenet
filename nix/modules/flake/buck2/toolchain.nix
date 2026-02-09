@@ -126,6 +126,8 @@
       nvidia_sdk_path = ${nvidia-sdk}
       nvidia_sdk_include = ${nvidia-sdk}/include
       nvidia_sdk_lib = ${nvidia-sdk}/lib
+      ptxas = ${nvidia-sdk}/bin/ptxas
+      fatbinary = ${nvidia-sdk}/bin/fatbinary
       archs = sm_90
       # Use unwrapped clang for CUDA (avoids NixOS hardening flags like -fzero-call-used-regs)
       clang = ${clang-unwrapped}/bin/clang++
