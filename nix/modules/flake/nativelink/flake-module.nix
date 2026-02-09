@@ -945,7 +945,6 @@ in
           inherit (cfg.buck2.platform-properties) container-image;
         };
 
-
       in
       optional-attrs (nativelink != null) {
         # ────────────────────────────────────────────────────────────────────
