@@ -64,6 +64,8 @@ in
     in
     {
       _module.args.pkgs = lib.mkForce pkgs-configured;
-      legacyPackages = lib.mkForce pkgs-configured;
+      legacyPackages = lib.mkForce { };
     };
+
+
 }
