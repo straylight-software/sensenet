@@ -223,6 +223,8 @@ in
                   nvidia_sdk_include = ${pkgs.nvidia-sdk}/include
                   nvidia_sdk_lib = ${pkgs.nvidia-sdk}/lib
                   clang = ${clang-unwrapped}/bin/clang++
+                  ptxas = ${pkgs.nvidia-sdk}/bin/ptxas
+                  fatbinary = ${pkgs.nvidia-sdk}/bin/fatbinary
                   mdspan_include = ${pkgs.callPackage ../../packages/mdspan.nix { }}/include
                 '';
 
@@ -325,6 +327,10 @@ in
           }
           // nv-env
           // cfg.extra-env
+          // optional-attrs (cfg.nv.enable && pkgs ? nvidia-sdk) {
+            # Ensure ptxas/fatbinary are in PATH for Clang
+            PATH = "${pkgs.nvidia-sdk}/bin:" + (builtins.getEnv "PATH");
+          }
         );
         devShells.linter = pkgs.mkShell {
           name = "linter-shell";
