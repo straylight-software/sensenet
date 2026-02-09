@@ -210,6 +210,10 @@ in
                 # This provides Buck2 with Nix store paths for all compilers
                 llvm-pkg = pkgs.llvm-git or pkgs.llvmPackages_19;
                 clang = llvm-pkg.clang or llvm-pkg;
+                # Use unwrapped clang for NV compilation to avoid hardening flags like -fzero-call-used-regs
+                # that are incompatible with nvptx targets.
+                # llvm-git is already unwrapped. llvmPackages_19 provides clang-unwrapped.
+                clang-unwrapped = if (pkgs ? llvm-git) then pkgs.llvm-git else pkgs.llvmPackages_19.clang-unwrapped;
                 lld = llvm-pkg.lld or pkgs.lld_19;
 
                 # NV config if enabled
@@ -218,7 +222,7 @@ in
                   nvidia_sdk_path = ${pkgs.nvidia-sdk}
                   nvidia_sdk_include = ${pkgs.nvidia-sdk}/include
                   nvidia_sdk_lib = ${pkgs.nvidia-sdk}/lib
-                  clang = ${clang}/bin/clang++
+                  clang = ${clang-unwrapped}/bin/clang++
                   mdspan_include = ${pkgs.callPackage ../../packages/mdspan.nix { }}/include
                 '';
 
