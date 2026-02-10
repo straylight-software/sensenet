@@ -28,3 +28,4 @@ bin/
 .devshell
 .cache/
 .haskell-sources/
+*.gen
