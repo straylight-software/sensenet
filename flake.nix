@@ -114,7 +114,10 @@
               };
               rust.enable = true;
               lean.enable = true;
-              python.enable = true;
+              python = {
+                enable = true;
+                package = pkgs.python3.withPackages (ps: [ ps.numpy ]);
+              };
               nv.enable = true;
             };
             remoteExecution = {
