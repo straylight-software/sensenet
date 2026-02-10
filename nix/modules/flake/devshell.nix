@@ -264,6 +264,7 @@ in
                       "@lean_include_dir@"
                       "@python_interpreter@"
                       "@python_include@"
+                      "@pybind11_include@"
                     ]
                     [
                       "${clang}/bin/clang"
@@ -292,8 +293,9 @@ in
                       "${pkgs.lean4}/bin/leanc"
                       "${pkgs.lean4}/lib/lean/library"
                       "${pkgs.lean4}/include"
-                      "${pkgs.python3}/bin/python3"
-                      "${pkgs.python3}/include/python3.12"
+                      "${pkgs.python312}/bin/python3"
+                      "${pkgs.python312}/include/python3.12"
+                      "${pkgs.python312Packages.pybind11}/include"
                     ]
                     buckconfig-template;
 
