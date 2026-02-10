@@ -48,16 +48,18 @@ def _python_script_impl(ctx: AnalysisContext) -> list[Provider]:
         wrapper_cmd = cmd_args(delimiter = "")
         wrapper_cmd.add("#!/bin/bash\n")
         wrapper_cmd.add("# Auto-generated wrapper for " + ctx.attrs.name + "\n")
-        wrapper_cmd.add("export PYTHONPATH=\"")
+        # Find repo root by walking up to .buckconfig
+        wrapper_cmd.add("ROOT=\"$(cd \"$(dirname \"$0\")\" && while [[ ! -f .buckconfig ]] && [[ $PWD != / ]]; do cd ..; done && pwd)\"\n")
+        wrapper_cmd.add("export PYTHONPATH=\"$ROOT/")
         for i, ext in enumerate(ext_outputs):
             if i > 0:
-                wrapper_cmd.add(":")
+                wrapper_cmd.add(":$ROOT/")
             # Use parent format to get directory of .so file
             wrapper_cmd.add(cmd_args(ext, parent = 1))
         wrapper_cmd.add("${PYTHONPATH:+:$PYTHONPATH}\"\n")
-        wrapper_cmd.add("exec " + interpreter + " ")
+        wrapper_cmd.add("exec " + interpreter + " \"$ROOT/")
         wrapper_cmd.add(ctx.attrs.main)
-        wrapper_cmd.add(" \"$@\"\n")
+        wrapper_cmd.add("\" \"$@\"\n")
         
         ctx.actions.write(wrapper, wrapper_cmd, is_executable = True)
         
