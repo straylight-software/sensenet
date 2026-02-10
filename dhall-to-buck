@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# dhall-to-buck - Transpile BUILD.dhall to BUCK
+#
+# Usage:
+#   ./dhall-to-buck src/examples/simdjson/BUILD.dhall > src/examples/simdjson/BUCK
+#
+# This script:
+#   1. Extracts flake refs from BUILD.dhall
+#   2. Resolves them via nix-analyze
+#   3. Renders final BUCK with baked-in flags
+
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 <BUILD.dhall>" >&2
+    exit 1
+fi
+
+BUILD_DHALL="$1"
+DIR="$(dirname "$BUILD_DHALL")"
+
+# Extract deps
+DEPS=$(dhall text <<< "(./dhall/prelude/extract-deps.dhall) ./${BUILD_DHALL}")
+
+if [[ -z "$DEPS" ]]; then
+    echo "# Generated from ${BUILD_DHALL} (no nix deps)"
+    dhall text <<< "
+let S = ./dhall/prelude/to-starlark.dhall
+let targets = ./${BUILD_DHALL}
+let firstTarget = List/head (./dhall/prelude/Cxx.dhall).CxxBinary targets
+let emptyFlags = { compiler = [] : List Text, linker = [] : List Text }
+in merge
+     { None = \"# No targets\"
+     , Some = \\(t : (./dhall/prelude/Cxx.dhall).CxxBinary) -> S.renderCxxBinary t emptyFlags
+     }
+     firstTarget
+"
+    exit 0
+fi
+
+# Resolve deps via nix-analyze
+FLAGS=$(buck2 run //src/nix-analyze:nix-analyze -- resolve $DEPS 2>/dev/null | grep -v "^BUILD\|^\[")
+
+# Separate compiler flags from linker flags
+COMPILER_FLAGS=""
+LINKER_FLAGS=""
+
+# State machine for -isystem which takes next arg
+next_is_include=false
+
+while IFS= read -r flag; do
+    [[ -z "$flag" ]] && continue
+    
+    if $next_is_include; then
+        # This is the path after -isystem
+        COMPILER_FLAGS+="\"$flag\", "
+        next_is_include=false
+    elif [[ "$flag" == "-isystem" ]]; then
+        COMPILER_FLAGS+="\"$flag\", "
+        next_is_include=true
+    elif [[ "$flag" == -I* ]]; then
+        COMPILER_FLAGS+="\"$flag\", "
+    elif [[ "$flag" == -L* ]] || [[ "$flag" == -Wl,* ]] || [[ "$flag" == -l* ]]; then
+        LINKER_FLAGS+="\"$flag\", "
+    else
+        # Unknown flag - add to both
+        COMPILER_FLAGS+="\"$flag\", "
+        LINKER_FLAGS+="\"$flag\", "
+    fi
+done <<< "$FLAGS"
+
+# Remove trailing comma and space
+COMPILER_FLAGS="${COMPILER_FLAGS%, }"
+LINKER_FLAGS="${LINKER_FLAGS%, }"
+
+# Render to Starlark
+echo "# Generated from ${BUILD_DHALL}"
+echo "# Nix deps: ${DEPS//$'\n'/, }"
+echo ""
+
+dhall text <<< "
+let S = ./dhall/prelude/to-starlark.dhall
+let targets = ./${BUILD_DHALL}
+let firstTarget = List/head (./dhall/prelude/Cxx.dhall).CxxBinary targets
+let resolved = { compiler = [${COMPILER_FLAGS}], linker = [${LINKER_FLAGS}] }
+in merge
+     { None = \"# No targets\"
+     , Some = \\(t : (./dhall/prelude/Cxx.dhall).CxxBinary) -> S.renderCxxBinary t resolved
+     }
+     firstTarget
+"

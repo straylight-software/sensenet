@@ -138,6 +138,7 @@ resolveOnePackage ref = do
         [ "-isystem"
         , includePath
         , "-L" <> libPath
+        , "-Wl,-rpath," <> libPath
         ]
             ++ pkgConfigFlags
 

@@ -4,17 +4,16 @@
 #
 # Demonstrates the Nix-Buck2 contract:
 #   - deps = ["nixpkgs#simdjson"] - any derivation is valid
-#   - nix_resolve rule calls nix-analyze at execution time  
-#   - nix_binary uses the resolved flags
-#   - DICE tracks the dep graph for incrementality
+#   - nix_cxx_binary macro handles the resolution automatically
 
-load("@toolchains//:nix_genrule.bzl", "nix_cxx_binary")
+load("@toolchains//:nix_analyze.bzl", "nix_cxx_binary")
 
 nix_cxx_binary(
     name = "twitter",
     srcs = ["twitter.cpp"],
+    # Directly reference flake fragments in deps
     deps = ["nixpkgs#simdjson"],
-    std = "c++20",
-    extra_cflags = ["-O2"],
+    # Nix libraries (like simdjson) often use -std=c++17 or higher
+    compiler_flags = ["-std=c++20", "-O2"],
     visibility = ["PUBLIC"],
 )

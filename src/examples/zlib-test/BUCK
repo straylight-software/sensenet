@@ -6,18 +6,12 @@
 #
 # Buck2 builds the analysis graph, nix-analyze provides information.
 
-load("@toolchains//:nix_analyze.bzl", "nix_library", "nix_cxx_binary")
-
-# Expose zlib from nixpkgs as a library
-nix_library(
-    name = "zlib",
-    flake_ref = "nixpkgs#zlib",
-)
+load("@toolchains//:nix_analyze.bzl", "nix_cxx_binary")
 
 # Build our test program
 nix_cxx_binary(
     name = "zlib-test",
     srcs = ["main.cpp"],
-    deps = [":zlib"],
-    cflags = ["-O2", "-Wall"],
+    deps = ["nixpkgs#zlib"],
+    compiler_flags = ["-O2", "-Wall"],
 )
