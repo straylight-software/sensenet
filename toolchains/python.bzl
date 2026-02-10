@@ -63,9 +63,11 @@ def _python_script_impl(ctx: AnalysisContext) -> list[Provider]:
         
         ctx.actions.write(wrapper, wrapper_cmd, is_executable = True)
         
+        # The ext_outputs are tracked as hidden deps via cmd_args in wrapper_cmd
+        # This ensures they get built before the wrapper can run
         return [
             DefaultInfo(default_output = wrapper, other_outputs = ext_outputs),
-            RunInfo(args = [wrapper]),
+            RunInfo(args = cmd_args([wrapper], hidden = ext_outputs)),
         ]
     else:
         return [
