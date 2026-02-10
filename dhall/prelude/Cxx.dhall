@@ -1,127 +1,49 @@
 --| C/C++ Rules
---|
---| cxx_library, cxx_binary, cxx_test
 
-let Types = ./Types.dhall
-let Toolchain = ./Toolchain.dhall
+let T = ./Types.dhall
 
--- =============================================================================
--- Link Style
--- =============================================================================
+let Binary =
+      { name : Text
+      , srcs : List Text
+      , deps : List T.Dep
+      , std : T.CxxStd
+      , cflags : List Text
+      , ldflags : List Text
+      , vis : T.Vis
+      }
 
-let LinkStyle = < Static | Shared >
+let binary
+    : Text -> List Text -> List T.Dep -> Binary
+    = \(name : Text) ->
+      \(srcs : List Text) ->
+      \(deps : List T.Dep) ->
+        { name, srcs, deps
+        , std = T.CxxStd.Cxx17
+        , cflags = [] : List Text
+        , ldflags = [] : List Text
+        , vis = T.Vis.Public
+        }
 
--- =============================================================================
--- cxx_library
--- =============================================================================
-
-let CxxLibrary =
+let Library =
       { name : Text
       , srcs : List Text
       , hdrs : List Text
-      , deps : List Types.Dep
-      , exported_deps : List Types.Dep
-      , includes : List Text
-      , defines : List { name : Text, value : Optional Text }
-      , cxx_std : Types.CxxStandard
-      , compiler_flags : List Text
-      , linker_flags : List Text
-      , visibility : Types.Visibility
-      , toolchain : Optional Toolchain.Toolchain
+      , deps : List T.Dep
+      , std : T.CxxStd
+      , cflags : List Text
+      , vis : T.Vis
       }
 
-let cxx_library
-    : Text -> List Text -> List Types.Dep -> CxxLibrary
+let library
+    : Text -> List Text -> List T.Dep -> Library
     = \(name : Text) ->
       \(srcs : List Text) ->
-      \(deps : List Types.Dep) ->
-        { name
-        , srcs
+      \(deps : List T.Dep) ->
+        { name, srcs, deps
         , hdrs = [] : List Text
-        , deps
-        , exported_deps = [] : List Types.Dep
-        , includes = [] : List Text
-        , defines = [] : List { name : Text, value : Optional Text }
-        , cxx_std = Types.CxxStandard.Cxx17
-        , compiler_flags = [] : List Text
-        , linker_flags = [] : List Text
-        , visibility = Types.Visibility.Public
-        , toolchain = None Toolchain.Toolchain
+        , std = T.CxxStd.Cxx17
+        , cflags = [] : List Text
+        , vis = T.Vis.Public
         }
 
--- =============================================================================
--- cxx_binary
--- =============================================================================
-
-let CxxBinary =
-      { name : Text
-      , srcs : List Text
-      , deps : List Types.Dep
-      , includes : List Text
-      , defines : List { name : Text, value : Optional Text }
-      , cxx_std : Types.CxxStandard
-      , compiler_flags : List Text
-      , linker_flags : List Text
-      , link_style : LinkStyle
-      , visibility : Types.Visibility
-      , toolchain : Optional Toolchain.Toolchain
-      }
-
-let cxx_binary
-    : Text -> List Text -> List Types.Dep -> CxxBinary
-    = \(name : Text) ->
-      \(srcs : List Text) ->
-      \(deps : List Types.Dep) ->
-        { name
-        , srcs
-        , deps
-        , includes = [] : List Text
-        , defines = [] : List { name : Text, value : Optional Text }
-        , cxx_std = Types.CxxStandard.Cxx17
-        , compiler_flags = [] : List Text
-        , linker_flags = [] : List Text
-        , link_style = LinkStyle.Static
-        , visibility = Types.Visibility.Public
-        , toolchain = None Toolchain.Toolchain
-        }
-
--- =============================================================================
--- cxx_test
--- =============================================================================
-
-let CxxTest =
-      { name : Text
-      , srcs : List Text
-      , deps : List Types.Dep
-      , includes : List Text
-      , cxx_std : Types.CxxStandard
-      , compiler_flags : List Text
-      , toolchain : Optional Toolchain.Toolchain
-      }
-
-let cxx_test
-    : Text -> List Text -> List Types.Dep -> CxxTest
-    = \(name : Text) ->
-      \(srcs : List Text) ->
-      \(deps : List Types.Dep) ->
-        { name
-        , srcs
-        , deps
-        , includes = [] : List Text
-        , cxx_std = Types.CxxStandard.Cxx17
-        , compiler_flags = [] : List Text
-        , toolchain = None Toolchain.Toolchain
-        }
-
--- =============================================================================
--- Exports
--- =============================================================================
-
-in  { LinkStyle
-    , CxxLibrary
-    , cxx_library
-    , CxxBinary
-    , cxx_binary
-    , CxxTest
-    , cxx_test
-    }
+in  { Binary, binary, Library, library }

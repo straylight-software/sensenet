@@ -1,92 +1,39 @@
 #!/usr/bin/env bash
-#
 # dhall-to-buck - Transpile BUILD.dhall to BUCK
-#
-# Usage:
-#   ./dhall-to-buck src/examples/simdjson/BUILD.dhall > src/examples/simdjson/BUCK
-#
-# This script:
-#   1. Extracts flake refs from BUILD.dhall
-#   2. Resolves them via nix-analyze
-#   3. Renders final BUCK with baked-in flags
-
 set -euo pipefail
 
-if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <BUILD.dhall>" >&2
-    exit 1
-fi
+[[ $# -lt 1 ]] && { echo "Usage: $0 <BUILD.dhall>" >&2; exit 1; }
 
-BUILD_DHALL="$1"
-DIR="$(dirname "$BUILD_DHALL")"
-
-# Extract deps
-DEPS=$(dhall text <<< "(./dhall/prelude/extract-deps.dhall) ./${BUILD_DHALL}")
+DEPS=$(dhall text <<< "(./dhall/prelude/extract-deps.dhall) ./$1")
 
 if [[ -z "$DEPS" ]]; then
-    echo "# Generated from ${BUILD_DHALL} (no nix deps)"
-    dhall text <<< "
+  echo "# Generated from $1"
+  dhall text <<< "
 let S = ./dhall/prelude/to-starlark.dhall
-let targets = ./${BUILD_DHALL}
-let firstTarget = List/head (./dhall/prelude/Cxx.dhall).CxxBinary targets
-let emptyFlags = { compiler = [] : List Text, linker = [] : List Text }
-in merge
-     { None = \"# No targets\"
-     , Some = \\(t : (./dhall/prelude/Cxx.dhall).CxxBinary) -> S.renderCxxBinary t emptyFlags
-     }
-     firstTarget
-"
-    exit 0
+let C = ./dhall/prelude/Cxx.dhall
+let t = List/head C.Binary ./$1
+in merge { None = \"\", Some = \\(b : C.Binary) -> S.binary b { compiler = [] : List Text, linker = [] : List Text } } t"
+  exit 0
 fi
 
-# Resolve deps via nix-analyze
-FLAGS=$(buck2 run //src/nix-analyze:nix-analyze -- resolve $DEPS 2>/dev/null | grep -v "^BUILD\|^\[")
+FLAGS=$(buck2 run //src/nix-analyze:nix-analyze -- resolve $DEPS 2>/dev/null | grep -v "^\[")
 
-# Separate compiler flags from linker flags
-COMPILER_FLAGS=""
-LINKER_FLAGS=""
-
-# State machine for -isystem which takes next arg
-next_is_include=false
-
-while IFS= read -r flag; do
-    [[ -z "$flag" ]] && continue
-    
-    if $next_is_include; then
-        # This is the path after -isystem
-        COMPILER_FLAGS+="\"$flag\", "
-        next_is_include=false
-    elif [[ "$flag" == "-isystem" ]]; then
-        COMPILER_FLAGS+="\"$flag\", "
-        next_is_include=true
-    elif [[ "$flag" == -I* ]]; then
-        COMPILER_FLAGS+="\"$flag\", "
-    elif [[ "$flag" == -L* ]] || [[ "$flag" == -Wl,* ]] || [[ "$flag" == -l* ]]; then
-        LINKER_FLAGS+="\"$flag\", "
-    else
-        # Unknown flag - add to both
-        COMPILER_FLAGS+="\"$flag\", "
-        LINKER_FLAGS+="\"$flag\", "
-    fi
+CF="" LF="" next=false
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  if $next; then CF+="\"$f\", "; next=false
+  elif [[ "$f" == "-isystem" ]]; then CF+="\"$f\", "; next=true
+  elif [[ "$f" == -I* ]]; then CF+="\"$f\", "
+  elif [[ "$f" == -L* || "$f" == -Wl,* || "$f" == -l* ]]; then LF+="\"$f\", "
+  fi
 done <<< "$FLAGS"
 
-# Remove trailing comma and space
-COMPILER_FLAGS="${COMPILER_FLAGS%, }"
-LINKER_FLAGS="${LINKER_FLAGS%, }"
-
-# Render to Starlark
-echo "# Generated from ${BUILD_DHALL}"
-echo "# Nix deps: ${DEPS//$'\n'/, }"
+echo "# Generated from $1"
+echo "# Deps: ${DEPS//$'\n'/, }"
 echo ""
-
 dhall text <<< "
 let S = ./dhall/prelude/to-starlark.dhall
-let targets = ./${BUILD_DHALL}
-let firstTarget = List/head (./dhall/prelude/Cxx.dhall).CxxBinary targets
-let resolved = { compiler = [${COMPILER_FLAGS}], linker = [${LINKER_FLAGS}] }
-in merge
-     { None = \"# No targets\"
-     , Some = \\(t : (./dhall/prelude/Cxx.dhall).CxxBinary) -> S.renderCxxBinary t resolved
-     }
-     firstTarget
-"
+let C = ./dhall/prelude/Cxx.dhall
+let t = List/head C.Binary ./$1
+let f = { compiler = [${CF%,*}], linker = [${LF%,*}] }
+in merge { None = \"\", Some = \\(b : C.Binary) -> S.binary b f } t"
