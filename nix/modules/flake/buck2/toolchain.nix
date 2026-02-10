@@ -104,7 +104,10 @@
   mkPythonSection =
     { python, pybind11 ? null }:
     let
-      pyVersion = lib.versions.majorMinor python.version;
+      # Handle both plain python and python.withPackages results
+      # withPackages returns an env that wraps the original python
+      pythonPkg = python.passthru.pythonOnBuildForHost or python.passthru.python or python;
+      pyVersion = lib.versions.majorMinor pythonPkg.version;
       pybind11Section = lib.optionalString (pybind11 != null) ''
         pybind11_include = ${pybind11}/include
       '';
