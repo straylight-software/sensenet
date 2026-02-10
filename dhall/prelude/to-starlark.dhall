@@ -4,6 +4,9 @@ let P = ./Prelude.dhall
 let T = ./Types.dhall
 let C = ./Cxx.dhall
 let R = ./Rust.dhall
+let H = ./Haskell.dhall
+let L = ./Lean.dhall
+let N = ./Nv.dhall
 
 let q = \(t : Text) -> "\"${t}\""
 
@@ -83,6 +86,117 @@ let rustLibrary
         )
         ''
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Haskell
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let haskellBinary
+    : H.Binary -> Text
+    = \(b : H.Binary) ->
+        let exts = if P.List.null Text b.language_extensions
+                   then ""
+                   else "    language_extensions = ${list b.language_extensions},\n"
+        in ''
+        haskell_binary(
+            name = ${q b.name},
+            srcs = ${list b.srcs},
+            main = ${q b.main},
+            packages = ${list b.packages},
+        ${exts}    ghc_options = ${list b.ghc_options},
+            visibility = ${vis b.vis},
+        )
+        ''
+
+let haskellLibrary
+    : H.Library -> Text
+    = \(lib : H.Library) ->
+        let exts = if P.List.null Text lib.language_extensions
+                   then ""
+                   else "    language_extensions = ${list lib.language_extensions},\n"
+        in ''
+        haskell_library(
+            name = ${q lib.name},
+            srcs = ${list lib.srcs},
+            packages = ${list lib.packages},
+        ${exts}    ghc_options = ${list lib.ghc_options},
+            visibility = ${vis lib.vis},
+        )
+        ''
+
+let haskellFFIBinary
+    : H.FFIBinary -> Text
+    = \(b : H.FFIBinary) ->
+        let hdrs = if P.List.null Text b.cxx_headers
+                   then ""
+                   else "    cxx_headers = ${list b.cxx_headers},\n"
+        in ''
+        haskell_ffi_binary(
+            name = ${q b.name},
+            hs_srcs = ${list b.hs_srcs},
+            cxx_srcs = ${list b.cxx_srcs},
+        ${hdrs}    visibility = ${vis b.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Lean
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let leanBinary
+    : L.Binary -> Text
+    = \(b : L.Binary) ->
+        ''
+        lean_binary(
+            name = ${q b.name},
+            srcs = ${list b.srcs},
+            visibility = ${vis b.vis},
+        )
+        ''
+
+let leanLibrary
+    : L.Library -> Text
+    = \(lib : L.Library) ->
+        ''
+        lean_library(
+            name = ${q lib.name},
+            srcs = ${list lib.srcs},
+            visibility = ${vis lib.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- NVIDIA/CUDA
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let nvBinary
+    : N.Binary -> Text
+    = \(b : N.Binary) ->
+        ''
+        nv_binary(
+            name = ${q b.name},
+            srcs = ${list b.srcs},
+            visibility = ${vis b.vis},
+        )
+        ''
+
+let nvLibrary
+    : N.Library -> Text
+    = \(lib : N.Library) ->
+        let hdrs = if P.List.null Text lib.exported_headers
+                   then ""
+                   else "    exported_headers = ${list lib.exported_headers},\n"
+        in ''
+        nv_library(
+            name = ${q lib.name},
+            srcs = ${list lib.srcs},
+        ${hdrs}    visibility = ${vis lib.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Dep extractors
+-- ══════════════════════════════════════════════════════════════════════════════
+
 let cxxDeps = \(b : C.Binary) -> P.Text.concatSep "\n" (flakes b.deps)
 let rustBinaryDeps = \(b : R.Binary) -> P.Text.concatSep "\n" (flakes b.deps)
 let rustLibraryDeps = \(lib : R.Library) -> P.Text.concatSep "\n" (flakes lib.deps)
@@ -94,8 +208,18 @@ let deps = cxxDeps
 
 in  { q, list, flakes, locals
     , cxxStd, rustEdition, vis, Flags
-    , cxxBinary, rustBinary, rustLibrary
-    , cxxDeps, rustBinaryDeps, rustLibraryDeps
+    -- C++
+    , cxxBinary
+    , cxxDeps
+    -- Rust
+    , rustBinary, rustLibrary
+    , rustBinaryDeps, rustLibraryDeps
+    -- Haskell
+    , haskellBinary, haskellLibrary, haskellFFIBinary
+    -- Lean
+    , leanBinary, leanLibrary
+    -- NVIDIA
+    , nvBinary, nvLibrary
     -- backward compat
     , std, binary, deps
     }

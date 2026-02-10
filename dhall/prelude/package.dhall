@@ -3,6 +3,9 @@
 let T = ./Types.dhall
 let C = ./Cxx.dhall
 let R = ./Rust.dhall
+let H = ./Haskell.dhall
+let L = ./Lean.dhall
+let N = ./Nv.dhall
 
 in  { -- Types
       Dep = T.Dep
@@ -23,6 +26,23 @@ in  { -- Types
     , rustBinary = R.binary
     , RustLibrary = R.Library
     , rustLibrary = R.library
+    -- Haskell rules
+    , HaskellBinary = H.Binary
+    , haskellBinary = H.binary
+    , HaskellLibrary = H.Library
+    , haskellLibrary = H.library
+    , HaskellFFIBinary = H.FFIBinary
+    , haskellFFIBinary = H.ffiBinary
+    -- Lean rules
+    , LeanBinary = L.Binary
+    , leanBinary = L.binary
+    , LeanLibrary = L.Library
+    , leanLibrary = L.library
+    -- NVIDIA rules
+    , NvBinary = N.Binary
+    , nvBinary = N.binary
+    , NvLibrary = N.Library
+    , nvLibrary = N.library
     -- Backward compat (short names for common case)
     , Binary = C.Binary
     , binary = C.binary
