@@ -10,6 +10,11 @@ if [ -n "@haskellEnabled@" ]; then
   export PATH="@ghcBin@:$PATH"
 fi
 
+if [ -n "@nvEnabled@" ]; then
+  # Add CUDA runtime libraries to LD_LIBRARY_PATH
+  export LD_LIBRARY_PATH="@nvSdkLib@${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 # Set up prelude symlink
 mkdir -p nix/build
 if [ ! -L nix/build/prelude ]; then

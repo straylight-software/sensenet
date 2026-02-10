@@ -148,6 +148,8 @@
                 "@buckconfigLocalFile@"
                 "@configsPath@"
                 "@cxxEnabled@"
+                "@nvEnabled@"
+                "@nvSdkLib@"
                 "@targets@"
                 "@devShellHook@"
               ]
@@ -162,6 +164,8 @@
                 (toString buckconfigLocalFile)
                 (toString configsPath)
                 (lib.optionalString cxxEnabled "true")
+                (lib.optionalString (nvEnabled && nvidia-sdk != null) "true")
+                (if nvidia-sdk != null then "${nvidia-sdk}/lib" else "")
                 (lib.concatStringsSep " " targets)
                 devShellHook
               ]
