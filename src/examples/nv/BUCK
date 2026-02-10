@@ -17,3 +17,15 @@ nv_binary(
     srcs = ["mdspan_device_test.cpp"],
     visibility = ["PUBLIC"],
 )
+
+nv_binary(
+    name = "tensor_core",
+    srcs = ["tensor_core.cpp"],
+    visibility = ["PUBLIC"],
+)
+
+nv_binary(
+    name = "flash_attn",
+    srcs = ["flash_attn.cpp"],
+    visibility = ["PUBLIC"],
+)
