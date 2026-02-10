@@ -94,6 +94,8 @@ def nv_compile_flags(nv_toolchain_info: NvToolchainInfo) -> list[str]:
     # Target architectures
     for arch in nv_toolchain_info.nv_archs:
         flags.extend(["--cuda-gpu-arch=" + arch])
+        # Include PTX for forward compatibility (e.g. sm_90 runs on sm_120)
+        flags.extend(["--cuda-include-ptx=" + arch])
 
     return flags
 
@@ -118,6 +120,8 @@ def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     nvidia_sdk_path = read_root_config("nv", "nvidia_sdk_path", "/usr/local/cuda")
     nvidia_sdk_include = read_root_config("nv", "nvidia_sdk_include", "/usr/local/cuda/include")
     nvidia_sdk_lib = read_root_config("nv", "nvidia_sdk_lib", "/usr/local/cuda/lib64")
+    ptxas = read_root_config("nv", "ptxas", "")
+    fatbinary = read_root_config("nv", "fatbinary", "")
     
     # Use unwrapped clang for CUDA (no NixOS hardening flags)
     clang = read_root_config("nv", "clang", "clang++")
@@ -150,6 +154,10 @@ def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         "-c",
     ]
     
+    if ptxas:
+        compile_flags.extend(["--ptxas-path=" + ptxas])
+    # Clang doesn't support --fatbinary-path, but finds it next to ptxas
+    
     # Add mdspan include if configured
     if mdspan_include:
         compile_flags.extend(["-isystem", mdspan_include])
@@ -157,6 +165,8 @@ def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     # Add target architectures
     for arch in nv_archs:
         compile_flags.extend(["--cuda-gpu-arch=" + arch.strip()])
+        # Include PTX for forward compatibility
+        compile_flags.extend(["--cuda-include-ptx=" + arch.strip()])
     
     # Add stdlib paths for unwrapped clang
     if clang_resource_dir:
@@ -266,9 +276,19 @@ def _nv_library_impl(ctx: AnalysisContext) -> list[Provider]:
         "-c",          # Compile only, don't link
     ]
     
+    # Read tool paths from config
+    ptxas = read_root_config("nv", "ptxas", "")
+    fatbinary = read_root_config("nv", "fatbinary", "")
+    
+    if ptxas:
+        compile_flags.extend(["--ptxas-path=" + ptxas])
+    # Clang doesn't support --fatbinary-path, but finds it next to ptxas
+    
     # Add target architectures
     for arch in nv_archs:
         compile_flags.extend(["--cuda-gpu-arch=" + arch.strip()])
+        # Include PTX for forward compatibility
+        compile_flags.extend(["--cuda-include-ptx=" + arch.strip()])
     
     # Add stdlib paths for unwrapped clang
     if gcc_include:

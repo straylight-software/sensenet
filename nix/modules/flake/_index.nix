@@ -18,4 +18,7 @@
   # NOTE: aleph.build.enable requires scripts/ directory which is missing
   aleph.devshell.enable = true;
   aleph.devshell.nv.enable = true;
+
+  # Enable custom LLVM git toolchain for SM120 support
+  aleph.llvm-git.enable = true;
 }

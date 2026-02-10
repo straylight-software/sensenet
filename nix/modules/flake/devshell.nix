@@ -208,13 +208,16 @@ in
 
                 # Generate .buckconfig.local with toolchain paths
                 # This provides Buck2 with Nix store paths for all compilers
-                llvm-pkg = pkgs.llvm-git or pkgs.llvmPackages_19;
-                clang = llvm-pkg.clang or llvm-pkg;
-                # Use unwrapped clang for NV compilation to avoid hardening flags like -fzero-call-used-regs
-                # that are incompatible with nvptx targets.
-                # llvm-git is already unwrapped. llvmPackages_19 provides clang-unwrapped.
-                clang-unwrapped = if (pkgs ? llvm-git) then pkgs.llvm-git else pkgs.llvmPackages_19.clang-unwrapped;
-                lld = llvm-pkg.lld or pkgs.lld_19;
+                
+                # STRICT REQUIREMENT: NVIDIA toolchain requires custom LLVM-git overlay
+                # Enable 'aleph.llvm-git.enable = true' in your flake config.
+                llvm-pkg = if (pkgs ? llvm-git) then pkgs.llvm-git 
+                           else throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'aleph.llvm-git.enable = true'.";
+                
+                clang = llvm-pkg;
+                # llvm-git is already unwrapped
+                clang-unwrapped = llvm-pkg;
+                lld = llvm-pkg;
 
                 # NV config if enabled
                 nv-config = optional-string (cfg.nv.enable && pkgs ? nvidia-sdk) ''
@@ -226,6 +229,7 @@ in
                   ptxas = ${pkgs.nvidia-sdk}/bin/ptxas
                   fatbinary = ${pkgs.nvidia-sdk}/bin/fatbinary
                   mdspan_include = ${pkgs.callPackage ../../packages/mdspan.nix { }}/include
+                  archs = sm_90,sm_100,sm_120
                 '';
 
                 buckconfig-template = builtins.readFile ./devshell/buckconfig-local.ini;
@@ -267,7 +271,7 @@ in
                       "${clang}/bin/clang-cpp"
                       "${lld}/bin/llvm-ar"
                       "${lld}/bin/ld.lld"
-                      "${clang}/resource-root"
+                      "${clang}/lib/clang/22"
                       "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}"
                       "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}/${pkgs.stdenv.hostPlatform.config}"
                       "${pkgs.glibc.dev}/include"

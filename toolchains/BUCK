@@ -17,7 +17,6 @@ load(":haskell.bzl", "haskell_toolchain")
 load(":rust.bzl", "rust_toolchain")
 load(":lean.bzl", "lean_toolchain")
 load(":execution.bzl", "lre_execution_platform", "host_configuration")
-load(":shortlist.bzl", "shortlist_all")
 
 # Use local aleph prelude extractions instead of upstream bloat
 load("@aleph//toolchains:python.bzl", "system_python_bootstrap_toolchain")
@@ -156,6 +155,7 @@ system_genrule_toolchain(
     visibility = ["PUBLIC"],
 )
 
+
 # ════════════════════════════════════════════════════════════════════════════════
 # EXECUTION PLATFORMS
 # ════════════════════════════════════════════════════════════════════════════════
@@ -181,23 +181,3 @@ lre_execution_platform(
     remote_enabled = False,
     visibility = ["PUBLIC"],
 )
-
-# ════════════════════════════════════════════════════════════════════════════════
-# SHORTLIST LIBRARIES
-# ════════════════════════════════════════════════════════════════════════════════
-#
-# Prebuilt C++ libraries from the Nix shortlist module.
-# Paths read from .buckconfig.local [shortlist] section.
-#
-# Available targets:
-#   :zlib-ng       - High-performance zlib replacement
-#   :fmt           - Modern C++ formatting library
-#   :catch2        - C++ testing framework
-#   :catch2-main   - Catch2 main() provider
-#   :spdlog        - Fast C++ logging library
-#   :libsodium     - Modern cryptography library
-#   :mdspan        - C++23 multidimensional array view
-#   :rapidjson     - Fast JSON parser/generator
-#   :nlohmann-json - JSON for Modern C++
-
-shortlist_all()

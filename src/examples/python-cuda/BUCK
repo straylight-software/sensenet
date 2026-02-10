@@ -15,29 +15,29 @@
 # Build: buck2 build //src/examples/python-cuda:gpu_module
 # Test:  buck2 run //src/examples/python-cuda:test_gpu
 
-# load("@toolchains//:nv.bzl", "nv_library")
-# load("@toolchains//:python.bzl", "pybind11_extension", "python_script")
+load("@toolchains//:nv.bzl", "nv_library")
+load("@toolchains//:python.bzl", "pybind11_extension", "python_script")
 
 # # CUDA kernels compiled with clang
-# nv_library(
-#     name = "kernels",
-#     srcs = ["kernels.cu"],
-#     exported_headers = ["kernels.cuh"],
-#     visibility = ["PUBLIC"],
-# )
+nv_library(
+    name = "kernels",
+    srcs = ["kernels.cu"],
+    exported_headers = ["kernels.cuh"],
+    visibility = ["PUBLIC"],
+)
 
 # # pybind11 extension linking CUDA kernels
-# pybind11_extension(
-#     name = "gpu_module",
-#     srcs = ["bindings.cpp"],
-#     nv_deps = [":kernels"],
-#     visibility = ["PUBLIC"],
-# )
+pybind11_extension(
+    name = "gpu_module",
+    srcs = ["bindings.cpp"],
+    nv_deps = [":kernels"],
+    visibility = ["PUBLIC"],
+)
 
 # # Python test script
-# python_script(
-#     name = "test_gpu",
-#     main = "test_gpu.py",
-#     deps = [":gpu_module"],
-#     visibility = ["PUBLIC"],
-# )
+python_script(
+    name = "test_gpu",
+    main = "test_gpu.py",
+    deps = [":gpu_module"],
+    visibility = ["PUBLIC"],
+)

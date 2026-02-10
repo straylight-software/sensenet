@@ -20,7 +20,10 @@ lib.optionalAttrs is-linux {
 
     src = inputs.llvm-project;
 
+    sourceRoot = "source/llvm";
+
     nativeBuildInputs = [
+
       prev.cmake
       prev.ninja
       prev.python3
@@ -33,11 +36,6 @@ lib.optionalAttrs is-linux {
       prev.libffi
     ];
 
-    # Build from root of monorepo with LLVM source in subdirectory
-    preConfigure = ''
-      mkdir -p build && cd build
-    '';
-
     cmakeFlags = [
       "-DLLVM_ENABLE_PROJECTS=clang;clang-tools-extra;lld"
       "-DCMAKE_BUILD_TYPE=Release"
@@ -48,7 +46,6 @@ lib.optionalAttrs is-linux {
       "-DLLVM_INCLUDE_TESTS=OFF"
       "-DLLVM_INCLUDE_EXAMPLES=OFF"
       "-DLLVM_INCLUDE_DOCS=OFF"
-      "../llvm"
     ];
 
     enableParallelBuilding = true;
