@@ -23,4 +23,9 @@ let concatMap
         List/build b (\(l : Type) -> \(c : b -> l -> l) ->
           List/fold a xs l (\(x : a) -> List/fold b (f x) l c))
 
-in  { Text = { concatSep }, List = { map, concatMap } }
+let null
+    : forall (a : Type) -> List a -> Bool
+    = \(a : Type) -> \(xs : List a) ->
+        Natural/isZero (List/length a xs)
+
+in  { Text = { concatSep }, List = { map, concatMap, null } }

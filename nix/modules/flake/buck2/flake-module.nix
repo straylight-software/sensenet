@@ -65,6 +65,7 @@
           # hoogleWithPackages builds a hoogle with pre-generated database for our packages
           hoogleWithDb = hsPackages.hoogleWithPackages hsPkgsFn;
           python = toolchain.python.package or pkgs.python312;
+          pybind11 = pkgs.python3Packages.pybind11;
           nvidia-sdk = pkgs.nvidia-sdk or null;
 
           # ── Generate buckconfig.local ──────────────────────────────────────────
@@ -75,7 +76,7 @@
             );
             rust = lib.optionalString rustEnabled (toolchainLib.mkRustSection { });
             lean = lib.optionalString leanEnabled (toolchainLib.mkLeanSection { });
-            python = lib.optionalString pythonEnabled (toolchainLib.mkPythonSection { inherit python; });
+            python = lib.optionalString pythonEnabled (toolchainLib.mkPythonSection { inherit python pybind11; });
             nv = lib.optionalString (nvEnabled && nvidia-sdk != null) (
               toolchainLib.mkNvSection {
                 inherit nvidia-sdk;

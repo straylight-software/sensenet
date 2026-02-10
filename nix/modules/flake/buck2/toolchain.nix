@@ -102,16 +102,20 @@
 
   # Python toolchain section
   mkPythonSection =
-    { python }:
+    { python, pybind11 ? null }:
     let
       pyVersion = lib.versions.majorMinor python.version;
+      pybind11Section = lib.optionalString (pybind11 != null) ''
+        pybind11_include = ${pybind11}/include
+      '';
     in
     ''
 
       [python]
+      # Python toolchain from Nix
       interpreter = ${python}/bin/python3
       python_include = ${python}/include/python${pyVersion}
-    '';
+      ${pybind11Section}'';
 
   # NVIDIA toolchain section
   mkNvSection =
