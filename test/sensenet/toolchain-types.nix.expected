@@ -1,0 +1,46 @@
+# toolchain-types.nix.expected
+#
+# Expected nix-compile output for toolchain-types.nix
+# This test is currently FAILING - regenerate with --bless when implemented
+#
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# EXPECTED INFERRED TYPES:
+#
+# toolchain-paths : {
+#   clang : Path,
+#   ghc : Path,
+#   lean : Path,
+#   rustc : Path,
+#   nvcc : Path,
+# }
+#
+# mk-toolchain : {
+#   cxx? : { enable : Bool, ... },
+#   haskell? : { enable : Bool, packages? : (HaskellPackages → [Package]), ... },
+#   lean? : { enable : Bool, ... },
+#   rust? : { enable : Bool, ... },
+#   nv? : { enable : Bool, ... },
+# } → Toolchain
+#
+# example-toolchain : Toolchain
+
+# EXPECTED LINT VIOLATIONS:
+#
+# (none)
+
+# EXPECTED COEFFECT ANALYSIS:
+#
+# toolchain-paths: Pure
+# mk-toolchain: Pure (function)
+# example-toolchain: Pure
+#
+# Note: The actual derivations inside mk-toolchain.shell may have coeffects
+# but they're opaque at this level.
+
+# CURRENT STATUS: FAILING
+#
+# Reasons:
+# 1. Cross-file inference not implemented (can't resolve pkgs.* paths)
+# 2. Row polymorphism incomplete (optional fields in mk-toolchain)
+# 3. Coeffect analysis not implemented

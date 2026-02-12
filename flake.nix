@@ -1,5 +1,5 @@
 {
-  description = "ℵ-0xFF — minimal viable nix: fmt, lint, buck2, remote";
+  description = "sense/net — minimal viable nix: fmt, lint, buck2, remote, typed";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -34,6 +34,12 @@
       url = "github:weyl-ai/nvidia-sdk";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # nix-compile - Type inference and static analysis for Nix
+    nix-compile = {
+      url = "github:straylight-software/nix-compile";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -60,6 +66,8 @@
         devshell = ./nix/modules/flake/devshell.nix;
         nativelink = ./nix/modules/flake/nativelink/flake-module.nix;
         std = import ./nix/modules/flake/std.nix { inherit inputs; };
+        # nix-compile integration - typed Nix analysis + proof obligations
+        nix-compile = import ./nix/modules/flake/nix-compile/default.nix { inherit inputs; };
       };
 
       # Export lib for downstream use
