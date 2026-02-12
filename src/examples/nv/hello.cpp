@@ -36,6 +36,14 @@ auto main() -> int {
     return 0;
   }
 
+  // print device info
+  cudaDeviceProp prop{};
+  cudaGetDeviceProperties(&prop, 0);
+  std::printf("straylight nv toolchain: %s (sm_%d%d)\n", prop.name, prop.major, prop.minor);
+  std::printf("  memory: %.1f GB\n",
+              static_cast<double>(prop.totalGlobalMem) / (1024.0 * 1024.0 * 1024.0));
+  std::printf("  multiprocessors: %d\n", prop.multiProcessorCount);
+
   // allocate device memory
   int* device_result = nullptr;
   cudaMalloc(&device_result, sizeof(int));

@@ -1,0 +1,183 @@
+/* // straylight todo aesthetic // */
+
+:root {
+  --bg: #0a0a0b;
+  --card: #111113;
+  --border: #1a1a1d;
+  --text: #e5e5e7;
+  --muted: #71717a;
+  --primary: #3b82f6;
+  --danger: #ef4444;
+  --success: #22c55e;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: 4rem 1rem;
+  line-height: 1.6;
+}
+
+.todo-app {
+  width: 100%;
+  max-width: 500px;
+}
+
+.todo-title {
+  font-size: 1.5rem;
+  font-weight: 500;
+  color: var(--primary);
+  margin-bottom: 2rem;
+  text-align: center;
+}
+
+.todo-input-container {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.todo-input {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.75rem 1rem;
+  font-family: inherit;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.todo-input:focus {
+  border-color: var(--primary);
+}
+
+.todo-input::placeholder {
+  color: var(--muted);
+}
+
+.todo-add-btn {
+  background: var(--primary);
+  border: none;
+  color: var(--bg);
+  width: 2.5rem;
+  font-size: 1.25rem;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.todo-add-btn:hover {
+  opacity: 0.8;
+}
+
+.todo-list {
+  list-style: none;
+  border: 1px solid var(--border);
+  border-bottom: none;
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  transition: background 0.2s;
+}
+
+.todo-item:hover {
+  background: #161618;
+}
+
+.todo-item.completed .todo-text {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.todo-checkbox {
+  appearance: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+}
+
+.todo-checkbox:checked {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.todo-checkbox:checked::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--bg);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.todo-text {
+  flex: 1;
+  font-size: 0.875rem;
+}
+
+.todo-remove-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.875rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  opacity: 0;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.todo-item:hover .todo-remove-btn {
+  opacity: 1;
+}
+
+.todo-remove-btn:hover {
+  color: var(--danger);
+}
+
+.todo-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.clear-completed-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.clear-completed-btn:hover {
+  color: var(--text);
+}
