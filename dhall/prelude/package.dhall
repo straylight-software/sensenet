@@ -6,6 +6,7 @@ let R = ./Rust.dhall
 let H = ./Haskell.dhall
 let L = ./Lean.dhall
 let N = ./Nv.dhall
+let PS = ./PureScript.dhall
 
 in  { -- Types
       Dep = T.Dep
@@ -43,6 +44,13 @@ in  { -- Types
     , nvBinary = N.binary
     , NvLibrary = N.Library
     , nvLibrary = N.library
+    -- PureScript rules
+    , PureScriptApp = PS.App
+    , purescriptApp = PS.app
+    , PureScriptBinary = PS.Binary
+    , purescriptBinary = PS.binary
+    , PureScriptLibrary = PS.Library
+    , purescriptLibrary = PS.library
     -- Backward compat (short names for common case)
     , Binary = C.Binary
     , binary = C.binary

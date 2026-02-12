@@ -13,6 +13,7 @@
       lean ? null,
       python ? null,
       nv ? null,
+      purescript ? null,
       remoteExecution ? null,
       extra ? "",
     }:
@@ -24,6 +25,7 @@
         lean
         python
         nv
+        purescript
         remoteExecution
         extra
       ];
@@ -102,7 +104,10 @@
 
   # Python toolchain section
   mkPythonSection =
-    { python, pybind11 ? null }:
+    {
+      python,
+      pybind11 ? null,
+    }:
     let
       # Handle both plain python and python.withPackages results
       # withPackages returns an env that wraps the original python
@@ -141,6 +146,15 @@
       # mdspan for device code (Kokkos reference implementation)
       mdspan_include = ${mdspan}/include
     '';
+
+  # PureScript toolchain section
+  mkPureScriptSection = _: ''
+
+    [purescript]
+    purs = ${pkgs.purescript}/bin/purs
+    spago = ${pkgs.spago}/bin/spago
+    node = ${pkgs.nodejs}/bin/node
+  '';
 
   # Remote Execution section (NativeLink)
   mkRemoteExecutionSection =

@@ -20,9 +20,10 @@
 #include <experimental/mdspan>
 
 namespace stdex = std::experimental;
-using namespace nvcuda;
 
 namespace straylight::nv {
+
+namespace wmma = nvcuda::wmma;
 
 // ════════════════════════════════════════════════════════════════════════════════
 // Constants

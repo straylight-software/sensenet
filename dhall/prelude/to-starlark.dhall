@@ -7,6 +7,7 @@ let R = ./Rust.dhall
 let H = ./Haskell.dhall
 let L = ./Lean.dhall
 let N = ./Nv.dhall
+let PS = ./PureScript.dhall
 
 let q = \(t : Text) -> "\"${t}\""
 
@@ -194,6 +195,57 @@ let nvLibrary
         ''
 
 -- ══════════════════════════════════════════════════════════════════════════════
+-- PureScript
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let purescriptApp
+    : PS.App -> Text
+    = \(a : PS.App) ->
+        let packagesDhall = merge { Some = \(f : Text) -> "    packages_dhall = ${q f},\n"
+                                  , None = "" } a.packages_dhall
+        let indexHtml = merge { Some = \(f : Text) -> "    index_html = ${q f},\n"
+                              , None = "" } a.index_html
+        let styleCss = merge { Some = \(f : Text) -> "    style_css = ${q f},\n"
+                             , None = "" } a.style_css
+        in ''
+        purescript_app(
+            name = ${q a.name},
+            srcs = ${list a.srcs},
+            spago_dhall = ${q a.spago_dhall},
+        ${packagesDhall}    main = ${q a.main},
+        ${indexHtml}${styleCss}    visibility = ${vis a.vis},
+        )
+        ''
+
+let purescriptBinary
+    : PS.Binary -> Text
+    = \(b : PS.Binary) ->
+        let packagesDhall = merge { Some = \(f : Text) -> "    packages_dhall = ${q f},\n"
+                                  , None = "" } b.packages_dhall
+        in ''
+        purescript_binary(
+            name = ${q b.name},
+            srcs = ${list b.srcs},
+            spago_dhall = ${q b.spago_dhall},
+        ${packagesDhall}    main = ${q b.main},
+            visibility = ${vis b.vis},
+        )
+        ''
+
+let purescriptLibrary
+    : PS.Library -> Text
+    = \(lib : PS.Library) ->
+        let spagoYaml = merge { Some = \(f : Text) -> "    spago_yaml = ${q f},\n"
+                              , None = "" } lib.spago_yaml
+        in ''
+        purescript_library(
+            name = ${q lib.name},
+            srcs = ${list lib.srcs},
+        ${spagoYaml}    visibility = ${vis lib.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
 -- Dep extractors
 -- ══════════════════════════════════════════════════════════════════════════════
 
@@ -220,6 +272,8 @@ in  { q, list, flakes, locals
     , leanBinary, leanLibrary
     -- NVIDIA
     , nvBinary, nvLibrary
+    -- PureScript
+    , purescriptApp, purescriptBinary, purescriptLibrary
     -- backward compat
     , std, binary, deps
     }

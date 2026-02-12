@@ -93,6 +93,7 @@
               "//src/examples/haskell:hello-hs"
               "//src/examples/rust:hello-rs"
               "//src/examples/lean:hello-lean"
+              "//src/examples/purescript:halogen-todo"
               "//src/examples/blake:blake"
             ];
             toolchain = {
@@ -119,6 +120,7 @@
                 package = pkgs.python3.withPackages (ps: [ ps.numpy ]);
               };
               nv.enable = true;
+              purescript.enable = true;
             };
             remoteExecution = {
               enable = true;

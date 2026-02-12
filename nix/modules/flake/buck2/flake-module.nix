@@ -47,6 +47,7 @@
           leanEnabled = toolchain.lean.enable or false;
           pythonEnabled = toolchain.python.enable or false;
           nvEnabled = toolchain.nv.enable or false;
+          purescriptEnabled = toolchain.purescript.enable or false;
 
           # ── Remote execution config ────────────────────────────────────────────
           reEnabled = remoteExecution.enable or false;
@@ -65,7 +66,7 @@
           # hoogleWithPackages builds a hoogle with pre-generated database for our packages
           hoogleWithDb = hsPackages.hoogleWithPackages hsPkgsFn;
           python = toolchain.python.package or pkgs.python312;
-          pybind11 = pkgs.python3Packages.pybind11;
+          inherit (pkgs.python3Packages) pybind11;
           nvidia-sdk = pkgs.nvidia-sdk or null;
 
           # ── Generate buckconfig.local ──────────────────────────────────────────
@@ -76,7 +77,9 @@
             );
             rust = lib.optionalString rustEnabled (toolchainLib.mkRustSection { });
             lean = lib.optionalString leanEnabled (toolchainLib.mkLeanSection { });
-            python = lib.optionalString pythonEnabled (toolchainLib.mkPythonSection { inherit python pybind11; });
+            python = lib.optionalString pythonEnabled (
+              toolchainLib.mkPythonSection { inherit python pybind11; }
+            );
             nv = lib.optionalString (nvEnabled && nvidia-sdk != null) (
               toolchainLib.mkNvSection {
                 inherit nvidia-sdk;
@@ -86,6 +89,7 @@
                 mdspan = pkgs.callPackage "${inputs.self}/nix/packages/mdspan.nix" { };
               }
             );
+            purescript = lib.optionalString purescriptEnabled (toolchainLib.mkPureScriptSection { });
             remoteExecution = lib.optionalString reEnabled (
               toolchainLib.mkRemoteExecutionSection {
                 scheduler = reScheduler;
@@ -127,6 +131,11 @@
           ]
           ++ lib.optionals leanEnabled [ pkgs.lean4 ]
           ++ lib.optionals pythonEnabled [ python ]
+          ++ lib.optionals purescriptEnabled [
+            pkgs.purescript
+            pkgs.spago
+            pkgs.nodejs
+          ]
           ++ extraPackages;
 
           # ── Configs path (from inputs.self) ──────────────────────────────────

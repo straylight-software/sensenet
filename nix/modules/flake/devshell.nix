@@ -208,12 +208,15 @@ in
 
                 # Generate .buckconfig.local with toolchain paths
                 # This provides Buck2 with Nix store paths for all compilers
-                
+
                 # STRICT REQUIREMENT: NVIDIA toolchain requires custom LLVM-git overlay
                 # Enable 'aleph.llvm-git.enable = true' in your flake config.
-                llvm-pkg = if (pkgs ? llvm-git) then pkgs.llvm-git 
-                           else throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'aleph.llvm-git.enable = true'.";
-                
+                llvm-pkg =
+                  if (pkgs ? llvm-git) then
+                    pkgs.llvm-git
+                  else
+                    throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'aleph.llvm-git.enable = true'.";
+
                 clang = llvm-pkg;
                 # llvm-git is already unwrapped
                 clang-unwrapped = llvm-pkg;

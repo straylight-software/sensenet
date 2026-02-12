@@ -90,6 +90,11 @@
                   nv = {
                     enable = lib.mkEnableOption "NVIDIA CUDA toolchain";
                   };
+
+                  # PureScript
+                  purescript = {
+                    enable = lib.mkEnableOption "PureScript toolchain";
+                  };
                 };
 
                 # ── Remote Execution ────────────────────────────────────────────────
