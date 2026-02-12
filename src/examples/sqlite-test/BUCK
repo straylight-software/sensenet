@@ -1,0 +1,10 @@
+# SQLite3 example
+
+load("@toolchains//:nix_analyze.bzl", "nix_cxx_binary")
+
+nix_cxx_binary(
+    name = "sqlite-test",
+    srcs = ["main.cpp"],
+    deps = ["nixpkgs#sqlite"],
+    compiler_flags = ["-O2", "-Wall"],
+)

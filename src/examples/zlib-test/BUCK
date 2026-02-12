@@ -1,0 +1,17 @@
+# Example using nix_analyze rules
+#
+# This approach:
+# 1. nix_library resolves nixpkgs#zlib to store paths
+# 2. nix_cxx_binary compiles with those paths
+#
+# Buck2 builds the analysis graph, nix-analyze provides information.
+
+load("@toolchains//:nix_analyze.bzl", "nix_cxx_binary")
+
+# Build our test program
+nix_cxx_binary(
+    name = "zlib-test",
+    srcs = ["main.cpp"],
+    deps = ["nixpkgs#zlib"],
+    compiler_flags = ["-O2", "-Wall"],
+)

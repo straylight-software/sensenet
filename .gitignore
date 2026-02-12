@@ -1,0 +1,31 @@
+result
+result-*
+.direnv/
+buck-out/
+.buckconfig.local
+nix/build/
+bin/
+
+# GHC build artifacts
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+
+# LSP generated/symlinked files (root only, not nix/configs/)
+/compile_commands.json
+/.clangd
+/.clang-tidy
+/.rustfmt.toml
+/.stylua.toml
+/hie.yaml
+# NOTE: .clang-format is NOT ignored - it's tracked in git for treefmt
+
+# Nix LSP configs (generated)
+.nixd.json
+.nil.toml
+.direnv
+.devshell
+.cache/
+.haskell-sources/
+*.gen

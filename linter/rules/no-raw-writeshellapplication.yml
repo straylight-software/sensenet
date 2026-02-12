@@ -1,0 +1,20 @@
+id: no-raw-writeshellapplication
+language: nix
+severity: error
+files:
+  - "nix/**/*.nix"
+ignores:
+  # The prelude IS the boundary - it wraps nixpkgs
+  - "nix/prelude/**"
+  # flake-parts modules (TODO: wrap these too)
+  - "nix/modules/flake/**"
+  # NixOS modules don't have access to prelude - they're external-facing
+  - "nix/modules/nixos/**"
+  # Overlays that are part of prelude infrastructure
+  - "nix/overlays/script.nix"
+  - "nix/overlays/straylight-nix.nix"
+rule:
+  kind: select_expression
+  pattern: $OBJ.writeShellApplication
+message: "ALEPH-E012: raw writeShellApplication call"
+note: "## What's wrong?\nDirect `writeShellApplication` calls bypass the typed prelude boundary.\n\n## What can I do to fix this?\nUse `prelude.write-shell-application` instead:\n\n```nix\n# WRONG\npkgs.writeShellApplication { ... }\n\n# RIGHT  \nprelude.write-shell-application { ... }\n```\n"

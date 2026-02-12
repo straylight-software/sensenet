@@ -1,0 +1,25 @@
+# examples/nv/BUCK
+#
+# NVIDIA examples using clang (NOT nvcc)
+#
+# NOTE: Requires nvidia-sdk in the toolchain.
+
+load("@toolchains//:nv.bzl", "nv_binary")
+
+nv_binary(
+    name = "hello",
+    srcs = ["hello.cpp"],
+    visibility = ["PUBLIC"],
+)
+
+nv_binary(
+    name = "mdspan_device_test",
+    srcs = ["mdspan_device_test.cpp"],
+    visibility = ["PUBLIC"],
+)
+
+nv_binary(
+    name = "tensor_core",
+    srcs = ["tensor_core.cpp"],
+    visibility = ["PUBLIC"],
+)

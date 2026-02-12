@@ -1,0 +1,11 @@
+# Generated from src/examples/simdjson/BUILD.dhall
+# Deps: nixpkgs#simdjson
+
+cxx_binary(
+    name = "twitter",
+    srcs = ["twitter.cpp"],
+    deps = [],
+    compiler_flags = ["-std=c++20", "-O2", "-isystem", "/nix/store/2gwb0l3pkd6kcpf65rx85h4bgbsd79b6-simdjson-4.2.2/include"],
+    linker_flags = ["-L/nix/store/2gwb0l3pkd6kcpf65rx85h4bgbsd79b6-simdjson-4.2.2/lib", "-Wl,-rpath,/nix/store/2gwb0l3pkd6kcpf65rx85h4bgbsd79b6-simdjson-4.2.2/lib", "-lsimdjson"],
+    visibility = ["PUBLIC"],
+)
