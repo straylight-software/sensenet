@@ -178,13 +178,15 @@ def _purescript_app_impl(ctx: AnalysisContext) -> list[Provider]:
     script_parts.append(cmd_args(spago, " build", delimiter = ""))
     
     # Bundle for browser using spago bundle
+    # spago 1.x outputs index.js by default
     script_parts.append(cmd_args(spago, " bundle", delimiter = ""))
     
     script_parts.append("cd -")
     
     # Create dist directory and copy files
+    # spago 1.x outputs index.js, older versions output app.js
     script_parts.append(cmd_args("mkdir -p ", dist_dir.as_output(), delimiter = ""))
-    script_parts.append(cmd_args("cp $WORK_DIR/app.js ", dist_dir.as_output(), "/app.js", delimiter = ""))
+    script_parts.append(cmd_args("cp $WORK_DIR/index.js ", dist_dir.as_output(), "/app.js 2>/dev/null || cp $WORK_DIR/app.js ", dist_dir.as_output(), "/app.js", delimiter = ""))
     
     if ctx.attrs.index_html:
         script_parts.append(cmd_args("cp ", ctx.attrs.index_html, " ", dist_dir.as_output(), "/index.html", delimiter = ""))

@@ -18,6 +18,7 @@
 # as the single source of truth. Devshell adds testing/dev packages on top.
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{ inputs }:
 { config, lib, ... }:
 let
   # lisp-case aliases for lib functions
@@ -99,8 +100,17 @@ in
 
   config = mk-if cfg.enable {
     perSystem =
-      { pkgs, config, ... }:
+      {
+        pkgs,
+        config,
+        system,
+        ...
+      }:
       let
+        # PureScript packages from purescript-overlay (if available)
+        purs-pkgs =
+          if inputs ? purescript-overlay then inputs.purescript-overlay.packages.${system} else { };
+
         # All env vars defined here, not in shellHook
         # Env var names use CUDA/NVIDIA because that's what tools expect
         nv-env = optional-attrs (cfg.nv.enable && pkgs ? nvidia-sdk) {
@@ -167,6 +177,12 @@ in
 
               # Nix: nixd (configured via .nixd.json from use_flake-lsp)
               pkgs.nixd
+
+              # PureScript: purs, spago, esbuild for bundle
+              # Uses purescript-overlay packages if available, else nixpkgs
+              (purs-pkgs.purs or pkgs.purescript)
+              (purs-pkgs.spago-unstable or pkgs.spago)
+              pkgs.esbuild
 
               # Rust: rust-analyzer (if Rust toolchain enabled)
               # Note: rust-analyzer is added via build.nix when rust toolchain is enabled
@@ -283,6 +299,10 @@ in
                       "@nanobind_include@"
                       "@nanobind_cmake@"
                       "@pybind11_include@"
+                      "@purs@"
+                      "@spago@"
+                      "@node@"
+                      "@esbuild@"
                     ]
                     [
                       "${clang}/bin/clang"
@@ -319,6 +339,10 @@ in
                       "${pkgs.python312Packages.nanobind}/lib/python3.12/site-packages/nanobind/include"
                       "${pkgs.python312Packages.nanobind}/lib/python3.12/site-packages/nanobind"
                       "${pkgs.python312Packages.pybind11}/include"
+                      "${(purs-pkgs.purs or pkgs.purescript)}/bin/purs"
+                      "${(purs-pkgs.spago-unstable or pkgs.spago)}/bin/spago"
+                      "${pkgs.nodejs}/bin/node"
+                      "${pkgs.esbuild}/bin/esbuild"
                     ]
                     buckconfig-template;
 

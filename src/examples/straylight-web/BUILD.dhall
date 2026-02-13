@@ -1,0 +1,26 @@
+--| Straylight Web - PureScript Halogen SPA
+--|
+--| Demonstrates:
+--|   - Real-world Halogen application
+--|   - Multiple components and pages
+--|   - FFI with JavaScript
+--|   - Router integration
+--|
+--| This example proves the PureScript Buck2 toolchain works with
+--| a non-trivial Halogen application from straylight.software.
+
+let A = ../../../dhall/prelude/package.dhall
+let S = ../../../dhall/prelude/to-starlark.dhall
+
+let straylightWeb =
+      (A.purescriptApp "straylight-web" (A.SrcSpec.Globs ["src/**/*.purs", "src/**/*.js"]) "spago.yaml")
+        with spago_lock = Some "spago.lock"
+        with main = "Main"
+        with index_html = None Text
+        with style_css = None Text
+
+in  { rules = [ S.purescriptApp straylightWeb ]
+    , header = ''
+        load("@toolchains//:purescript.bzl", "purescript_app")
+        ''
+    }

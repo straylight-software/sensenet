@@ -2,14 +2,15 @@
 
 let T = ./Types.dhall
 
--- | Source specification - either explicit list or glob pattern
-let SrcSpec = < Explicit : List Text | Glob : Text >
+-- | Source specification - explicit list, single glob, or multiple globs
+let SrcSpec = < Explicit : List Text | Glob : Text | Globs : List Text >
 
 -- | PureScript web application (Halogen, etc.)
 let App =
       { name : Text
       , srcs : SrcSpec
       , spago_yaml : Text
+      , spago_lock : Optional Text
       , main : Text
       , index_html : Optional Text
       , style_css : Optional Text
@@ -22,6 +23,7 @@ let app
       \(srcs : SrcSpec) ->
       \(spago_yaml : Text) ->
         { name, srcs, spago_yaml
+        , spago_lock = None Text
         , main = "Main"
         , index_html = Some "index.html"
         , style_css = Some "style.css"

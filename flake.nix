@@ -36,6 +36,12 @@
       inputs.llvm-project.follows = "llvm-project";
     };
 
+    # PureScript overlay - provides purs, spago-unstable, purs-backend-es
+    purescript-overlay = {
+      url = "github:thomashoneyman/purescript-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     # nix-compile - Type inference and static analysis for Nix
     # TODO: Uncomment when repository is public
     # nix-compile = {
@@ -68,7 +74,7 @@
         buck2 = import ./nix/modules/flake/sensenet/default.nix { inherit inputs; };
         buck2-old = ./nix/modules/flake/buck2.nix;
         build = ./nix/modules/flake/build/flake-module.nix;
-        devshell = ./nix/modules/flake/devshell.nix;
+        devshell = import ./nix/modules/flake/devshell.nix { inherit inputs; };
         nativelink = ./nix/modules/flake/nativelink/flake-module.nix;
         std = import ./nix/modules/flake/std.nix { inherit inputs; };
       };

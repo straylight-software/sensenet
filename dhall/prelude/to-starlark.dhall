@@ -203,16 +203,21 @@ let nvLibrary
 -- PureScript
 -- ══════════════════════════════════════════════════════════════════════════════
 
--- Helper for SrcSpec (explicit list or glob pattern)
+-- Helper for SrcSpec (explicit list, glob, or multiple globs)
 let srcSpec
     : PS.SrcSpec -> Text
     = \(s : PS.SrcSpec) ->
         merge { Explicit = \(xs : List Text) -> list xs
-              , Glob = \(pattern : Text) -> "glob([${q pattern}])" } s
+              , Glob = \(pattern : Text) -> "glob([${q pattern}])"
+              , Globs = \(patterns : List Text) ->
+                  P.Text.concatSep " + " (P.List.map Text Text (\(p : Text) -> "glob([${q p}])") patterns)
+              } s
 
 let purescriptApp
     : PS.App -> Text
     = \(a : PS.App) ->
+        let spagoLock = merge { Some = \(f : Text) -> "    spago_lock = ${q f},\n"
+                              , None = "" } a.spago_lock
         let indexHtml = merge { Some = \(f : Text) -> "    index_html = ${q f},\n"
                               , None = "" } a.index_html
         let styleCss = merge { Some = \(f : Text) -> "    style_css = ${q f},\n"
@@ -222,7 +227,7 @@ let purescriptApp
             name = ${q a.name},
             srcs = ${srcSpec a.srcs},
             spago_yaml = ${q a.spago_yaml},
-            main = ${q a.main},
+        ${spagoLock}    main = ${q a.main},
         ${indexHtml}${styleCss}    visibility = ${vis a.vis},
         )
         ''
