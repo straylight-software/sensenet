@@ -6,6 +6,10 @@ buck-out/
 nix/build/
 bin/
 
+# Generated BUCK files (from BUILD.dhall)
+# Only src/**/BUCK are generated; toolchains/BUCK is handwritten
+src/**/BUCK
+
 # GHC build artifacts
 *.hi
 *.o

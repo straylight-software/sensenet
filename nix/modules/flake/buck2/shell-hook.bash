@@ -56,6 +56,36 @@ fi
 
 echo "Generated .buckconfig.local"
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Zero Starlark: Auto-generate BUCK files from BUILD.dhall
+# ══════════════════════════════════════════════════════════════════════════════
+# Users only edit BUILD.dhall files; BUCK files are generated and gitignored.
+# This runs on every shell entry to ensure BUCK files are always in sync.
+
+_generate_buck_files() {
+	local count=0
+	while IFS= read -r -d '' dhall_file; do
+		local dir=$(dirname "$dhall_file")
+		local buck_file="$dir/BUCK"
+
+		# Regenerate if BUCK doesn't exist or BUILD.dhall is newer
+		if [ ! -f "$buck_file" ] || [ "$dhall_file" -nt "$buck_file" ]; then
+			if ./dhall-to-buck "$dhall_file" >"$buck_file" 2>/dev/null; then
+				((count++)) || true
+			fi
+		fi
+	done < <(find src -name "BUILD.dhall" -print0 2>/dev/null)
+
+	if [ "$count" -gt 0 ]; then
+		echo "Generated $count BUCK file(s) from BUILD.dhall"
+	fi
+}
+
+# Only run if dhall-to-buck exists (we're in the sensenet repo)
+if [ -x "./dhall-to-buck" ]; then
+	_generate_buck_files
+fi
+
 # Symlink editor/LSP configs from nix/configs/
 configsPath="@configsPath@"
 for cfg in .clangd .clang-format .clang-tidy .rustfmt.toml .stylua.toml; do
