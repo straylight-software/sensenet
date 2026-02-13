@@ -1,6 +1,29 @@
-# ℵ-0xFF
+# ℵ sensenet
 
 > Minimal viable Nix: formatting, linting, Buck2 toolchains, remote execution.
+
+## Branch Protocol
+
+| Branch | Purpose |
+|--------|---------|
+| `main` | Post-review, stable. All commits have been reviewed. |
+| `dev` | Moving ref to unblock. Integration branch for active development. |
+| `user/the-thing-<linear-id>` | Feature/fix branches. Named `b7r6/feature-name-SLI-123`. |
+
+### Commit Message Convention
+
+```
+// project // area // description // 0x0N
+
+Examples:
+// sensenet // toolchain // add GHC 9.12 support // 0x01
+// sensenet // buck2 // fix haskell_binary rule // 0x02
+// sensenet // devshell // add tokenizers-cpp paths // 0x03
+```
+
+The `0x0N` suffix is a sequential counter within the branch for easy reference.
+
+---
 
 ## Quick Start
 
