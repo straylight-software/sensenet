@@ -19,12 +19,41 @@ let cxx =
         with link_style = "static"
 
 -- ══════════════════════════════════════════════════════════════════════════════
+-- NVIDIA (device configuration)
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let nv =
+      (A.nvToolchain "nv")
+        with nv_archs = [ "sm_90", "sm_100", "sm_120" ]
+
+-- ══════════════════════════════════════════════════════════════════════════════
 -- Haskell (GHC from Nix)
 -- ══════════════════════════════════════════════════════════════════════════════
 
 let haskell =
       (A.haskellToolchain "haskell")
         with compiler_flags = [ "-Wall", "-Werror", "-XGHC2024", "-fwrite-ide-info", "-hiedir=buck-out/hie" ]
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Rust
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let rust =
+      (A.rustToolchain "rust")
+        with default_edition = "2021"
+        with rustc_flags = [ "-C", "opt-level=2", "-C", "debuginfo=2" ]
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Lean 4
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let lean = A.leanToolchain "lean"
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- PureScript
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let purescript = A.purescriptToolchain "purescript"
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- Execution Platforms
@@ -49,7 +78,11 @@ let genrule = A.genruleToolchain "genrule"
 
 in  { rules =
         [ S.cxxToolchain cxx
+        , S.nvToolchain nv
         , S.haskellToolchain haskell
+        , S.rustToolchain rust
+        , S.leanToolchain lean
+        , S.purescriptToolchain purescript
         , S.executionPlatform lre
         , S.executionPlatform local
         , S.pythonBootstrap pythonBootstrap
@@ -59,13 +92,16 @@ in  { rules =
         # Generated from BUILD.dhall
         # Toolchain definitions for sensenet
         #
-        # Note: nv_toolchain, rust_toolchain, lean_toolchain, purescript_toolchain
-        # are not yet ported to Dhall. Add them here when needed.
+        # All toolchains defined in Dhall - zero handwritten starlark.
 
         load(":cxx.bzl", "llvm_toolchain")
+        load(":nv.bzl", "nv_toolchain")
         load(":haskell.bzl", "haskell_toolchain")
+        load(":rust.bzl", "rust_toolchain")
+        load(":lean.bzl", "lean_toolchain")
+        load(":purescript.bzl", "purescript_toolchain")
         load(":execution.bzl", "lre_execution_platform", "host_configuration")
-        load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
-        load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
+        load("@aleph//toolchains:python.bzl", "system_python_bootstrap_toolchain")
+        load("@aleph//toolchains:genrule.bzl", "system_genrule_toolchain")
         ''
     }

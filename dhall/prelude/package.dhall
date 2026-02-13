@@ -52,6 +52,7 @@ in  { -- Types
     , purescriptBinary = PS.binary
     , PureScriptLibrary = PS.Library
     , purescriptLibrary = PS.library
+    , SrcSpec = PS.SrcSpec
     -- Toolchains
     , CxxToolchain = TC.CxxToolchain
     , cxxToolchain = TC.cxxToolchain
@@ -63,6 +64,14 @@ in  { -- Types
     , pythonBootstrap = TC.pythonBootstrap
     , GenruleToolchain = TC.GenruleToolchain
     , genruleToolchain = TC.genruleToolchain
+    , NvToolchain = TC.NvToolchain
+    , nvToolchain = TC.nvToolchain
+    , RustToolchain = TC.RustToolchain
+    , rustToolchain = TC.rustToolchain
+    , LeanToolchain = TC.LeanToolchain
+    , leanToolchain = TC.leanToolchain
+    , PureScriptToolchain = TC.PureScriptToolchain
+    , purescriptToolchain = TC.purescriptToolchain
     -- Backward compat (short names for common case)
     , Binary = C.Binary
     , binary = C.binary

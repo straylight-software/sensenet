@@ -146,11 +146,13 @@ let haskellFFIBinary
 let leanBinary
     : L.Binary -> Text
     = \(b : L.Binary) ->
-        ''
+        let rootModule = merge { Some = \(m : Text) -> "    root_module = ${q m},\n"
+                               , None = "" } b.root_module
+        in ''
         lean_binary(
             name = ${q b.name},
             srcs = ${list b.srcs},
-            visibility = ${vis b.vis},
+        ${rootModule}    visibility = ${vis b.vis},
         )
         ''
 
@@ -198,11 +200,16 @@ let nvLibrary
 -- PureScript
 -- ══════════════════════════════════════════════════════════════════════════════
 
+-- Helper for SrcSpec (explicit list or glob pattern)
+let srcSpec
+    : PS.SrcSpec -> Text
+    = \(s : PS.SrcSpec) ->
+        merge { Explicit = \(xs : List Text) -> list xs
+              , Glob = \(pattern : Text) -> "glob([${q pattern}])" } s
+
 let purescriptApp
     : PS.App -> Text
     = \(a : PS.App) ->
-        let packagesDhall = merge { Some = \(f : Text) -> "    packages_dhall = ${q f},\n"
-                                  , None = "" } a.packages_dhall
         let indexHtml = merge { Some = \(f : Text) -> "    index_html = ${q f},\n"
                               , None = "" } a.index_html
         let styleCss = merge { Some = \(f : Text) -> "    style_css = ${q f},\n"
@@ -210,9 +217,9 @@ let purescriptApp
         in ''
         purescript_app(
             name = ${q a.name},
-            srcs = ${list a.srcs},
-            spago_dhall = ${q a.spago_dhall},
-        ${packagesDhall}    main = ${q a.main},
+            srcs = ${srcSpec a.srcs},
+            spago_yaml = ${q a.spago_yaml},
+            main = ${q a.main},
         ${indexHtml}${styleCss}    visibility = ${vis a.vis},
         )
         ''
@@ -220,14 +227,12 @@ let purescriptApp
 let purescriptBinary
     : PS.Binary -> Text
     = \(b : PS.Binary) ->
-        let packagesDhall = merge { Some = \(f : Text) -> "    packages_dhall = ${q f},\n"
-                                  , None = "" } b.packages_dhall
-        in ''
+        ''
         purescript_binary(
             name = ${q b.name},
-            srcs = ${list b.srcs},
-            spago_dhall = ${q b.spago_dhall},
-        ${packagesDhall}    main = ${q b.main},
+            srcs = ${srcSpec b.srcs},
+            spago_yaml = ${q b.spago_yaml},
+            main = ${q b.main},
             visibility = ${vis b.vis},
         )
         ''
@@ -240,7 +245,7 @@ let purescriptLibrary
         in ''
         purescript_library(
             name = ${q lib.name},
-            srcs = ${list lib.srcs},
+            srcs = ${srcSpec lib.srcs},
         ${spagoYaml}    visibility = ${vis lib.vis},
         )
         ''
@@ -325,6 +330,52 @@ let genruleToolchain
         )
         ''
 
+let nvToolchain
+    : TC.NvToolchain -> Text
+    = \(t : TC.NvToolchain) ->
+        ''
+        nv_toolchain(
+            name = ${q t.name},
+            nv_archs = ${list t.nv_archs},
+            nvidia_sdk_path = ${q t.nvidia_sdk_path},
+            nvidia_sdk_include = ${q t.nvidia_sdk_include},
+            nvidia_sdk_lib = ${q t.nvidia_sdk_lib},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let rustToolchain
+    : TC.RustToolchain -> Text
+    = \(t : TC.RustToolchain) ->
+        ''
+        rust_toolchain(
+            name = ${q t.name},
+            default_edition = ${q t.default_edition},
+            rustc_flags = ${list t.rustc_flags},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let leanToolchain
+    : TC.LeanToolchain -> Text
+    = \(t : TC.LeanToolchain) ->
+        ''
+        lean_toolchain(
+            name = ${q t.name},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let purescriptToolchain
+    : TC.PureScriptToolchain -> Text
+    = \(t : TC.PureScriptToolchain) ->
+        ''
+        purescript_toolchain(
+            name = ${q t.name},
+            visibility = ${vis t.vis},
+        )
+        ''
+
 in  { q, list, flakes, locals
     , cxxStd, rustEdition, vis, Flags
     -- C++
@@ -344,6 +395,7 @@ in  { q, list, flakes, locals
     -- Toolchains
     , cxxToolchain, haskellToolchain, executionPlatform
     , pythonBootstrap, genruleToolchain
+    , nvToolchain, rustToolchain, leanToolchain, purescriptToolchain
     -- backward compat
     , std, binary, deps
     }

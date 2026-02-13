@@ -10,6 +10,7 @@ bin/
 # All BUCK files are generated, users only edit BUILD.dhall
 src/**/BUCK
 toolchains/BUCK
+platforms/BUCK
 /BUCK
 
 # GHC build artifacts
