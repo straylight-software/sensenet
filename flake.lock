@@ -187,11 +187,11 @@
     "ghc-source-gen-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1770666256,
-        "narHash": "sha256-yD8BRFCkZft7wQZ9Wj25o4zkXYBIYmSAHj2OJvyk2lA=",
+        "lastModified": 1767727283,
+        "narHash": "sha256-TsPEK0I5c9FYqZp0lAzQNogqEv1LPMzdjFO9EtOm/Ls=",
         "owner": "google",
         "repo": "ghc-source-gen",
-        "rev": "985e3ad928e3c02c425f92f406d27d0fb13c8564",
+        "rev": "79ecc01213131da03a7198fc377606ce72ac037a",
         "type": "github"
       },
       "original": {
@@ -311,11 +311,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1770915725,
-        "narHash": "sha256-v05TnA+SXH32T0NaA+Sjr5qpwrZvyqClTw0CSzhFO4c=",
+        "lastModified": 1770034444,
+        "narHash": "sha256-MRQb1vb78XKrOqb4QbKD6SgJzNlBLwXbdVZwitSuO9c=",
         "owner": "TraceMachina",
         "repo": "nativelink",
-        "rev": "6ffab5f049666158b14e277653d8ce6b487c2ff6",
+        "rev": "85385e68271d78b2b72a24098202aade157a5553",
         "type": "github"
       },
       "original": {
@@ -332,17 +332,18 @@
         ]
       },
       "locked": {
-        "lastModified": 1770927881,
-        "narHash": "sha256-jAbdEW0zWh2uckZFA49GLX5TMqluZZPUQPSpVn89qN4=",
-        "owner": "straylight-software",
-        "repo": "nix-compile",
-        "rev": "7954785e214d2d999d6c47414496fb1405a7cf36",
-        "type": "github"
+        "lastModified": 1770939475,
+        "narHash": "sha256-h4f0eazkW2av4dkpoUSSei1rJYmOyrjLZ0E+twGFO3c=",
+        "ref": "b7r6/nixos-sandbox-relaxed",
+        "rev": "5eb1b9a6aa9f4139b153afbe7f3aa425ed8de409",
+        "revCount": 3,
+        "type": "git",
+        "url": "ssh://git@github.com/straylight-software/nix-compile.git"
       },
       "original": {
-        "owner": "straylight-software",
-        "repo": "nix-compile",
-        "type": "github"
+        "ref": "b7r6/nixos-sandbox-relaxed",
+        "type": "git",
+        "url": "ssh://git@github.com/straylight-software/nix-compile.git"
       }
     },
     "nix2container": {
@@ -444,13 +445,29 @@
         "type": "github"
       }
     },
-    "nixpkgs_2": {
+    "nixpkgs-master": {
       "locked": {
-        "lastModified": 1770562336,
-        "narHash": "sha256-ub1gpAONMFsT/GU2hV6ZWJjur8rJ6kKxdm9IlCT0j84=",
+        "lastModified": 1767602469,
+        "narHash": "sha256-sO6SHAkw2o2frVHwke8cafuqCUgwQrypQQO6whmeuJM=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "d6c71932130818840fc8fe9509cf50be8c64634f",
+        "rev": "9af67fcf0751de2bae81807638a45f19db31d44e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "master",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1768127708,
+        "narHash": "sha256-1Sm77VfZh3mU0F5OqKABNLWxOuDeHIlcFjsXeeiPazs=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "ffbc9f8cbaacfb331b6017d5a5abb21a492c9a38",
         "type": "github"
       },
       "original": {
@@ -462,11 +479,11 @@
     },
     "nixpkgs_3": {
       "locked": {
-        "lastModified": 1770107345,
-        "narHash": "sha256-tbS0Ebx2PiA1FRW8mt8oejR0qMXmziJmPaU1d4kYY9g=",
+        "lastModified": 1767364772,
+        "narHash": "sha256-fFUnEYMla8b7UKjijLnMe+oVFOz6HjijGGNS1l7dYaQ=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "4533d9293756b63904b7238acb84ac8fe4c8c2c4",
+        "rev": "16c7794d0a28b5a37904d55bcca36003b9109aaa",
         "type": "github"
       },
       "original": {
@@ -483,14 +500,15 @@
         "llvm-project": "llvm-project_2",
         "nixpkgs": [
           "nixpkgs"
-        ]
+        ],
+        "nixpkgs-master": "nixpkgs-master"
       },
       "locked": {
-        "lastModified": 1770925697,
-        "narHash": "sha256-4/fn8M6ijwvFvzoh7Hy8ihn5JPnvcKaEcx72w2uAFhc=",
+        "lastModified": 1770262007,
+        "narHash": "sha256-JLCT16i7w5O4wZh119NUqciYKnoqMY3XCljmbiwhDOw=",
         "owner": "weyl-ai",
         "repo": "nvidia-sdk",
-        "rev": "94339be57fba64fe091c5b796c4d4e26e44c6412",
+        "rev": "4ce3b9cada85aca1ef818d8183aa0d50cddc5eb5",
         "type": "github"
       },
       "original": {
@@ -584,11 +602,11 @@
         "nixpkgs": "nixpkgs_3"
       },
       "locked": {
-        "lastModified": 1770228511,
-        "narHash": "sha256-wQ6NJSuFqAEmIg2VMnLdCnUc0b7vslUohqqGGD+Fyxk=",
+        "lastModified": 1769691507,
+        "narHash": "sha256-8aAYwyVzSSwIhP2glDhw/G0i5+wOrren3v6WmxkVonM=",
         "owner": "numtide",
         "repo": "treefmt-nix",
-        "rev": "337a4fe074be1042a35086f15481d763b8ddc0e7",
+        "rev": "28b19c5844cc6e2257801d43f2772a4b4c050a1b",
         "type": "github"
       },
       "original": {

@@ -1,5 +1,5 @@
 {
-  description = "sense/net — minimal viable nix: fmt, lint, buck2, remote, typed";
+  description = "sense/net — minimal viable nix: fmt, lint, sensenet, remote, typed";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -19,7 +19,7 @@
       flake = false;
     };
 
-    # NativeLink - Local/Remote Execution for Buck2
+    # NativeLink - Local/Remote Execution
     nativelink.url = "github:TraceMachina/nativelink";
 
     # ghc-source-gen from git (Hackage version doesn't support GHC 9.12)
@@ -48,9 +48,18 @@
       systems = import inputs.systems;
 
       imports = [
+        inputs.nix-compile.flakeModules.default
         ./nix/modules/flake/_index.nix
-        (import ./nix/modules/flake/buck2/default.nix { inherit inputs; })
+        (import ./nix/modules/flake/sensenet/default.nix { inherit inputs; })
       ];
+
+      nix-compile = {
+        enable = true;
+        profile = "strict";
+        layout = "straylight";
+        paths = [ "nix" ];
+        pre-commit.enable = true;
+      };
 
       # Export overlays
       flake.overlays = (import ./nix/overlays inputs).flake.overlays;
@@ -60,7 +69,10 @@
         default = import ./nix/modules/flake/default.nix { inherit inputs; };
         formatter = import ./nix/modules/flake/formatter.nix { inherit inputs; };
         lint = ./nix/modules/flake/lint.nix;
-        buck2 = import ./nix/modules/flake/buck2/default.nix { inherit inputs; };
+        # Primary: sensenet
+        sensenet = import ./nix/modules/flake/sensenet/default.nix { inherit inputs; };
+        # Backward compat: buck2 (deprecated, use sensenet)
+        buck2 = import ./nix/modules/flake/sensenet/default.nix { inherit inputs; };
         buck2-old = ./nix/modules/flake/buck2.nix;
         build = ./nix/modules/flake/build/flake-module.nix;
         devshell = ./nix/modules/flake/devshell.nix;
@@ -72,6 +84,8 @@
 
       # Export lib for downstream use
       flake.lib = import ./nix/lib { inherit (inputs.nixpkgs) lib; } // {
+        sensenet = import ./nix/lib/buck2.nix { inherit inputs; };
+        # Backward compat
         buck2 = import ./nix/lib/buck2.nix { inherit inputs; };
       };
 
@@ -93,8 +107,8 @@
         {
           packages.sense-lint = pkgs.callPackage ./nix/packages/sense-lint.nix { };
 
-          # Declare examples as a Buck2 project
-          buck2.projects.examples = {
+          # Declare examples as a Sensenet project
+          sensenet.projects.examples = {
             src = ./.;
             targets = [
               "//src/examples/cxx:hello-cxx"
@@ -108,7 +122,7 @@
               cxx.enable = true;
               haskell = {
                 enable = true;
-                ghcPackages = ghc912;
+                ghcpackages = ghc912;
                 packages = hp: [
                   hp.aeson
                   hp.bytestring
@@ -130,16 +144,16 @@
               nv.enable = true;
               purescript.enable = true;
             };
-            remoteExecution = {
+            remoteexecution = {
               enable = true;
               scheduler = "sense-scheduler.fly.dev";
-              schedulerPort = 443;
+              schedulerport = 443;
               cas = "sense-cas.fly.dev";
-              casPort = 443;
+              casport = 443;
               tls = true;
-              instanceName = "main";
+              instancename = "main";
             };
-            devShellPackages = [
+            devshellpackages = [
               pkgs.ast-grep
               pkgs.dhall
               pkgs.dhall-json
@@ -148,9 +162,9 @@
           };
 
           # Example with NativeLink remote execution enabled
-          # Usage: nix develop .#buck2-examples-remote
+          # Usage: nix develop .#sensenet-examples-remote
           #        buck2 build --prefer-remote //src/examples/cxx:hello-cxx
-          buck2.projects.examples-remote = {
+          sensenet.projects.examples-remote = {
             src = ./.;
             targets = [
               "//src/examples/cxx:hello-cxx"
@@ -161,7 +175,7 @@
               cxx.enable = true;
               haskell = {
                 enable = true;
-                ghcPackages = ghc912;
+                ghcpackages = ghc912;
                 packages = hp: [
                   hp.aeson
                   hp.bytestring
@@ -171,14 +185,14 @@
               };
               rust.enable = true;
             };
-            remoteExecution = {
+            remoteexecution = {
               enable = true;
               scheduler = "sense-scheduler.fly.dev";
-              schedulerPort = 443;
+              schedulerport = 443;
               cas = "sense-cas.fly.dev";
-              casPort = 443;
+              casport = 443;
               tls = true;
-              instanceName = "main";
+              instancename = "main";
             };
           };
 
