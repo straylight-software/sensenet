@@ -135,6 +135,24 @@
         "nixpkgs-lib": "nixpkgs-lib_3"
       },
       "locked": {
+        "lastModified": 1769996383,
+        "narHash": "sha256-AnYjnFWgS49RlqX7LrC4uA+sCCDBj0Ry/WOJ5XWAsa0=",
+        "owner": "hercules-ci",
+        "repo": "flake-parts",
+        "rev": "57928607ea566b5db3ad13af0e57e921e6b12381",
+        "type": "github"
+      },
+      "original": {
+        "owner": "hercules-ci",
+        "repo": "flake-parts",
+        "type": "github"
+      }
+    },
+    "flake-parts_4": {
+      "inputs": {
+        "nixpkgs-lib": "nixpkgs-lib_4"
+      },
+      "locked": {
         "lastModified": 1767602221,
         "narHash": "sha256-wl3P4WioICNY9SEvClT4JLAWFtItk3CbFNm/FmeeWlI=",
         "owner": "hercules-ci",
@@ -306,6 +324,28 @@
         "type": "github"
       }
     },
+    "nix-compile": {
+      "inputs": {
+        "flake-parts": "flake-parts_3",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1770939475,
+        "narHash": "sha256-h4f0eazkW2av4dkpoUSSei1rJYmOyrjLZ0E+twGFO3c=",
+        "ref": "b7r6/nixos-sandbox-relaxed",
+        "rev": "5eb1b9a6aa9f4139b153afbe7f3aa425ed8de409",
+        "revCount": 3,
+        "type": "git",
+        "url": "ssh://git@github.com/straylight-software/nix-compile.git"
+      },
+      "original": {
+        "ref": "b7r6/nixos-sandbox-relaxed",
+        "type": "git",
+        "url": "ssh://git@github.com/straylight-software/nix-compile.git"
+      }
+    },
     "nix2container": {
       "inputs": {
         "flake-utils": "flake-utils",
@@ -377,6 +417,21 @@
     },
     "nixpkgs-lib_3": {
       "locked": {
+        "lastModified": 1769909678,
+        "narHash": "sha256-cBEymOf4/o3FD5AZnzC3J9hLbiZ+QDT/KDuyHXVJOpM=",
+        "owner": "nix-community",
+        "repo": "nixpkgs.lib",
+        "rev": "72716169fe93074c333e8d0173151350670b824c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "nixpkgs.lib",
+        "type": "github"
+      }
+    },
+    "nixpkgs-lib_4": {
+      "locked": {
         "lastModified": 1765674936,
         "narHash": "sha256-k00uTP4JNfmejrCLJOwdObYC9jHRrr/5M/a/8L2EIdo=",
         "owner": "nix-community",
@@ -441,7 +496,7 @@
     "nvidia-sdk": {
       "inputs": {
         "agenix": "agenix",
-        "flake-parts": "flake-parts_3",
+        "flake-parts": "flake-parts_4",
         "llvm-project": "llvm-project_2",
         "nixpkgs": [
           "nixpkgs"
@@ -469,6 +524,7 @@
         "ghc-source-gen-src": "ghc-source-gen-src",
         "llvm-project": "llvm-project",
         "nativelink": "nativelink",
+        "nix-compile": "nix-compile",
         "nixpkgs": "nixpkgs_2",
         "nvidia-sdk": "nvidia-sdk",
         "systems": "systems_3",

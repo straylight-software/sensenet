@@ -1,11 +1,11 @@
-# nix/modules/flake/buck2/toolchain.nix
+# nix/modules/flake/sensenet/toolchains.nix
 #
-# Generate .buckconfig.local content for a Buck2 project.
+# Generate .buckconfig.local content for a Sensenet project.
 #
 { lib, pkgs }:
 {
   # Generate buckconfig.local INI content from toolchain config
-  mkBuckconfigLocal =
+  mkbuckconfiglocal =
     {
       cxx ? null,
       haskell ? null,
@@ -14,7 +14,7 @@
       python ? null,
       nv ? null,
       purescript ? null,
-      remoteExecution ? null,
+      remoteexecution ? null,
       extra ? "",
     }:
     let
@@ -26,7 +26,7 @@
         python
         nv
         purescript
-        remoteExecution
+        remoteexecution
         extra
       ];
     in
@@ -37,10 +37,10 @@
     '';
 
   # C++ toolchain section
-  mkCxxSection =
-    { llvmPackages }:
+  mkcxxsection =
+    { llvmpackages }:
     let
-      llvm = llvmPackages;
+      llvm = llvmpackages;
       inherit (pkgs) gcc;
       gcc-unwrapped = gcc.cc;
       gcc-version = gcc-unwrapped.version;
@@ -64,21 +64,21 @@
     '';
 
   # Haskell toolchain section
-  mkHaskellSection =
-    { ghc, ghcVersion }:
+  mkhaskellsection =
+    { ghc, ghcversion }:
     ''
 
       [haskell]
       ghc = ${ghc}/bin/ghc
       ghc_pkg = ${ghc}/bin/ghc-pkg
       haddock = ${ghc}/bin/haddock
-      ghc_version = ${ghcVersion}
-      ghc_lib_dir = ${ghc}/lib/ghc-${ghcVersion}/lib
-      global_package_db = ${ghc}/lib/ghc-${ghcVersion}/lib/package.conf.d
+      ghc_version = ${ghcversion}
+      ghc_lib_dir = ${ghc}/lib/ghc-${ghcversion}/lib
+      global_package_db = ${ghc}/lib/ghc-${ghcversion}/lib/package.conf.d
     '';
 
   # Rust toolchain section
-  mkRustSection = _: ''
+  mkrustsection = _: ''
 
     [rust]
     rustc = ${pkgs.rustc}/bin/rustc
@@ -88,7 +88,7 @@
   '';
 
   # Lean toolchain section
-  mkLeanSection =
+  mkleansection =
     _:
     let
       lean = pkgs.lean4;
@@ -103,7 +103,7 @@
     '';
 
   # Python toolchain section
-  mkPythonSection =
+  mkpythonsection =
     {
       python,
       pybind11 ? null,
@@ -111,9 +111,9 @@
     let
       # Handle both plain python and python.withPackages results
       # withPackages returns an env that wraps the original python
-      pythonPkg = python.passthru.pythonOnBuildForHost or python.passthru.python or python;
-      pyVersion = lib.versions.majorMinor pythonPkg.version;
-      pybind11Section = lib.optionalString (pybind11 != null) ''
+      pythonpkg = python.passthru.pythonOnBuildForHost or python.passthru.python or python;
+      pyversion = lib.versions.majorMinor pythonpkg.version;
+      pybind11section = lib.optionalString (pybind11 != null) ''
         pybind11_include = ${pybind11}/include
       '';
     in
@@ -122,11 +122,11 @@
       [python]
       # Python toolchain from Nix
       interpreter = ${python}/bin/python3
-      python_include = ${python}/include/python${pyVersion}
-      ${pybind11Section}'';
+      python_include = ${python}/include/python${pyversion}
+      ${pybind11section}'';
 
   # NVIDIA toolchain section
-  mkNvSection =
+  mknvsection =
     {
       nvidia-sdk,
       clang-unwrapped,
@@ -148,7 +148,7 @@
     '';
 
   # PureScript toolchain section
-  mkPureScriptSection = _: ''
+  mkpurescriptsection = _: ''
 
     [purescript]
     purs = ${pkgs.purescript}/bin/purs
@@ -157,17 +157,17 @@
   '';
 
   # Remote Execution section (NativeLink)
-  mkRemoteExecutionSection =
+  mkremoteexecutionsection =
     {
       scheduler,
-      schedulerPort,
+      schedulerport,
       cas,
-      casPort,
+      casport,
       tls,
-      instanceName,
+      instancename,
     }:
     let
-      tlsStr = if tls then "true" else "false";
+      tlsstr = if tls then "true" else "false";
     in
     ''
 
@@ -179,11 +179,11 @@
       execution_platforms = toolchains//:lre
 
       [buck2_re_client]
-      engine_address = grpc://${scheduler}:${toString schedulerPort}
-      cas_address = grpc://${cas}:${toString casPort}
-      action_cache_address = grpc://${cas}:${toString casPort}
-      tls = ${tlsStr}
-      instance_name = ${instanceName}
+      engine_address = grpc://${scheduler}:${toString schedulerport}
+      cas_address = grpc://${cas}:${toString casport}
+      action_cache_address = grpc://${cas}:${toString casport}
+      tls = ${tlsstr}
+      instance_name = ${instancename}
 
       [buck2_re_client.platform_properties]
       OSFamily = linux
