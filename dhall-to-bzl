@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Generate .bzl files from Dhall rule definitions
+# Usage: ./dhall-to-bzl dhall/rules/toolchains/execution.dhall > toolchains/execution.bzl
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "Usage: $0 <rule.dhall>" >&2
+    exit 1
+fi
+
+dhall text <<< "(${1}).render"

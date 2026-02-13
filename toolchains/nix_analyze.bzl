@@ -1,5 +1,4 @@
-# toolchains/nix_analyze.bzl
-#
+# Generated from Dhall - DO NOT EDIT
 # Nix integration for Buck2.
 #
 # Provides nix_library which dynamically resolves Nix dependencies using
@@ -14,40 +13,10 @@
 #       linker_flags = ["@$(location :lib)"],
 #   )
 
-def _nix_library_impl(ctx):
-    """
-    Resolve a nix flake ref to compiler flags.
-    Returns a response file containing the flags.
-    """
-    flake_ref = ctx.attrs.flake_ref
-    
-    flags_file = ctx.actions.declare_output("flags.rsp")
-    analyzer = ctx.attrs._analyzer[RunInfo]
-    
-    cmd = cmd_args(
-        analyzer,
-        "resolve",
-        flake_ref,
-    )
-    
-    # nix-analyze resolve output is already formatted flags
-    ctx.actions.run(
-        cmd_args("sh", "-c", cmd_args(cmd, ">", flags_file.as_output(), delimiter=" ")),
-        category = "nix_resolve",
-        identifier = flake_ref,
-    )
-    
-    return [
-        DefaultInfo(default_output = flags_file),
-    ]
 
-nix_library = rule(
-    impl = _nix_library_impl,
-    attrs = {
-        "flake_ref": attrs.string(),
-        "_analyzer": attrs.exec_dep(default = "root//src/nix-analyze:nix-analyze"),
-    },
-)
+
+
+
 
 def nix_cxx_binary(name, deps = [], preprocessor_flags = [], linker_flags = [], **kwargs):
     """
@@ -85,3 +54,40 @@ def nix_cxx_binary(name, deps = [], preprocessor_flags = [], linker_flags = [], 
         linker_flags = nix_flags + linker_flags,
         **kwargs
     )
+
+
+
+
+def _nix_library_impl(ctx: AnalysisContext) -> list[Provider]:
+    """"""
+    flake_ref = ctx.attrs.flake_ref
+    
+    flags_file = ctx.actions.declare_output("flags.rsp")
+    analyzer = ctx.attrs._analyzer[RunInfo]
+    
+    cmd = cmd_args(
+        analyzer,
+        "resolve",
+        flake_ref,
+    )
+    
+    # nix-analyze resolve output is already formatted flags
+    ctx.actions.run(
+        cmd_args("sh", "-c", cmd_args(cmd, ">", flags_file.as_output(), delimiter=" ")),
+        category = "nix_resolve",
+        identifier = flake_ref,
+    )
+    
+    return [
+        DefaultInfo(default_output = flags_file),
+    ]
+
+
+nix_library = rule(
+    impl = _nix_library_impl,
+    attrs = {
+        "flake_ref": attrs.string(),
+        "_analyzer": attrs.exec_dep(default = "root//src/nix-analyze:nix-analyze"),
+    },
+)
+

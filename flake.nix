@@ -7,10 +7,10 @@
     flake-parts.url = "github:hercules-ci/flake-parts";
     treefmt-nix.url = "github:numtide/treefmt-nix";
 
-    # LLVM 22 from git - required for nv toolchain
+    # LLVM 22 with SM120 Blackwell support - straylight fork
     llvm-project = {
-      url = "github:llvm/llvm-project/bb1f220d534b0f6d80bea36662f5188ff11c2e54";
-      flake = false;
+      url = "github:straylight-software/llvm-project";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
 
     # Buck2 prelude (straylight fork with NVIDIA support)
@@ -29,10 +29,11 @@
       flake = false;
     };
 
-    # NVIDIA SDK - CUDA 13.0 runtime libraries for libtorch
+    # NVIDIA SDK - CUDA 13.1 runtime libraries (internal, dev branch)
     nvidia-sdk = {
-      url = "github:weyl-ai/nvidia-sdk";
+      url = "git+ssh://git@github.com/straylight-software/nvidia-sdk.git?ref=dev";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.llvm-project.follows = "llvm-project";
     };
 
     # nix-compile - Type inference and static analysis for Nix
@@ -136,9 +137,9 @@
             };
             remoteexecution = {
               enable = true;
-              scheduler = "sense-scheduler.fly.dev";
+              scheduler = "aleph-scheduler.fly.dev";
               schedulerport = 443;
-              cas = "sense-cas.fly.dev";
+              cas = "aleph-cas.fly.dev";
               casport = 443;
               tls = true;
               instancename = "main";
@@ -160,6 +161,7 @@
               "//src/examples/cxx:hello-cxx"
               "//src/examples/haskell:hello-hs"
               "//src/examples/rust:hello-rs"
+              "//src/examples/lean:hello-lean"
             ];
             toolchain = {
               cxx.enable = true;
@@ -174,12 +176,13 @@
                 ];
               };
               rust.enable = true;
+              lean.enable = true;
             };
             remoteexecution = {
               enable = true;
-              scheduler = "sense-scheduler.fly.dev";
+              scheduler = "aleph-scheduler.fly.dev";
               schedulerport = 443;
-              cas = "sense-cas.fly.dev";
+              cas = "aleph-cas.fly.dev";
               casport = 443;
               tls = true;
               instancename = "main";

@@ -1,25 +1,35 @@
-# Generated from Dhall - DO NOT EDIT
-# Fetch and build crates from crates.io
-#
-# Simple model:
-#   1. http_archive fetches the crate tarball
-#   2. rust_crate compiles it with proper flags
-#   3. Dependencies are just deps=[]
-#
-# Example:
-#   crates.io_crate(
-#       name = "serde",
-#       version = "1.0.228",
-#       sha256 = "...",
-#       features = ["derive"],
-#       deps = [":serde_derive"],
-#   )
+--| Fetch and build crates from crates.io
+--|
+--| Simple model:
+--|   1. http_archive fetches the crate tarball
+--|   2. rust_crate compiles it with proper flags
+--|   3. Dependencies are just deps=[]
+--|
+--| Note: crates_io is a macro and included in globals.
 
+let R = ../Rule.dhall
+let S = ../to-starlark.dhall
 
-load("@straylight_prelude//http_archive.bzl", "http_archive")
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Providers
+-- ══════════════════════════════════════════════════════════════════════════════
 
-RustCrateInfo = provider(fields = ["rlib", "rmeta", "crate_name", "edition", "features", "is_proc_macro", "transitive_deps"])
+let rustCrateInfo =
+      R.simpleProvider "RustCrateInfo"
+        [ "rlib"           -- Compiled .rlib
+        , "rmeta"          -- Metadata for pipelining
+        , "crate_name"     -- Crate name (underscores)
+        , "edition"        -- Rust edition
+        , "features"       -- Enabled features
+        , "is_proc_macro"  -- Is this a proc-macro crate?
+        , "transitive_deps" -- List of all transitive rlib artifacts
+        ]
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Globals (helpers and macros)
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let globals = ''
 def _crate_url(name: str, version: str) -> str:
     """Get crates.io download URL."""
     return "https://static.crates.io/crates/{}/{}/download".format(name, version)
@@ -109,12 +119,15 @@ def crates_io(
         generated_files = generated_files,
         visibility = visibility,
     )
+''
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- rust_crate
+-- ══════════════════════════════════════════════════════════════════════════════
 
-
-
-def _rust_crate_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let rustCrate =
+      { impl =
+          R.ruleImpl "rust_crate" ''
     rustc = read_root_config("rust", "rustc", "rustc")
     
     # Crate name with underscores (Rust convention)
@@ -219,22 +232,50 @@ def _rust_crate_impl(ctx: AnalysisContext) -> list[Provider]:
             transitive_deps = transitive_deps,
         ),
     ]
+''
+      , attrs =
+          [ R.attr "src" (R.AttrType.Dep {=})
+          , R.optionStringAttr "crate_name"
+          , R.optionStringAttr "crate_root"
+          , R.stringAttr "edition" (Some "2021")
+          , R.stringListAttr "features"
+          , R.stringListAttr "cfg"
+          , R.depListAttr "deps"
+          , R.boolAttr "proc_macro" False
+          , R.stringListAttr "rustc_flags"
+          , R.stringDictAttr "env"
+          , R.stringDictAttr "generated_files"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Complete file
+-- ══════════════════════════════════════════════════════════════════════════════
 
-rust_crate = rule(
-    impl = _rust_crate_impl,
-    attrs = {
-        "src": attrs.dep(),
-        "crate_name": attrs.option(attrs.string(), default = None),
-        "crate_root": attrs.option(attrs.string(), default = None),
-        "edition": attrs.string(default = "2021"),
-        "features": attrs.list(attrs.string(), default = []),
-        "cfg": attrs.list(attrs.string(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "proc_macro": attrs.bool(default = False),
-        "rustc_flags": attrs.list(attrs.string(), default = []),
-        "env": attrs.dict(attrs.string(), attrs.string(), default = {}),
-        "generated_files": attrs.dict(attrs.string(), attrs.string(), default = {}),
-    },
-)
+let file =
+      R.bzlFile
+        with header = ''
+# Fetch and build crates from crates.io
+#
+# Simple model:
+#   1. http_archive fetches the crate tarball
+#   2. rust_crate compiles it with proper flags
+#   3. Dependencies are just deps=[]
+#
+# Example:
+#   crates.io_crate(
+#       name = "serde",
+#       version = "1.0.228",
+#       sha256 = "...",
+#       features = ["derive"],
+#       deps = [":serde_derive"],
+#   )
+''
+        with loads =
+            [ R.load "@straylight_prelude//http_archive.bzl" ["http_archive"]
+            ]
+        with globals = globals
+        with providers = [ rustCrateInfo ]
+        with rules = [ rustCrate ]
 
+in  { file, render = S.renderBzlFile file }

@@ -1,39 +1,28 @@
-# Generated from Dhall - DO NOT EDIT
-# Haskell toolchain and rules using GHC from Nix.
-#
-# Uses ghcWithPackages from the Nix devshell, which includes all
-# dependencies. The bin/ghc wrapper filters Mercury-specific flags
-# that stock GHC doesn't understand.
-#
-# Paths are read from .buckconfig.local [haskell] section.
-#
-# Rules:
-#   haskell_toolchain  - toolchain definition
-#   haskell_library    - compile to .hi/.o with HaskellLibraryInfo
-#   haskell_binary     - executable from sources + deps
-#   haskell_c_library  - FFI exports callable from C/C++
-#   haskell_ffi_binary - Haskell calling C/C++ via FFI
-#   haskell_script     - single-file scripts
-#   haskell_test       - test executable
+--| Haskell toolchain and rules using GHC from Nix
+--|
+--| Uses ghcWithPackages from the Nix devshell, which includes all
+--| dependencies. The bin/ghc wrapper filters Mercury-specific flags
+--| that stock GHC doesn't understand.
+--|
+--| Paths are read from .buckconfig.local [haskell] section.
+--|
+--| Rules:
+--|   haskell_toolchain  - toolchain definition
+--|   haskell_library    - compile to .hi/.o with HaskellLibraryInfo
+--|   haskell_binary     - executable from sources + deps
+--|   haskell_c_library  - FFI exports callable from C/C++
+--|   haskell_ffi_binary - Haskell calling C/C++ via FFI
+--|   haskell_script     - single-file scripts
+--|   haskell_test       - test executable
 
+let R = ../Rule.dhall
+let S = ../to-starlark.dhall
 
-load("@prelude//haskell:toolchain.bzl", "HaskellToolchainInfo", "HaskellPlatformInfo")
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Configuration (globals)
+-- ══════════════════════════════════════════════════════════════════════════════
 
-HaskellLibraryInfo = provider(fields = {
-    "package_name": provider_field(str),
-    "hi_dir": provider_field(Artifact | None, default = None),
-    "object_dir": provider_field(Artifact | None, default = None),
-    "stub_dir": provider_field(Artifact | None, default = None),
-    "hie_dir": provider_field(Artifact | None, default = None),
-    "objects": provider_field(list, default = []),
-    "modules": provider_field(list, default = []),
-})
-
-HaskellIncludeInfo = provider(fields = {
-    "include_dirs": provider_field(list, default = []),
-})
-
-
+let globals = ''
 # Mandatory compiler flags - applied to all Haskell compilation
 # These are non-negotiable and cannot be overridden by targets
 MANDATORY_GHC_FLAGS = [
@@ -49,12 +38,35 @@ def _get_ghc_pkg() -> str:
 
 def _get_package_db() -> str | None:
     return read_root_config("haskell", "global_package_db", None)
+''
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Providers
+-- ══════════════════════════════════════════════════════════════════════════════
 
+let haskellLibraryInfo =
+      R.typedProvider "HaskellLibraryInfo"
+        [ R.typedField "package_name" "str"
+        , R.typedFieldDefault "hi_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "object_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "stub_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "hie_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "objects" "list" "[]"
+        , R.typedFieldDefault "modules" "list" "[]"
+        ]
 
+let haskellIncludeInfo =
+      R.typedProvider "HaskellIncludeInfo"
+        [ R.typedFieldDefault "include_dirs" "list" "[]"
+        ]
 
-def _haskell_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
-    """Haskell toolchain with paths from .buckconfig.local"""
+-- ══════════════════════════════════════════════════════════════════════════════
+-- haskell_toolchain
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let haskellToolchain =
+      { impl =
+          (R.ruleImpl "haskell_toolchain" ''
     ghc = read_root_config("haskell", "ghc", "bin/ghc")
     ghc_pkg = read_root_config("haskell", "ghc_pkg", "bin/ghc-pkg")
     haddock = read_root_config("haskell", "haddock", "bin/haddock")
@@ -79,22 +91,26 @@ def _haskell_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             name = "x86_64-linux",
         ),
     ]
+'')
+            with doc = "Haskell toolchain with paths from .buckconfig.local"
+            with is_toolchain = True
+      , attrs =
+          [ R.stringListAttr "compiler_flags"
+          , R.stringListAttr "linker_flags"
+          , R.attr "ghci_script_template" (R.AttrType.OptionSource {=})
+          , R.attr "ghci_iserv_template" (R.AttrType.OptionSource {=})
+          , R.attr "script_template_processor" 
+              (R.AttrType.OptionExecDep { providers = ["RunInfo"], default = None Text })
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- haskell_library
+-- ══════════════════════════════════════════════════════════════════════════════
 
-haskell_toolchain = rule(
-    impl = _haskell_toolchain_impl,
-    attrs = {
-        "compiler_flags": attrs.list(attrs.string(), default = []),
-        "linker_flags": attrs.list(attrs.string(), default = []),
-        "ghci_script_template": attrs.option(attrs.source(), default = None),
-        "ghci_iserv_template": attrs.option(attrs.source(), default = None),
-        "script_template_processor": attrs.option(attrs.exec_dep(providers = [RunInfo], ), default = None),
-    },
-    is_toolchain_rule = True,
-)
-
-def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let haskellLibrary =
+      { impl =
+          R.ruleImpl "haskell_library" ''
     ghc = _get_ghc()
     package_db = _get_package_db()
     
@@ -191,21 +207,21 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             modules = ctx.attrs.srcs,
         ),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.stringListAttr "packages"
+          , R.stringListAttr "ghc_options"
+          , R.stringListAttr "language_extensions"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- haskell_binary
+-- ══════════════════════════════════════════════════════════════════════════════
 
-haskell_library = rule(
-    impl = _haskell_library_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "packages": attrs.list(attrs.string(), default = []),
-        "ghc_options": attrs.list(attrs.string(), default = []),
-        "language_extensions": attrs.list(attrs.string(), default = []),
-    },
-)
-
-def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let haskellBinaryImpl = ''
     ghc = _get_ghc()
     package_db = _get_package_db()
     
@@ -294,23 +310,30 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
         RunInfo(args = cmd_args(out)),
     ]
+''
 
+let haskellBinaryAttrs =
+      [ R.sourceListAttr "srcs"
+      , R.depListAttr "deps"
+      , R.optionStringAttr "main"
+      , R.stringListAttr "packages"
+      , R.stringListAttr "ghc_options"
+      , R.stringListAttr "language_extensions"
+      , R.stringListAttr "compiler_flags"
+      ]
 
-haskell_binary = rule(
-    impl = _haskell_binary_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "main": attrs.option(attrs.string(), default = None),
-        "packages": attrs.list(attrs.string(), default = []),
-        "ghc_options": attrs.list(attrs.string(), default = []),
-        "language_extensions": attrs.list(attrs.string(), default = []),
-        "compiler_flags": attrs.list(attrs.string(), default = []),
-    },
-)
+let haskellBinary =
+      { impl = R.ruleImpl "haskell_binary" haskellBinaryImpl
+      , attrs = haskellBinaryAttrs
+      }
 
-def _haskell_c_library_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+-- ══════════════════════════════════════════════════════════════════════════════
+-- haskell_c_library - FFI exports callable from C/C++
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let haskellCLibrary =
+      { impl =
+          R.ruleImpl "haskell_c_library" ''
     ghc = _get_ghc()
     package_db = _get_package_db()
     
@@ -404,21 +427,23 @@ def _haskell_c_library_impl(ctx: AnalysisContext) -> list[Provider]:
             modules = [],
         ),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.stringListAttr "packages"
+          , R.stringListAttr "ghc_options"
+          , R.stringListAttr "language_extensions"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- haskell_ffi_binary - Haskell calling C/C++ via FFI
+-- ══════════════════════════════════════════════════════════════════════════════
 
-haskell_c_library = rule(
-    impl = _haskell_c_library_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "packages": attrs.list(attrs.string(), default = []),
-        "ghc_options": attrs.list(attrs.string(), default = []),
-        "language_extensions": attrs.list(attrs.string(), default = []),
-    },
-)
-
-def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let haskellFfiBinary =
+      { impl =
+          R.ruleImpl "haskell_ffi_binary" ''
     ghc = _get_ghc()
     ghc_pkg = _get_ghc_pkg()
     cxx = read_root_config("cxx", "cxx", "clang++")
@@ -533,28 +558,30 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         DefaultInfo(default_output = out),
         RunInfo(args = [out]),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "hs_srcs"
+          , R.sourceListAttr "cxx_srcs"
+          , R.sourceListAttr "cxx_headers"
+          , R.depListAttr "deps"
+          , R.stringListAttr "packages"
+          , R.stringListAttr "compiler_flags"
+          , R.stringListAttr "language_extensions"
+          , R.stringListAttr "ghc_options"
+          , R.stringListAttr "extra_libs"
+          , R.stringListAttr "extra_lib_dirs"
+          , R.stringListAttr "include_dirs"
+          , R.stringListAttr "linker_flags"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- haskell_script - Single-file scripts
+-- ══════════════════════════════════════════════════════════════════════════════
 
-haskell_ffi_binary = rule(
-    impl = _haskell_ffi_binary_impl,
-    attrs = {
-        "hs_srcs": attrs.list(attrs.source(), default = []),
-        "cxx_srcs": attrs.list(attrs.source(), default = []),
-        "cxx_headers": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "packages": attrs.list(attrs.string(), default = []),
-        "compiler_flags": attrs.list(attrs.string(), default = []),
-        "language_extensions": attrs.list(attrs.string(), default = []),
-        "ghc_options": attrs.list(attrs.string(), default = []),
-        "extra_libs": attrs.list(attrs.string(), default = []),
-        "extra_lib_dirs": attrs.list(attrs.string(), default = []),
-        "include_dirs": attrs.list(attrs.string(), default = []),
-        "linker_flags": attrs.list(attrs.string(), default = []),
-    },
-)
-
-def _haskell_script_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let haskellScript =
+      { impl =
+          R.ruleImpl "haskell_script" ''
     ghc = _get_ghc()
     
     out = ctx.actions.declare_output(ctx.attrs.name)
@@ -590,120 +617,63 @@ def _haskell_script_impl(ctx: AnalysisContext) -> list[Provider]:
         DefaultInfo(default_output = out),
         RunInfo(args = [out]),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.stringListAttr "include_paths"
+          , R.stringListAttr "compiler_flags"
+          , R.stringListAttr "packages"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- haskell_test - Test executable (same as binary)
+-- ══════════════════════════════════════════════════════════════════════════════
 
-haskell_script = rule(
-    impl = _haskell_script_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "include_paths": attrs.list(attrs.string(), default = []),
-        "compiler_flags": attrs.list(attrs.string(), default = []),
-        "packages": attrs.list(attrs.string(), default = []),
-    },
-)
+-- Note: haskell_test reuses _haskell_binary_impl but we need to generate
+-- it as a separate rule. We use the same impl body.
+let haskellTest =
+      { impl = R.ruleImpl "haskell_test" haskellBinaryImpl
+      , attrs = haskellBinaryAttrs
+      }
 
-def _haskell_test_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
-    ghc = _get_ghc()
-    package_db = _get_package_db()
-    
-    out = ctx.actions.declare_output(ctx.attrs.name)
-    
-    # Output directories for intermediate files (keeps source tree clean)
-    obj_dir = ctx.actions.declare_output("objs", dir = True)
-    hi_dir = ctx.actions.declare_output("hi", dir = True)
-    
-    # Collect dependency info
-    dep_hi_dirs = []
-    dep_libs = []
-    dep_sources = []  # For source-based deps
-    for dep in ctx.attrs.deps:
-        if HaskellLibraryInfo in dep:
-            lib_info = dep[HaskellLibraryInfo]
-            if lib_info.hi_dir:
-                dep_hi_dirs.append(lib_info.hi_dir)
-            if lib_info.objects:
-                dep_libs.extend(lib_info.objects)
-            elif lib_info.object_dir:
-                dep_libs.append(lib_info.object_dir)
-            # Also collect source modules for source-based compilation
-            if lib_info.modules:
-                dep_sources.extend(lib_info.modules)
-    
-    cmd = cmd_args([ghc])
-    cmd.add("-package-env=-")
-    cmd.add("-O2")
-    
-    # Output directories (intermediate .o/.hi files go to buck-out, not source tree)
-    cmd.add("-odir", obj_dir.as_output())
-    cmd.add("-hidir", hi_dir.as_output())
-    
-    # Generate .hie files for IDE support (go-to-definition, etc.)
-    hie_dir = ctx.actions.declare_output("hie", dir = True)
-    cmd.add("-fwrite-ide-info")
-    cmd.add("-hiedir", hie_dir.as_output())
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Complete file
+-- ══════════════════════════════════════════════════════════════════════════════
 
+let file =
+      R.bzlFile
+        with header = ''
+# Haskell toolchain and rules using GHC from Nix.
+#
+# Uses ghcWithPackages from the Nix devshell, which includes all
+# dependencies. The bin/ghc wrapper filters Mercury-specific flags
+# that stock GHC doesn't understand.
+#
+# Paths are read from .buckconfig.local [haskell] section.
+#
+# Rules:
+#   haskell_toolchain  - toolchain definition
+#   haskell_library    - compile to .hi/.o with HaskellLibraryInfo
+#   haskell_binary     - executable from sources + deps
+#   haskell_c_library  - FFI exports callable from C/C++
+#   haskell_ffi_binary - Haskell calling C/C++ via FFI
+#   haskell_script     - single-file scripts
+#   haskell_test       - test executable
+''
+        with loads =
+            [ R.load "@prelude//haskell:toolchain.bzl" ["HaskellToolchainInfo", "HaskellPlatformInfo"]
+            ]
+        with globals = globals
+        with providers = [ haskellLibraryInfo, haskellIncludeInfo ]
+        with rules =
+            [ haskellToolchain
+            , haskellLibrary
+            , haskellBinary
+            , haskellCLibrary
+            , haskellFfiBinary
+            , haskellScript
+            , haskellTest
+            ]
 
-    # Mandatory flags (non-negotiable)
-    cmd.add(MANDATORY_GHC_FLAGS)
-    cmd.add("-XGHC2024")
-    
-    if package_db:
-        cmd.add("-package-db", package_db)
-    
-    # Main module
-    if ctx.attrs.main:
-        cmd.add("-main-is", ctx.attrs.main)
-    
-    cmd.add("-o", out.as_output())
-    
-    # Language extensions
-    for ext in ctx.attrs.language_extensions:
-        cmd.add("-X{}".format(ext))
-    
-    # GHC options (includes compiler_flags for backwards compat)
-    cmd.add(ctx.attrs.ghc_options)
-    cmd.add(ctx.attrs.compiler_flags)
-    
-    # Packages
-    for pkg in ctx.attrs.packages:
-        cmd.add("-package", pkg)
-    
-    # Include paths for dependencies
-    for hi_d in dep_hi_dirs:
-        cmd.add(cmd_args("-i", hi_d, delimiter = ""))
-    
-    # Sources (our sources + source-based deps)
-    cmd.add(ctx.attrs.srcs)
-    cmd.add(dep_sources)
-    
-    # Link against compiled deps
-    cmd.add(dep_libs)
-    
-    ctx.actions.run(cmd, category = "ghc", identifier = ctx.attrs.name)
-    
-    return [
-        DefaultInfo(
-            default_output = out,
-            sub_targets = {
-                "hi": [DefaultInfo(default_outputs = [hi_dir])],
-                "hie": [DefaultInfo(default_outputs = [hie_dir])],
-            },
-        ),
-        RunInfo(args = cmd_args(out)),
-    ]
-
-
-haskell_test = rule(
-    impl = _haskell_test_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "main": attrs.option(attrs.string(), default = None),
-        "packages": attrs.list(attrs.string(), default = []),
-        "ghc_options": attrs.list(attrs.string(), default = []),
-        "language_extensions": attrs.list(attrs.string(), default = []),
-        "compiler_flags": attrs.list(attrs.string(), default = []),
-    },
-)
-
+in  { file, render = S.renderBzlFile file }

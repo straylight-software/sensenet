@@ -1,17 +1,19 @@
-# Generated from Dhall - DO NOT EDIT
-# Python toolchain with nanobind for C++ bindings.
-#
-# Paths are read from .buckconfig.local [python] section.
-# Uses Python from Nix devshell with nanobind pre-installed.
-#
-# For unwrapped clang, we need explicit stdlib include and library paths.
-# Nanobind requires compiling its source files along with user code.
+--| Python toolchain with nanobind for C++ bindings
+--|
+--| Paths are read from .buckconfig.local [python] section.
+--| Uses Python from Nix devshell with nanobind pre-installed.
+--|
+--| For unwrapped clang, we need explicit stdlib include and library paths.
+--| Nanobind requires compiling its source files along with user code.
 
+let R = ../Rule.dhall
+let S = ../to-starlark.dhall
 
-load("@toolchains//:nv.bzl", "NvLibraryInfo")
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Globals (constants and load)
+-- ══════════════════════════════════════════════════════════════════════════════
 
-
-
+let globals = ''
 # Nanobind source files that must be compiled with the extension
 NB_SOURCES = [
     "src/nb_internals.cpp",
@@ -26,12 +28,15 @@ NB_SOURCES = [
     "src/trampoline.cpp",
     "src/implicit.cpp",
 ]
+''
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- python_script
+-- ══════════════════════════════════════════════════════════════════════════════
 
-
-
-def _python_script_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let pythonScript =
+      { impl =
+          R.ruleImpl "python_script" ''
     interpreter = read_root_config("python", "interpreter", "python3")
     
     # Collect extension .so files from deps
@@ -55,7 +60,7 @@ def _python_script_impl(ctx: AnalysisContext) -> list[Provider]:
             if i > 0:
                 wrapper_cmd.add(":$ROOT/")
             wrapper_cmd.add(cmd_args(ext, parent = 1))
-        wrapper_cmd.add("${PYTHONPATH:+:$PYTHONPATH}\"\n")
+        wrapper_cmd.add("''${PYTHONPATH:+:$PYTHONPATH}\"\n")
         wrapper_cmd.add("exec " + interpreter + " \"$ROOT/")
         wrapper_cmd.add(ctx.attrs.main)
         wrapper_cmd.add("\" \"$@\"\n")
@@ -71,18 +76,20 @@ def _python_script_impl(ctx: AnalysisContext) -> list[Provider]:
             DefaultInfo(default_output = ctx.attrs.main),
             RunInfo(args = [interpreter, ctx.attrs.main]),
         ]
+''
+      , attrs =
+          [ R.attr "main" (R.AttrType.Source {=})
+          , R.depListAttr "deps"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- nanobind_extension
+-- ══════════════════════════════════════════════════════════════════════════════
 
-python_script = rule(
-    impl = _python_script_impl,
-    attrs = {
-        "main": attrs.source(),
-        "deps": attrs.list(attrs.dep(), default = []),
-    },
-)
-
-def _nanobind_extension_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let nanobindExtension =
+      { impl =
+          R.ruleImpl "nanobind_extension" ''
     # Get paths from config
     cxx = read_root_config("cxx", "cxx", "clang++")
     python_include = read_root_config("python", "python_include", "/usr/include/python3.12")
@@ -154,19 +161,21 @@ def _nanobind_extension_impl(ctx: AnalysisContext) -> list[Provider]:
     return [
         DefaultInfo(default_output = out),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.stringListAttr "compiler_flags"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- pybind11_extension
+-- ══════════════════════════════════════════════════════════════════════════════
 
-nanobind_extension = rule(
-    impl = _nanobind_extension_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "compiler_flags": attrs.list(attrs.string(), default = []),
-    },
-)
-
-def _pybind11_extension_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let pybind11Extension =
+      { impl =
+          R.ruleImpl "pybind11_extension" ''
     # Get paths from config
     cxx = read_root_config("cxx", "cxx", "clang++")
     python_include = read_root_config("python", "python_include", "/usr/include/python3.12")
@@ -251,15 +260,38 @@ def _pybind11_extension_impl(ctx: AnalysisContext) -> list[Provider]:
     return [
         DefaultInfo(default_output = out),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.depListAttr "nv_deps"
+          , R.stringListAttr "compiler_flags"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Complete file
+-- ══════════════════════════════════════════════════════════════════════════════
 
-pybind11_extension = rule(
-    impl = _pybind11_extension_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "nv_deps": attrs.list(attrs.dep(), default = []),
-        "compiler_flags": attrs.list(attrs.string(), default = []),
-    },
-)
+let file =
+      R.bzlFile
+        with header = ''
+# Python toolchain with nanobind for C++ bindings.
+#
+# Paths are read from .buckconfig.local [python] section.
+# Uses Python from Nix devshell with nanobind pre-installed.
+#
+# For unwrapped clang, we need explicit stdlib include and library paths.
+# Nanobind requires compiling its source files along with user code.
+''
+        with loads =
+            [ R.load "@toolchains//:nv.bzl" ["NvLibraryInfo"]
+            ]
+        with globals = globals
+        with rules =
+            [ pythonScript
+            , nanobindExtension
+            , pybind11Extension
+            ]
 
+in  { file, render = S.renderBzlFile file }

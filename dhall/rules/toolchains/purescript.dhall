@@ -1,25 +1,39 @@
-# Generated from Dhall - DO NOT EDIT
-# PureScript compilation rules for Buck2 with Nix toolchain integration.
-#
-# PureScript compiles to JavaScript using spago for dependency management.
-# Halogen and other packages are fetched from the PureScript registry.
+--| PureScript compilation rules for Buck2 with Nix toolchain integration
+--|
+--| PureScript compiles to JavaScript using spago for dependency management.
+--| Halogen and other packages are fetched from the PureScript registry.
+--|
+--| Key features:
+--|   - purescript_library: Build a PureScript library
+--|   - purescript_binary: Build a PureScript web application (with spago)
+--|   - purescript_app: Build a Halogen/web app with HTML entry point
 
+let R = ../Rule.dhall
+let S = ../to-starlark.dhall
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Providers
+-- ══════════════════════════════════════════════════════════════════════════════
 
+let pureScriptLibraryInfo =
+      R.typedProvider "PureScriptLibraryInfo"
+        [ R.typedFieldDefault "output_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "lib_name" "str" "\"\""
+        , R.typedFieldDefault "deps" "list" "[]"
+        ]
 
-PureScriptLibraryInfo = provider(fields = {
-    "output_dir": provider_field(Artifact | None, default = None),
-    "lib_name": provider_field(str, default = ""),
-    "deps": provider_field(list, default = []),
-})
+let pureScriptToolchainInfo =
+      R.typedProvider "PureScriptToolchainInfo"
+        [ R.typedField "purs" "str"
+        , R.typedFieldDefault "spago" "str | None" "None"
+        , R.typedFieldDefault "node" "str | None" "None"
+        ]
 
-PureScriptToolchainInfo = provider(fields = {
-    "purs": provider_field(str),
-    "spago": provider_field(str | None, default = None),
-    "node": provider_field(str | None, default = None),
-})
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Globals (config helpers)
+-- ══════════════════════════════════════════════════════════════════════════════
 
-
+let globals = ''
 def _get_purs() -> str:
     """Get purs compiler path from config."""
     path = read_root_config("purescript", "purs", None)
@@ -52,12 +66,15 @@ def _get_node() -> str:
 def _get_esbuild() -> str | None:
     """Get esbuild path from config (optional, for modern spago)."""
     return read_root_config("purescript", "esbuild", None)
+''
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- purescript_library
+-- ══════════════════════════════════════════════════════════════════════════════
 
-
-
-def _purescript_library_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let pureScriptLibrary =
+      { impl =
+          R.ruleImpl "purescript_library" ''
     spago = _get_spago()
     
     if not ctx.attrs.srcs:
@@ -117,19 +134,21 @@ def _purescript_library_impl(ctx: AnalysisContext) -> list[Provider]:
             deps = ctx.attrs.deps,
         ),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.attr "spago_yaml" (R.AttrType.OptionSource {=})
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- purescript_app
+-- ══════════════════════════════════════════════════════════════════════════════
 
-purescript_library = rule(
-    impl = _purescript_library_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "spago_yaml": attrs.option(attrs.source(), default = None),
-    },
-)
-
-def _purescript_app_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let pureScriptApp =
+      { impl =
+          R.ruleImpl "purescript_app" ''
     purs = _get_purs()
     spago = _get_spago()
     node = _get_node()
@@ -222,7 +241,7 @@ def _purescript_app_impl(ctx: AnalysisContext) -> list[Provider]:
         server_script,
         cmd_args(
             "#!/usr/bin/env bash\n",
-            "cd \"$(dirname \"$0\")/dist\" && python3 -m http.server ${1:-8080}\n",
+            "cd \"$(dirname \"$0\")/dist\" && python3 -m http.server ''${1:-8080}\n",
             delimiter = "",
         ),
         is_executable = True,
@@ -237,24 +256,26 @@ def _purescript_app_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
         RunInfo(args = cmd_args(server_script)),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.attr "spago_yaml" (R.AttrType.OptionSource {=})
+          , R.attr "spago_lock" (R.AttrType.OptionSource {=})
+          , R.attr "spago_dhall" (R.AttrType.OptionSource {=})
+          , R.attr "packages_dhall" (R.AttrType.OptionSource {=})
+          , R.stringAttr "main" (Some "Main")
+          , R.attr "index_html" (R.AttrType.OptionSource {=})
+          , R.attr "style_css" (R.AttrType.OptionSource {=})
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- purescript_binary
+-- ══════════════════════════════════════════════════════════════════════════════
 
-purescript_app = rule(
-    impl = _purescript_app_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "spago_yaml": attrs.option(attrs.source(), default = None),
-        "spago_lock": attrs.option(attrs.source(), default = None),
-        "spago_dhall": attrs.option(attrs.source(), default = None),
-        "packages_dhall": attrs.option(attrs.source(), default = None),
-        "main": attrs.string(default = "Main"),
-        "index_html": attrs.option(attrs.source(), default = None),
-        "style_css": attrs.option(attrs.source(), default = None),
-    },
-)
-
-def _purescript_binary_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let pureScriptBinary =
+      { impl =
+          R.ruleImpl "purescript_binary" ''
     spago = _get_spago()
     node = _get_node()
     
@@ -317,19 +338,21 @@ def _purescript_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
         RunInfo(args = cmd_args(wrapper)),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.attr "spago_yaml" (R.AttrType.Source {=})
+          , R.stringAttr "main" (Some "Main")
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- purescript_toolchain
+-- ══════════════════════════════════════════════════════════════════════════════
 
-purescript_binary = rule(
-    impl = _purescript_binary_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "spago_yaml": attrs.source(),
-        "main": attrs.string(default = "Main"),
-    },
-)
-
-def _purescript_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
-    """PureScript toolchain with paths from .buckconfig.local"""
+let pureScriptToolchain =
+      { impl =
+          (R.ruleImpl "purescript_toolchain" ''
     purs = read_root_config("purescript", "purs", ctx.attrs.purs)
     spago = read_root_config("purescript", "spago", ctx.attrs.spago)
     node = read_root_config("purescript", "node", ctx.attrs.node)
@@ -342,20 +365,23 @@ def _purescript_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             node = node,
         ),
     ]
+'')
+            with doc = "PureScript toolchain with paths from .buckconfig.local"
+            with is_toolchain = True
+      , attrs =
+          [ R.stringAttr "purs" (Some "purs")
+          , R.optionStringAttr "spago"
+          , R.optionStringAttr "node"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- system_purescript_toolchain (disabled)
+-- ══════════════════════════════════════════════════════════════════════════════
 
-purescript_toolchain = rule(
-    impl = _purescript_toolchain_impl,
-    attrs = {
-        "purs": attrs.string(default = "purs"),
-        "spago": attrs.option(attrs.string(), default = None),
-        "node": attrs.option(attrs.string(), default = None),
-    },
-    is_toolchain_rule = True,
-)
-
-def _system_purescript_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let systemPureScriptToolchain =
+      { impl =
+          (R.ruleImpl "system_purescript_toolchain" ''
     fail("""
 system_purescript_toolchain is disabled.
 
@@ -368,13 +394,31 @@ Configure your PureScript toolchain via Nix:
 
 Then run: nix develop
 """)
+'')
+            with is_toolchain = True
+      , attrs = [] : List R.Attr
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Complete file
+-- ══════════════════════════════════════════════════════════════════════════════
 
-system_purescript_toolchain = rule(
-    impl = _system_purescript_toolchain_impl,
-    attrs = {
+let file =
+      R.bzlFile
+        with header = ''
+# PureScript compilation rules for Buck2 with Nix toolchain integration.
+#
+# PureScript compiles to JavaScript using spago for dependency management.
+# Halogen and other packages are fetched from the PureScript registry.
+''
+        with globals = globals
+        with providers = [ pureScriptLibraryInfo, pureScriptToolchainInfo ]
+        with rules =
+            [ pureScriptLibrary
+            , pureScriptApp
+            , pureScriptBinary
+            , pureScriptToolchain
+            , systemPureScriptToolchain
+            ]
 
-    },
-    is_toolchain_rule = True,
-)
-
+in  { file, render = S.renderBzlFile file }

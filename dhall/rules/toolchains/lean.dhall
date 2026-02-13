@@ -1,40 +1,25 @@
-# Generated from Dhall - DO NOT EDIT
-# Lean 4 compilation rules for Buck2 with Nix toolchain integration
-#
-# Lean 4 compiles to C, which we then compile with our C++ toolchain.
-# This enables proof-carrying code: Lean theorems constrain generated C,
-# which links into Rust/Haskell/Python via FFI.
-#
-# Key features:
-#   - lean_library: Build a Lean library (.olean files + C extraction)
-#   - lean_binary: Build a Lean executable
-#   - lean_c_library: Extract C code from Lean for FFI linking
+--| Lean 4 compilation rules for Buck2 with Nix toolchain integration
+--|
+--| Lean 4 compiles to C, which we then compile with our C++ toolchain.
+--| This enables proof-carrying code: Lean theorems constrain generated C,
+--| which links into Rust/Haskell/Python via FFI.
+--|
+--| Key features:
+--|   - lean_library: Build a Lean library (.olean files + C extraction)
+--|   - lean_binary: Build a Lean executable
+--|   - lean_c_library: Extract C code from Lean for FFI linking
+--|   - lean_toolchain: Toolchain definition
+--|   - system_lean_toolchain: Disabled fallback
+--|   - lean_lake_build: Disabled (non-hermetic)
 
+let R = ../Rule.dhall
+let S = ../to-starlark.dhall
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Configuration (globals)
+-- ══════════════════════════════════════════════════════════════════════════════
 
-
-LeanLibraryInfo = provider(fields = {
-    "olean_dir": provider_field(Artifact | None, default = None),
-    "c_dir": provider_field(Artifact | None, default = None),
-    "lib_name": provider_field(str, default = ""),
-    "deps": provider_field(list, default = []),
-})
-
-LeanCLibraryInfo = provider(fields = {
-    "c_sources": provider_field(list[Artifact], default = []),
-    "include_dir": provider_field(Artifact | None, default = None),
-    "objects": provider_field(list[Artifact], default = []),
-    "archive": provider_field(Artifact | None, default = None),
-})
-
-LeanToolchainInfo = provider(fields = {
-    "lean": provider_field(str),
-    "leanc": provider_field(str),
-    "lean_lib_dir": provider_field(str | None, default = None),
-    "lean_include_dir": provider_field(str | None, default = None),
-})
-
-
+let globals = ''
 def _get_lean() -> str:
     """Get lean compiler path from config."""
     path = read_root_config("lean", "lean", None)
@@ -68,12 +53,43 @@ def _get_lean_lib_dir() -> str | None:
 def _get_lean_include_dir() -> str | None:
     """Get Lean C headers directory."""
     return read_root_config("lean", "lean_include_dir", None)
+''
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Providers
+-- ══════════════════════════════════════════════════════════════════════════════
 
+let leanLibraryInfo =
+      R.typedProvider "LeanLibraryInfo"
+        [ R.typedFieldDefault "olean_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "c_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "lib_name" "str" "\"\""
+        , R.typedFieldDefault "deps" "list" "[]"
+        ]
 
+let leanCLibraryInfo =
+      R.typedProvider "LeanCLibraryInfo"
+        [ R.typedFieldDefault "c_sources" "list[Artifact]" "[]"
+        , R.typedFieldDefault "include_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "objects" "list[Artifact]" "[]"
+        , R.typedFieldDefault "archive" "Artifact | None" "None"
+        ]
 
-def _lean_library_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let leanToolchainInfo =
+      R.typedProvider "LeanToolchainInfo"
+        [ R.typedField "lean" "str"
+        , R.typedField "leanc" "str"
+        , R.typedFieldDefault "lean_lib_dir" "str | None" "None"
+        , R.typedFieldDefault "lean_include_dir" "str | None" "None"
+        ]
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_library
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let leanLibrary =
+      { impl =
+          R.ruleImpl "lean_library" ''
     lean = _get_lean()
     lean_lib_dir = _get_lean_lib_dir()
     
@@ -173,20 +189,22 @@ def _lean_library_impl(ctx: AnalysisContext) -> list[Provider]:
             deps = ctx.attrs.deps,
         ),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.stringListAttr "lean_flags"
+          , R.boolAttr "extract_c" False
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_binary
+-- ══════════════════════════════════════════════════════════════════════════════
 
-lean_library = rule(
-    impl = _lean_library_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "lean_flags": attrs.list(attrs.string(), default = []),
-        "extract_c": attrs.bool(default = False),
-    },
-)
-
-def _lean_binary_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let leanBinary =
+      { impl =
+          R.ruleImpl "lean_binary" ''
     lean = _get_lean()
     leanc = _get_leanc()
     lean_lib_dir = _get_lean_lib_dir()
@@ -330,21 +348,23 @@ def _lean_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         DefaultInfo(default_output = exe),
         RunInfo(args = cmd_args(exe)),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.optionStringAttr "root_module"
+          , R.stringListAttr "lean_flags"
+          , R.stringListAttr "link_flags"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_c_library
+-- ══════════════════════════════════════════════════════════════════════════════
 
-lean_binary = rule(
-    impl = _lean_binary_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "root_module": attrs.option(attrs.string(), default = None),
-        "lean_flags": attrs.list(attrs.string(), default = []),
-        "link_flags": attrs.list(attrs.string(), default = []),
-    },
-)
-
-def _lean_c_library_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let leanCLibrary =
+      { impl =
+          R.ruleImpl "lean_c_library" ''
     lean = _get_lean()
     lean_include_dir = _get_lean_include_dir()
     lean_lib_dir = _get_lean_lib_dir()
@@ -493,21 +513,23 @@ def _lean_c_library_impl(ctx: AnalysisContext) -> list[Provider]:
             archive = archive,
         ),
     ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.stringListAttr "lean_flags"
+          , R.stringListAttr "cflags"
+          , R.stringListAttr "exports"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_toolchain
+-- ══════════════════════════════════════════════════════════════════════════════
 
-lean_c_library = rule(
-    impl = _lean_c_library_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "deps": attrs.list(attrs.dep(), default = []),
-        "lean_flags": attrs.list(attrs.string(), default = []),
-        "cflags": attrs.list(attrs.string(), default = []),
-        "exports": attrs.list(attrs.string(), default = []),
-    },
-)
-
-def _lean_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
-    """Lean toolchain with paths from .buckconfig.local"""
+let leanToolchain =
+      { impl =
+          (R.ruleImpl "lean_toolchain" ''
     # Read from config, fall back to attrs
     lean = read_root_config("lean", "lean", ctx.attrs.lean)
     leanc = read_root_config("lean", "leanc", ctx.attrs.leanc)
@@ -523,21 +545,24 @@ def _lean_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             lean_include_dir = lean_include_dir,
         ),
     ]
+'')
+            with doc = "Lean toolchain with paths from .buckconfig.local"
+            with is_toolchain = True
+      , attrs =
+          [ R.stringAttr "lean" (Some "lean")
+          , R.stringAttr "leanc" (Some "leanc")
+          , R.optionStringAttr "lean_lib_dir"
+          , R.optionStringAttr "lean_include_dir"
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- system_lean_toolchain (disabled)
+-- ══════════════════════════════════════════════════════════════════════════════
 
-lean_toolchain = rule(
-    impl = _lean_toolchain_impl,
-    attrs = {
-        "lean": attrs.string(default = "lean"),
-        "leanc": attrs.string(default = "leanc"),
-        "lean_lib_dir": attrs.option(attrs.string(), default = None),
-        "lean_include_dir": attrs.option(attrs.string(), default = None),
-    },
-    is_toolchain_rule = True,
-)
-
-def _system_lean_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let systemLeanToolchain =
+      { impl =
+          (R.ruleImpl "system_lean_toolchain" ''
     fail("""
 system_lean_toolchain is disabled.
 
@@ -554,18 +579,18 @@ Then run: nix develop
 
 If you see this error, your .buckconfig.local is missing or stale.
 """)
+'')
+            with is_toolchain = True
+      , attrs = [] : List R.Attr
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_lake_build (disabled)
+-- ══════════════════════════════════════════════════════════════════════════════
 
-system_lean_toolchain = rule(
-    impl = _system_lean_toolchain_impl,
-    attrs = {
-
-    },
-    is_toolchain_rule = True,
-)
-
-def _lean_lake_build_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+let leanLakeBuild =
+      { impl =
+          R.ruleImpl "lean_lake_build" ''
     fail("""
 lean_lake_build is disabled.
 
@@ -580,14 +605,41 @@ Options:
 
 See: toolchains/lean.bzl for lean_library, lean_binary, lean_c_library
 """)
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.attr "lakefile" (R.AttrType.OptionSource {=})
+          , R.attr "toolchain_file" (R.AttrType.OptionSource {=})
+          ]
+      }
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Complete file
+-- ══════════════════════════════════════════════════════════════════════════════
 
-lean_lake_build = rule(
-    impl = _lean_lake_build_impl,
-    attrs = {
-        "srcs": attrs.list(attrs.source(), default = []),
-        "lakefile": attrs.option(attrs.source(), default = None),
-        "toolchain_file": attrs.option(attrs.source(), default = None),
-    },
-)
+let file =
+      R.bzlFile
+        with header = ''
+# Lean 4 compilation rules for Buck2 with Nix toolchain integration
+#
+# Lean 4 compiles to C, which we then compile with our C++ toolchain.
+# This enables proof-carrying code: Lean theorems constrain generated C,
+# which links into Rust/Haskell/Python via FFI.
+#
+# Key features:
+#   - lean_library: Build a Lean library (.olean files + C extraction)
+#   - lean_binary: Build a Lean executable
+#   - lean_c_library: Extract C code from Lean for FFI linking
+''
+        with globals = globals
+        with providers = [ leanLibraryInfo, leanCLibraryInfo, leanToolchainInfo ]
+        with rules =
+            [ leanLibrary
+            , leanBinary
+            , leanCLibrary
+            , leanToolchain
+            , systemLeanToolchain
+            , leanLakeBuild
+            ]
 
+in  { file, render = S.renderBzlFile file }
