@@ -40,6 +40,13 @@
       url = "github:straylight-software/nix-compile";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # Rust tooling for tokenizers-cpp
+    crane.url = "github:ipetkov/crane";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -84,10 +91,24 @@
 
       # Self-use: packages and minimal devshell for this repo
       perSystem =
-        { pkgs, ... }:
+        { pkgs, system, ... }:
         let
           # GHC 9.12 with haskell overlay applied (via std.nix)
           inherit (pkgs.haskell.packages) ghc912;
+
+          # Rust toolchain for tokenizers-cpp
+          rustOverlays = [ (import inputs.rust-overlay) ];
+          rustPkgs = import inputs.nixpkgs {
+            inherit system;
+            overlays = rustOverlays;
+          };
+          rustToolchain = rustPkgs.rust-bin.stable.latest.default;
+          craneLib = (inputs.crane.mkLib rustPkgs).overrideToolchain rustToolchain;
+
+          # tokenizers-cpp with pre-built Rust library
+          tokenizers-cpp = pkgs.callPackage ./nix/packages/tokenizers-cpp.nix {
+            inherit craneLib;
+          };
 
         in
         {
@@ -145,6 +166,78 @@
               pkgs.dhall-json
               ghc912.haskell-language-server
             ];
+          };
+
+          # ══════════════════════════════════════════════════════════════════════
+          # slide - Console cowboy for the sprawl
+          # ══════════════════════════════════════════════════════════════════════
+          # Usage: nix develop .#buck2-slide
+          #        buck2 build //src/slide:slide
+          buck2.projects.slide = {
+            src = ./.;
+            targets = [ "//src/slide:slide" ];
+            toolchain = {
+              cxx.enable = true;
+              haskell = {
+                enable = true;
+                ghcPackages = ghc912;
+                packages = hp: [
+                  # Core
+                  hp.aeson
+                  hp.async
+                  hp.bytestring
+                  hp.containers
+                  hp.data-default-class
+                  hp.text
+                  hp.vector
+                  # Parsing
+                  hp.megaparsec
+                  # Networking
+                  hp.case-insensitive
+                  hp.http2
+                  hp.http-semantics
+                  hp.http-types
+                  hp.network
+                  hp.time-manager
+                  hp.tls
+                  hp.wai
+                  hp.warp
+                  hp.zeromq4-haskell
+                  # Config
+                  hp.dhall
+                  hp.optparse-applicative
+                  # Crypto
+                  hp.blake3
+                  hp.crypton
+                  hp.memory
+                  # Observability
+                  hp.katip
+                  hp.prometheus-client
+                  hp.prometheus-metrics-ghc
+                  hp.random
+                ];
+              };
+            };
+            extraPackages = [
+              tokenizers-cpp
+              pkgs.zeromq
+            ];
+            extraBuckconfigSections = ''
+
+              [slide]
+              tokenizers_cpp_lib = ${tokenizers-cpp}/lib
+              tokenizers_cpp_include = ${tokenizers-cpp}/include
+            '';
+            devShellPackages = [
+              pkgs.dhall
+              pkgs.dhall-json
+              ghc912.haskell-language-server
+            ];
+            devShellHook = ''
+              export LIBRARY_PATH="${tokenizers-cpp}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
+              export C_INCLUDE_PATH="${tokenizers-cpp}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+              export LD_LIBRARY_PATH="${tokenizers-cpp}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            '';
           };
 
           # Example with NativeLink remote execution enabled

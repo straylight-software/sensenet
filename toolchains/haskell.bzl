@@ -492,9 +492,29 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     Steps:
       1. Compile C++ sources to .o files with clang
       2. Compile and link Haskell sources with GHC, including the C++ objects
+    
+    Supports external libraries via:
+      - extra_libs: library names to link (e.g., ["tokenizers_cpp", "sentencepiece"])
+      - extra_lib_dirs: paths to search for libraries (can also be read from config)
+      - include_dirs: paths for C++ header includes (can also be read from config)
+    
+    Config integration:
+      - [slide] tokenizers_cpp_lib: library path for tokenizers-cpp
+      - [slide] tokenizers_cpp_include: include path for tokenizers-cpp
+    
+    GHC 9.12 Workaround:
+      Uses toolchains/scripts/ghc-pkg-id wrapper to translate -package flags
+      to -package-id flags, working around a GHC 9.12 bug where -package
+      doesn't expose packages correctly with ghcWithPackages.
     """
     ghc = _get_ghc()
+    ghc_pkg = _get_ghc_pkg()
+    package_db = _get_package_db()
     cxx = read_root_config("cxx", "cxx", "clang++")
+    
+    # Read additional paths from config (for Nix-provided libraries)
+    tokenizers_lib = read_root_config("slide", "tokenizers_cpp_lib", "")
+    tokenizers_include = read_root_config("slide", "tokenizers_cpp_include", "")
     
     # C++ stdlib paths for unwrapped clang
     gcc_include = read_root_config("cxx", "gcc_include", "")
@@ -519,6 +539,14 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     
     cxx_compile_flags.extend(["-I", "."])
     
+    # Add user-specified include directories
+    for inc_dir in ctx.attrs.include_dirs:
+        cxx_compile_flags.extend(["-I", inc_dir])
+    
+    # Add config-provided include directories (from Nix)
+    if tokenizers_include:
+        cxx_compile_flags.extend(["-I", tokenizers_include])
+    
     cxx_objects = []
     for src in ctx.attrs.cxx_srcs:
         obj_name = src.short_path.replace(".cpp", ".o").replace(".c", ".o")
@@ -533,8 +561,14 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     obj_dir = ctx.actions.declare_output("hs_objs", dir = True)
     hi_dir = ctx.actions.declare_output("hs_hi", dir = True)
     
-    ghc_cmd = cmd_args([ghc])
+    # Use ghc-pkg-id wrapper script to translate -package to -package-id
+    # This works around GHC 9.12 bug where -package doesn't expose packages
+    ghc_wrapper = "toolchains/scripts/ghc-pkg-id"
+    ghc_cmd = cmd_args([ghc_wrapper, ghc, ghc_pkg])
     ghc_cmd.add("-O2", "-threaded")
+    # NOTE: Don't use -package-env=- or explicit -package-db as it breaks 
+    # package resolution in GHC 9.12 with ghcWithPackages
+    # The ghcWithPackages wrapper sets up the package db correctly via -B flag
     
     # Output directories (intermediate .o/.hi files go to buck-out, not source tree)
     ghc_cmd.add("-odir", obj_dir.as_output())
@@ -544,17 +578,53 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     ghc_cmd.add(MANDATORY_GHC_FLAGS)
     ghc_cmd.add("-XGHC2024")
     
+    # GCC library path for libstdc++
     if gcc_lib_base:
         ghc_cmd.add("-optl", "-L" + gcc_lib_base)
     
+    # Extra library directories (e.g., tokenizers-cpp)
+    for lib_dir in ctx.attrs.extra_lib_dirs:
+        ghc_cmd.add("-optl", "-L" + lib_dir)
+        ghc_cmd.add("-optl", "-Wl,-rpath," + lib_dir)
+    
+    # Config-provided library directories (from Nix)
+    if tokenizers_lib:
+        ghc_cmd.add("-optl", "-L" + tokenizers_lib)
+        ghc_cmd.add("-optl", "-Wl,-rpath," + tokenizers_lib)
+    
+    # Link against stdc++
     ghc_cmd.add("-lstdc++")
+    
+    # Link against extra libraries
+    for lib in ctx.attrs.extra_libs:
+        ghc_cmd.add("-l" + lib)
+    
+    # Extra linker flags
+    for flag in ctx.attrs.linker_flags:
+        ghc_cmd.add("-optl", flag)
+    
     ghc_cmd.add("-o", out.as_output())
+    
+    # Packages
+    for pkg in ctx.attrs.packages:
+        ghc_cmd.add("-package", pkg)
     
     # Language extensions
     for ext in ctx.attrs.language_extensions:
         ghc_cmd.add("-X{}".format(ext))
     
+    # GHC options
+    ghc_cmd.add(ctx.attrs.ghc_options)
     ghc_cmd.add(ctx.attrs.compiler_flags)
+    
+    # Include directories for Haskell FFI (cbits)
+    for inc_dir in ctx.attrs.include_dirs:
+        ghc_cmd.add("-I" + inc_dir)
+    
+    # Config-provided include directories (from Nix)
+    if tokenizers_include:
+        ghc_cmd.add("-I" + tokenizers_include)
+    
     ghc_cmd.add(ctx.attrs.hs_srcs)
     ghc_cmd.add(cxx_objects)
     
@@ -572,8 +642,14 @@ haskell_ffi_binary = rule(
         "cxx_srcs": attrs.list(attrs.source(), default = []),
         "cxx_headers": attrs.list(attrs.source(), default = []),
         "deps": attrs.list(attrs.dep(), default = []),
+        "packages": attrs.list(attrs.string(), default = []),
+        "ghc_options": attrs.list(attrs.string(), default = []),
         "compiler_flags": attrs.list(attrs.string(), default = []),
         "language_extensions": attrs.list(attrs.string(), default = []),
+        "extra_libs": attrs.list(attrs.string(), default = []),
+        "extra_lib_dirs": attrs.list(attrs.string(), default = []),
+        "include_dirs": attrs.list(attrs.string(), default = []),
+        "linker_flags": attrs.list(attrs.string(), default = []),
     },
 )
 
