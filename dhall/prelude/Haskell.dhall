@@ -56,6 +56,10 @@ let FFIBinary =
       , packages : List Text
       , language_extensions : List Text
       , ghc_options : List Text
+      , extra_libs : List Text
+      , extra_lib_dirs : List Text
+      , include_dirs : List Text
+      , linker_flags : List Text
       , vis : T.Vis
       }
 
@@ -69,6 +73,10 @@ let ffiBinary
         , packages = [ "base" ] : List Text
         , language_extensions = [] : List Text
         , ghc_options = [ "-O2" ] : List Text
+        , extra_libs = [] : List Text
+        , extra_lib_dirs = [] : List Text
+        , include_dirs = [] : List Text
+        , linker_flags = [] : List Text
         , vis = T.Vis.Public
         }
 
