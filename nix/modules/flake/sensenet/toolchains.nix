@@ -65,7 +65,7 @@
 
   # Haskell toolchain section
   mkHaskellSection =
-    { ghc, ghcVersion }:
+    { ghc, ghcVersion, ghcPkgWrapper ? null }:
     ''
 
       [haskell]
@@ -75,6 +75,8 @@
       ghc_version = ${ghcVersion}
       ghc_lib_dir = ${ghc}/lib/ghc-${ghcVersion}/lib
       global_package_db = ${ghc}/lib/ghc-${ghcVersion}/lib/package.conf.d
+    '' + lib.optionalString (ghcPkgWrapper != null) ''
+      ghc_pkg_wrapper = ${ghcPkgWrapper}
     '';
 
   # Rust toolchain section

@@ -13,6 +13,7 @@
 #   haskell_binary     - executable from sources + deps
 #   haskell_c_library  - FFI exports callable from C/C++
 #   haskell_ffi_binary - Haskell calling C/C++ via FFI
+#   haskell_ffi_test   - FFI test executable
 #   haskell_script     - single-file scripts
 #   haskell_test       - test executable
 
@@ -474,8 +475,8 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     
     # Use ghc-pkg-id wrapper script to translate -package to -package-id
     # This works around GHC 9.12 bug where -package doesn't expose packages
-    ghc_wrapper_dep = ctx.attrs._ghc_wrapper
-    ghc_wrapper = ghc_wrapper_dep[DefaultInfo].default_outputs[0]
+    # Path comes from config, set by flake module's shellHook
+    ghc_wrapper = read_root_config("haskell", "ghc_pkg_wrapper", "bin/ghc-pkg-id")
     ghc_cmd = cmd_args([ghc_wrapper, ghc, ghc_pkg])
     ghc_cmd.add("-O2", "-threaded")
     
@@ -551,7 +552,143 @@ haskell_ffi_binary = rule(
         "extra_lib_dirs": attrs.list(attrs.string(), default = []),
         "include_dirs": attrs.list(attrs.string(), default = []),
         "linker_flags": attrs.list(attrs.string(), default = []),
-        "_ghc_wrapper": attrs.exec_dep(default = "toolchains//scripts:ghc-pkg-id"),
+    },
+)
+
+def _haskell_ffi_test_impl(ctx: AnalysisContext) -> list[Provider]:
+    """"""
+    ghc = _get_ghc()
+    ghc_pkg = _get_ghc_pkg()
+    cxx = read_root_config("cxx", "cxx", "clang++")
+    
+    # Read library paths from config (for Nix-provided libraries)
+    liburing_lib = read_root_config("io-uring", "liburing_lib", "")
+    liburing_include = read_root_config("io-uring", "liburing_include", "")
+    
+    # C++ stdlib paths for unwrapped clang
+    gcc_include = read_root_config("cxx", "gcc_include", "")
+    gcc_include_arch = read_root_config("cxx", "gcc_include_arch", "")
+    glibc_include = read_root_config("cxx", "glibc_include", "")
+    clang_resource_dir = read_root_config("cxx", "clang_resource_dir", "")
+    gcc_lib_base = read_root_config("cxx", "gcc_lib_base", "")
+    
+    out = ctx.actions.declare_output(ctx.attrs.name)
+    
+    # Step 1: Compile C++ sources
+    cxx_compile_flags = ["-std=c++17", "-O2", "-fPIC", "-c"]
+    
+    if gcc_include:
+        cxx_compile_flags.extend(["-isystem", gcc_include])
+    if gcc_include_arch:
+        cxx_compile_flags.extend(["-isystem", gcc_include_arch])
+    if glibc_include:
+        cxx_compile_flags.extend(["-isystem", glibc_include])
+    if clang_resource_dir:
+        cxx_compile_flags.extend(["-resource-dir=" + clang_resource_dir])
+    
+    cxx_compile_flags.extend(["-I", "."])
+    
+    # Add user-specified include directories
+    for inc_dir in ctx.attrs.include_dirs:
+        cxx_compile_flags.extend(["-I", inc_dir])
+    
+    # Add config-provided include directories (from Nix)
+    if liburing_include:
+        cxx_compile_flags.extend(["-I", liburing_include])
+    
+    cxx_objects = []
+    for src in ctx.attrs.cxx_srcs:
+        obj_name = src.short_path.replace(".cpp", ".o").replace(".c", ".o")
+        obj = ctx.actions.declare_output(obj_name)
+        
+        cmd = cmd_args([cxx] + cxx_compile_flags + ["-o", obj.as_output(), src])
+        ctx.actions.run(cmd, category = "cxx_compile", identifier = src.short_path)
+        cxx_objects.append(obj)
+    
+    # Step 2: Compile Haskell and link
+    # Output directories for intermediate files (keeps source tree clean)
+    obj_dir = ctx.actions.declare_output("hs_objs", dir = True)
+    hi_dir = ctx.actions.declare_output("hs_hi", dir = True)
+    
+    # Use ghc-pkg-id wrapper script to translate -package to -package-id
+    # This works around GHC 9.12 bug where -package doesn't expose packages
+    # Path comes from config, set by flake module's shellHook
+    ghc_wrapper = read_root_config("haskell", "ghc_pkg_wrapper", "bin/ghc-pkg-id")
+    ghc_cmd = cmd_args([ghc_wrapper, ghc, ghc_pkg])
+    ghc_cmd.add("-O2", "-threaded")
+    
+    # Output directories (intermediate .o/.hi files go to buck-out, not source tree)
+    ghc_cmd.add("-odir", obj_dir.as_output())
+    ghc_cmd.add("-hidir", hi_dir.as_output())
+    
+    # Mandatory flags (non-negotiable)
+    ghc_cmd.add(MANDATORY_GHC_FLAGS)
+    ghc_cmd.add("-XGHC2024")
+    
+    # GCC library path for libstdc++
+    if gcc_lib_base:
+        ghc_cmd.add("-optl", "-L" + gcc_lib_base)
+    
+    # Extra library directories from attrs
+    for lib_dir in ctx.attrs.extra_lib_dirs:
+        ghc_cmd.add("-optl", "-L" + lib_dir)
+        ghc_cmd.add("-optl", "-Wl,-rpath," + lib_dir)
+    
+    # Config-provided library directories (from Nix)
+    if liburing_lib:
+        ghc_cmd.add("-optl", "-L" + liburing_lib)
+        ghc_cmd.add("-optl", "-Wl,-rpath," + liburing_lib)
+    
+    ghc_cmd.add("-lstdc++")
+    
+    # Link against extra libraries
+    for lib in ctx.attrs.extra_libs:
+        ghc_cmd.add("-l" + lib)
+    
+    # Extra linker flags
+    for flag in ctx.attrs.linker_flags:
+        ghc_cmd.add("-optl", flag)
+    
+    ghc_cmd.add("-o", out.as_output())
+    
+    # Language extensions
+    for ext in ctx.attrs.language_extensions:
+        ghc_cmd.add("-X{}".format(ext))
+    
+    # GHC options from attrs
+    ghc_cmd.add(ctx.attrs.ghc_options)
+    
+    # Packages
+    for pkg in ctx.attrs.packages:
+        ghc_cmd.add("-package", pkg)
+    
+    ghc_cmd.add(ctx.attrs.compiler_flags)
+    ghc_cmd.add(ctx.attrs.hs_srcs)
+    ghc_cmd.add(cxx_objects)
+    
+    ctx.actions.run(ghc_cmd, category = "ghc_link", identifier = ctx.attrs.name)
+    
+    return [
+        DefaultInfo(default_output = out),
+        RunInfo(args = [out]),
+    ]
+
+
+haskell_ffi_test = rule(
+    impl = _haskell_ffi_test_impl,
+    attrs = {
+        "hs_srcs": attrs.list(attrs.source(), default = []),
+        "cxx_srcs": attrs.list(attrs.source(), default = []),
+        "cxx_headers": attrs.list(attrs.source(), default = []),
+        "deps": attrs.list(attrs.dep(), default = []),
+        "packages": attrs.list(attrs.string(), default = []),
+        "compiler_flags": attrs.list(attrs.string(), default = []),
+        "language_extensions": attrs.list(attrs.string(), default = []),
+        "ghc_options": attrs.list(attrs.string(), default = []),
+        "extra_libs": attrs.list(attrs.string(), default = []),
+        "extra_lib_dirs": attrs.list(attrs.string(), default = []),
+        "include_dirs": attrs.list(attrs.string(), default = []),
+        "linker_flags": attrs.list(attrs.string(), default = []),
     },
 )
 

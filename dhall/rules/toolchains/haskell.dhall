@@ -12,6 +12,7 @@
 --|   haskell_binary     - executable from sources + deps
 --|   haskell_c_library  - FFI exports callable from C/C++
 --|   haskell_ffi_binary - Haskell calling C/C++ via FFI
+--|   haskell_ffi_test   - FFI test executable
 --|   haskell_script     - single-file scripts
 --|   haskell_test       - test executable
 
@@ -441,9 +442,7 @@ let haskellCLibrary =
 -- haskell_ffi_binary - Haskell calling C/C++ via FFI
 -- ══════════════════════════════════════════════════════════════════════════════
 
-let haskellFfiBinary =
-      { impl =
-          R.ruleImpl "haskell_ffi_binary" ''
+let haskellFfiBinaryImpl = ''
     ghc = _get_ghc()
     ghc_pkg = _get_ghc_pkg()
     cxx = read_root_config("cxx", "cxx", "clang++")
@@ -499,8 +498,8 @@ let haskellFfiBinary =
     
     # Use ghc-pkg-id wrapper script to translate -package to -package-id
     # This works around GHC 9.12 bug where -package doesn't expose packages
-    ghc_wrapper_dep = ctx.attrs._ghc_wrapper
-    ghc_wrapper = ghc_wrapper_dep[DefaultInfo].default_outputs[0]
+    # Path comes from config, set by flake module's shellHook
+    ghc_wrapper = read_root_config("haskell", "ghc_pkg_wrapper", "bin/ghc-pkg-id")
     ghc_cmd = cmd_args([ghc_wrapper, ghc, ghc_pkg])
     ghc_cmd.add("-O2", "-threaded")
     
@@ -560,22 +559,34 @@ let haskellFfiBinary =
         RunInfo(args = [out]),
     ]
 ''
-      , attrs =
-          [ R.sourceListAttr "hs_srcs"
-          , R.sourceListAttr "cxx_srcs"
-          , R.sourceListAttr "cxx_headers"
-          , R.depListAttr "deps"
-          , R.stringListAttr "packages"
-          , R.stringListAttr "compiler_flags"
-          , R.stringListAttr "language_extensions"
-          , R.stringListAttr "ghc_options"
-          , R.stringListAttr "extra_libs"
-          , R.stringListAttr "extra_lib_dirs"
-          , R.stringListAttr "include_dirs"
-          , R.stringListAttr "linker_flags"
-          , R.attr "_ghc_wrapper" 
-              (R.AttrType.ExecDep { default = Some "toolchains//scripts:ghc-pkg-id" })
-          ]
+
+let haskellFfiBinaryAttrs =
+      [ R.sourceListAttr "hs_srcs"
+      , R.sourceListAttr "cxx_srcs"
+      , R.sourceListAttr "cxx_headers"
+      , R.depListAttr "deps"
+      , R.stringListAttr "packages"
+      , R.stringListAttr "compiler_flags"
+      , R.stringListAttr "language_extensions"
+      , R.stringListAttr "ghc_options"
+      , R.stringListAttr "extra_libs"
+      , R.stringListAttr "extra_lib_dirs"
+      , R.stringListAttr "include_dirs"
+      , R.stringListAttr "linker_flags"
+      ]
+
+let haskellFfiBinary =
+      { impl = R.ruleImpl "haskell_ffi_binary" haskellFfiBinaryImpl
+      , attrs = haskellFfiBinaryAttrs
+      }
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- haskell_ffi_test - FFI test executable (same as ffi_binary)
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let haskellFfiTest =
+      { impl = R.ruleImpl "haskell_ffi_test" haskellFfiBinaryImpl
+      , attrs = haskellFfiBinaryAttrs
       }
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -661,6 +672,7 @@ let file =
 #   haskell_binary     - executable from sources + deps
 #   haskell_c_library  - FFI exports callable from C/C++
 #   haskell_ffi_binary - Haskell calling C/C++ via FFI
+#   haskell_ffi_test   - FFI test executable
 #   haskell_script     - single-file scripts
 #   haskell_test       - test executable
 ''
@@ -675,6 +687,7 @@ let file =
             , haskellBinary
             , haskellCLibrary
             , haskellFfiBinary
+            , haskellFfiTest
             , haskellScript
             , haskellTest
             ]

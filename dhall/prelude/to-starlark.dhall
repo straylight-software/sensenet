@@ -133,12 +133,33 @@ let haskellFFIBinary
         let hdrs = if P.List.null Text b.cxx_headers
                    then ""
                    else "    cxx_headers = ${list b.cxx_headers},\n"
+        let pkgs = if P.List.null Text b.packages
+                   then ""
+                   else "    packages = ${list b.packages},\n"
+        let exts = if P.List.null Text b.language_extensions
+                   then ""
+                   else "    language_extensions = ${list b.language_extensions},\n"
+        let opts = if P.List.null Text b.ghc_options
+                   then ""
+                   else "    ghc_options = ${list b.ghc_options},\n"
+        let libs = if P.List.null Text b.extra_libs
+                   then ""
+                   else "    extra_libs = ${list b.extra_libs},\n"
+        let libDirs = if P.List.null Text b.extra_lib_dirs
+                      then ""
+                      else "    extra_lib_dirs = ${list b.extra_lib_dirs},\n"
+        let incDirs = if P.List.null Text b.include_dirs
+                      then ""
+                      else "    include_dirs = ${list b.include_dirs},\n"
+        let lflags = if P.List.null Text b.linker_flags
+                     then ""
+                     else "    linker_flags = ${list b.linker_flags},\n"
         in ''
         haskell_ffi_binary(
             name = ${q b.name},
             hs_srcs = ${list b.hs_srcs},
             cxx_srcs = ${list b.cxx_srcs},
-        ${hdrs}    visibility = ${vis b.vis},
+        ${hdrs}${pkgs}${exts}${opts}${libs}${libDirs}${incDirs}${lflags}    visibility = ${vis b.vis},
         )
         ''
 

@@ -82,6 +82,8 @@
               toolchainlib.mkHaskellSection {
                 inherit ghc;
                 ghcVersion = ghcversion;
+                # ghc-pkg-id wrapper for GHC 9.12 -package workaround
+                ghcPkgWrapper = "${inputs.self}/toolchains/scripts/ghc-pkg-id";
               }
             );
             rust = lib.optionalString rustenabled (toolchainlib.mkRustSection { });
