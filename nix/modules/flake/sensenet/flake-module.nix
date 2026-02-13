@@ -72,7 +72,8 @@
           hooglewithdb = hspackages.hoogleWithPackages hspkgsfn;
           python = toolchain.python.package or pkgs.python312;
           inherit (pkgs.python3Packages) pybind11;
-          nvidia-sdk = pkgs.nvidia-sdk or null;
+          # Only evaluate nvidia-sdk when nv toolchain is enabled
+          nvidia-sdk = if nvenabled && pkgs ? nvidia-sdk then pkgs.nvidia-sdk else null;
 
           # ── Generate buckconfig.local ──────────────────────────────────────────
           buckconfiglocal = toolchainlib.mkBuckconfigLocal {
@@ -88,7 +89,7 @@
             python = lib.optionalString pythonenabled (
               toolchainlib.mkPythonSection { inherit python pybind11; }
             );
-            nv = lib.optionalString (nvenabled && nvidia-sdk != null) (
+            nv = lib.optionalString (nvidia-sdk != null) (
               toolchainlib.mkNvSection {
                 inherit nvidia-sdk;
                 inherit (llvmpackages) clang-unwrapped;
@@ -182,7 +183,7 @@
                 (toString configspath)
                 (lib.optionalString cxxenabled "true")
                 (lib.optionalString (nvenabled && nvidia-sdk != null) "true")
-                (if nvidia-sdk != null then "${nvidia-sdk}/lib" else "")
+                (lib.optionalString (nvenabled && nvidia-sdk != null) "${nvidia-sdk}/lib")
                 (lib.concatStringsSep " " targets)
                 devshellhook
               ]
