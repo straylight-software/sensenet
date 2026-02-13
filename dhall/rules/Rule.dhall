@@ -16,8 +16,9 @@ let AttrType =
       < String : { default : Optional Text }
       | StringList : {}
       | Bool : { default : Bool }
-      | Int : { default : Integer }
+      | Int : { default : Natural }
       | Dep : {}
+      | DepDefault : { default : Text }  -- attrs.dep(default = "//target")
       | DepList : {}
       | ExecDep : { default : Optional Text }  -- Default is a target label
       | Source : {}
@@ -97,10 +98,17 @@ let stringAttr =
 
 let stringListAttr = \(name : Text) -> attr name (AttrType.StringList {=})
 let boolAttr = \(name : Text) -> \(default : Bool) -> attr name (AttrType.Bool { default })
+let intAttr = \(name : Text) -> \(default : Natural) -> attr name (AttrType.Int { default })
+let sourceAttr = \(name : Text) -> attr name (AttrType.Source {=})
 let sourceListAttr = \(name : Text) -> attr name (AttrType.SourceList {=})
+let depAttr = \(name : Text) -> attr name (AttrType.Dep {=})
+let depDefaultAttr = \(name : Text) -> \(default : Text) -> attr name (AttrType.DepDefault { default })
 let depListAttr = \(name : Text) -> attr name (AttrType.DepList {=})
 let optionStringAttr = \(name : Text) -> attr name (AttrType.OptionString {=})
+let optionSourceAttr = \(name : Text) -> attr name (AttrType.OptionSource {=})
 let stringDictAttr = \(name : Text) -> attr name (AttrType.StringDict {=})
+let outputAttr = \(name : Text) -> attr name (AttrType.Output {=})
+let labelAttr = \(name : Text) -> attr name (AttrType.Label {=})
 
 let load =
       \(bzl : Text) ->
@@ -159,8 +167,10 @@ let bzlFile =
 in  { -- Types
       AttrType, Attr, Load, ProviderDef, ProviderField, HelperFn, RuleImpl, BzlFile
       -- Constructors
-    , attr, stringAttr, stringListAttr, boolAttr, sourceListAttr, depListAttr
-    , optionStringAttr, stringDictAttr
+    , attr, stringAttr, stringListAttr, boolAttr, intAttr
+    , sourceAttr, sourceListAttr, optionSourceAttr
+    , depAttr, depDefaultAttr, depListAttr
+    , optionStringAttr, stringDictAttr, outputAttr, labelAttr
     , load, provider, simpleProvider, typedProvider, typedField, typedFieldDefault
     , helper, ruleImpl, bzlFile
     }

@@ -1,8 +1,13 @@
 --| Render Rule definitions to Starlark .bzl files
+--|
+--| LIMITATION: Text values are NOT escaped. Do not use quotes, backslashes,
+--| or newlines in string defaults or provider field names. If needed, escape
+--| them manually in the Dhall source or handle in a post-processing step.
 
 let Prelude = ../prelude/Prelude.dhall
 let R = ./Rule.dhall
 
+-- | Quote a string for Starlark. WARNING: Does not escape special characters.
 let q = \(t : Text) -> "\"${t}\""
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -34,9 +39,10 @@ let renderAttrType
           , StringList = \(_ : {}) -> "attrs.list(attrs.string(), default = [])"
           , Bool = \(cfg : { default : Bool }) ->
               "attrs.bool(default = ${if cfg.default then "True" else "False"})"
-          , Int = \(cfg : { default : Integer }) ->
-              "attrs.int(default = ${Integer/show cfg.default})"
+          , Int = \(cfg : { default : Natural }) ->
+              "attrs.int(default = ${Natural/show cfg.default})"
           , Dep = \(_ : {}) -> "attrs.dep()"
+          , DepDefault = \(cfg : { default : Text }) -> "attrs.dep(default = ${q cfg.default})"
           , DepList = \(_ : {}) -> "attrs.list(attrs.dep(), default = [])"
           , ExecDep = \(cfg : { default : Optional Text }) ->
               merge { Some = \(d : Text) -> "attrs.exec_dep(default = ${q d})"
@@ -72,7 +78,8 @@ let renderAttrs
 -- Render Providers
 -- ══════════════════════════════════════════════════════════════════════════════
 
-let renderProviderField
+-- | Render a provider field for dict-style providers
+let renderProviderFieldDict
     : R.ProviderField -> Text
     = \(f : R.ProviderField) ->
         merge
@@ -80,7 +87,18 @@ let renderProviderField
               let def = merge { Some = \(d : Text) -> ", default = ${d}"
                               , None = "" } tf.default
               in "    ${q tf.name}: provider_field(${tf.type}${def}),"
-          , Simple = \(name : Text) -> "    ${q name},"
+          -- In dict context, Simple fields become untyped provider_field
+          , Simple = \(name : Text) -> "    ${q name}: provider_field(typing.Any),"
+          }
+          f
+
+-- | Render a provider field for list-style providers (just the name)
+let renderProviderFieldList
+    : R.ProviderField -> Text
+    = \(f : R.ProviderField) ->
+        merge
+          { Typed = \(tf : { name : Text, type : Text, default : Optional Text }) -> tf.name
+          , Simple = \(name : Text) -> name
           }
           f
 
@@ -112,9 +130,9 @@ let renderProvider
           let fieldList = Prelude.Text.concatSep ", " (Prelude.List.map Text Text q fieldNames)
           in "${p.name} = provider(fields = [${fieldList}])"
         else
-          -- Dict-style provider with typed fields
+          -- Dict-style provider with typed fields (handles mixed Typed/Simple)
           let fields = Prelude.Text.concatSep "\n" 
-                (Prelude.List.map R.ProviderField Text renderProviderField p.fields)
+                (Prelude.List.map R.ProviderField Text renderProviderFieldDict p.fields)
           in ''
 ${p.name} = provider(fields = {
 ${fields}

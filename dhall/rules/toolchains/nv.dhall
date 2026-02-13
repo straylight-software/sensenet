@@ -245,8 +245,8 @@ let nvBinary =
 let nvLibrary =
       { impl =
           R.ruleImpl "nv_library" ''
-    # Get tools from config
-    cxx = read_root_config("cxx", "cxx", "clang++")
+    # Get tools from config (use unwrapped clang from nv section for CUDA)
+    cxx = read_root_config("nv", "clang", "clang++")
     nvidia_sdk_path = read_root_config("nv", "nvidia_sdk_path", "/usr/local/cuda")
     nvidia_sdk_include = read_root_config("nv", "nvidia_sdk_include", "/usr/local/cuda/include")
     
@@ -265,7 +265,7 @@ let nvLibrary =
         "-x", "cuda",
         "--cuda-path=" + nvidia_sdk_path,
         "-isystem", nvidia_sdk_include,
-        "-std=c++17",  # Use c++17 for broader compatibility
+        "-std=c++23",  # Consistent with nv_binary
         "-fPIC",       # Required for shared library
         "-c",          # Compile only, don't link
     ]

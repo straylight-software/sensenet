@@ -499,7 +499,7 @@ let haskellFfiBinary =
     
     # Use ghc-pkg-id wrapper script to translate -package to -package-id
     # This works around GHC 9.12 bug where -package doesn't expose packages
-    ghc_wrapper = "toolchains/scripts/ghc-pkg-id"
+    ghc_wrapper = ctx.attrs._ghc_wrapper
     ghc_cmd = cmd_args([ghc_wrapper, ghc, ghc_pkg])
     ghc_cmd.add("-O2", "-threaded")
     
@@ -572,6 +572,8 @@ let haskellFfiBinary =
           , R.stringListAttr "extra_lib_dirs"
           , R.stringListAttr "include_dirs"
           , R.stringListAttr "linker_flags"
+          , R.attr "_ghc_wrapper" 
+              (R.AttrType.ExecDep { default = Some "toolchains//scripts:ghc-pkg-id" })
           ]
       }
 

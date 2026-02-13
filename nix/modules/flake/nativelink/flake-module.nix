@@ -53,7 +53,7 @@ in
     fly = {
       app-prefix = mk-option {
         type = types.str;
-        default = "sense";
+        default = "aleph";
         description = "Fly.io app name prefix (used for internal DNS)";
       };
 

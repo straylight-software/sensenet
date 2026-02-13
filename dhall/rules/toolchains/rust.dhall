@@ -82,6 +82,9 @@ let rustToolchain =
 let rustBinary =
       { impl =
           R.ruleImpl "rust_binary" ''
+    if not ctx.attrs.srcs:
+        fail("rust_binary requires at least one source file")
+    
     rustc = read_root_config("rust", "rustc", "rustc")
     
     out = ctx.actions.declare_output(ctx.attrs.name)
@@ -144,6 +147,9 @@ let rustBinary =
 let rustLibrary =
       { impl =
           R.ruleImpl "rust_library" ''
+    if not ctx.attrs.srcs:
+        fail("rust_library requires at least one source file")
+    
     rustc = read_root_config("rust", "rustc", "rustc")
     
     crate_name = ctx.attrs.crate_name or ctx.attrs.name

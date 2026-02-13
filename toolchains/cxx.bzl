@@ -165,7 +165,7 @@ llvm_toolchain = rule(
         "cxx_extra_flags": attrs.list(attrs.string(), default = []),
         "link_flags": attrs.list(attrs.string(), default = []),
         "link_style": attrs.string(default = "static"),
-        "_internal_tools": attrs.exec_dep(default = "prelude//cxx/tools:internal_tools"),
+        "_internal_tools": attrs.dep(default = "prelude//cxx/tools:internal_tools"),
     },
     is_toolchain_rule = True,
 )

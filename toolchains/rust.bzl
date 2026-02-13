@@ -71,6 +71,9 @@ rust_toolchain = rule(
 
 def _rust_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     """"""
+    if not ctx.attrs.srcs:
+        fail("rust_binary requires at least one source file")
+    
     rustc = read_root_config("rust", "rustc", "rustc")
     
     out = ctx.actions.declare_output(ctx.attrs.name)
@@ -131,6 +134,9 @@ rust_binary = rule(
 
 def _rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
     """"""
+    if not ctx.attrs.srcs:
+        fail("rust_library requires at least one source file")
+    
     rustc = read_root_config("rust", "rustc", "rustc")
     
     crate_name = ctx.attrs.crate_name or ctx.attrs.name

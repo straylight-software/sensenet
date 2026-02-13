@@ -474,7 +474,7 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     
     # Use ghc-pkg-id wrapper script to translate -package to -package-id
     # This works around GHC 9.12 bug where -package doesn't expose packages
-    ghc_wrapper = "toolchains/scripts/ghc-pkg-id"
+    ghc_wrapper = ctx.attrs._ghc_wrapper
     ghc_cmd = cmd_args([ghc_wrapper, ghc, ghc_pkg])
     ghc_cmd.add("-O2", "-threaded")
     
@@ -550,6 +550,7 @@ haskell_ffi_binary = rule(
         "extra_lib_dirs": attrs.list(attrs.string(), default = []),
         "include_dirs": attrs.list(attrs.string(), default = []),
         "linker_flags": attrs.list(attrs.string(), default = []),
+        "_ghc_wrapper": attrs.exec_dep(default = "toolchains//scripts:ghc-pkg-id"),
     },
 )
 

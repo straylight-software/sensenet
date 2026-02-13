@@ -160,7 +160,7 @@ let llvmToolchain =
           , R.stringListAttr "link_flags"
           , R.stringAttr "link_style" (Some "static")
           , (R.attr "_internal_tools" 
-              (R.AttrType.ExecDep { default = Some "prelude//cxx/tools:internal_tools" }))
+              (R.AttrType.DepDefault { default = "prelude//cxx/tools:internal_tools" }))
           ]
       }
 

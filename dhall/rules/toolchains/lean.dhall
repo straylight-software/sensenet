@@ -175,12 +175,14 @@ let leanLibrary =
         local_only = True,  # Lean compilation needs consistent LEAN_PATH
     )
     
+    sub_targets = {"olean": [DefaultInfo(default_outputs = [olean_dir])]}
+    if c_dir:
+        sub_targets["c"] = [DefaultInfo(default_outputs = [c_dir])]
+    
     return [
         DefaultInfo(
             default_output = olean_dir,
-            sub_targets = {
-                "olean": [DefaultInfo(default_outputs = [olean_dir])],
-            } | ({"c": [DefaultInfo(default_outputs = [c_dir])]} if c_dir else {}),
+            sub_targets = sub_targets,
         ),
         LeanLibraryInfo(
             olean_dir = olean_dir,

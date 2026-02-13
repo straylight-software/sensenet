@@ -1,12 +1,41 @@
 #!/usr/bin/env bash
-# Generate .bzl files from Dhall rule definitions
-# Usage: ./dhall-to-bzl dhall/rules/toolchains/execution.dhall > toolchains/execution.bzl
+# dhall-to-bzl - Generate .bzl files from Dhall rule definitions
+#
+# The input Dhall file must export a `render` attribute that produces Text.
+# See dhall/rules/Rule.dhall and dhall/rules/to-starlark.dhall for the DSL.
+#
+# Usage: ./dhall-to-bzl <rule.dhall>
+#
+# Example:
+#   ./dhall-to-bzl dhall/rules/toolchains/execution.dhall > toolchains/execution.bzl
 
 set -euo pipefail
 
+# Show help
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+    exit 0
+fi
+
+# Check arguments
 if [[ $# -ne 1 ]]; then
     echo "Usage: $0 <rule.dhall>" >&2
     exit 1
 fi
 
-dhall text <<< "(${1}).render"
+INPUT="$1"
+
+# Check dhall is available
+if ! command -v dhall &> /dev/null; then
+    echo "Error: dhall command not found. Install dhall or enter nix shell." >&2
+    exit 1
+fi
+
+# Check file exists
+if [[ ! -f "$INPUT" ]]; then
+    echo "Error: File '$INPUT' not found" >&2
+    exit 1
+fi
+
+# Render the Dhall file
+dhall text <<< "(./${INPUT}).render"
