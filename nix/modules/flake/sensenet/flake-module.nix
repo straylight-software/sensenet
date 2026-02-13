@@ -75,21 +75,21 @@
           nvidia-sdk = pkgs.nvidia-sdk or null;
 
           # ── Generate buckconfig.local ──────────────────────────────────────────
-          buckconfiglocal = toolchainlib.mkbuckconfiglocal {
-            cxx = lib.optionalString cxxenabled (toolchainlib.mkcxxsection { llvmpackages = llvmpackages; });
+          buckconfiglocal = toolchainlib.mkBuckconfigLocal {
+            cxx = lib.optionalString cxxenabled (toolchainlib.mkCxxSection { llvmPackages = llvmpackages; });
             haskell = lib.optionalString haskellenabled (
-              toolchainlib.mkhaskellsection {
+              toolchainlib.mkHaskellSection {
                 inherit ghc;
-                ghcversion = ghcversion;
+                ghcVersion = ghcversion;
               }
             );
-            rust = lib.optionalString rustenabled (toolchainlib.mkrustsection { });
-            lean = lib.optionalString leanenabled (toolchainlib.mkleansection { });
+            rust = lib.optionalString rustenabled (toolchainlib.mkRustSection { });
+            lean = lib.optionalString leanenabled (toolchainlib.mkLeanSection { });
             python = lib.optionalString pythonenabled (
-              toolchainlib.mkpythonsection { inherit python pybind11; }
+              toolchainlib.mkPythonSection { inherit python pybind11; }
             );
             nv = lib.optionalString (nvenabled && nvidia-sdk != null) (
-              toolchainlib.mknvsection {
+              toolchainlib.mkNvSection {
                 inherit nvidia-sdk;
                 inherit (llvmpackages) clang-unwrapped;
 
@@ -97,15 +97,15 @@
                 mdspan = pkgs.callPackage "${inputs.self}/nix/packages/mdspan.nix" { };
               }
             );
-            purescript = lib.optionalString purescriptenabled (toolchainlib.mkpurescriptsection { });
-            remoteexecution = lib.optionalString reenabled (
-              toolchainlib.mkremoteexecutionsection {
+            purescript = lib.optionalString purescriptenabled (toolchainlib.mkPureScriptSection { });
+            remoteExecution = lib.optionalString reenabled (
+              toolchainlib.mkRemoteExecutionSection {
                 scheduler = rescheduler;
-                schedulerport = reschedulerport;
+                schedulerPort = reschedulerport;
                 cas = recas;
-                casport = recasport;
+                casPort = recasport;
                 tls = retls;
-                instancename = reinstancename;
+                instanceName = reinstancename;
               }
             );
             extra = extrabuckconfigsections;
