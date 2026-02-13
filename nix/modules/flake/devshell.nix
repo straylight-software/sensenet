@@ -208,12 +208,15 @@ in
 
                 # Generate .buckconfig.local with toolchain paths
                 # This provides Buck2 with Nix store paths for all compilers
-                
+
                 # STRICT REQUIREMENT: NVIDIA toolchain requires custom LLVM-git overlay
                 # Enable 'sense.llvm-git.enable = true' in your flake config.
-                llvm-pkg = if (pkgs ? llvm-git) then pkgs.llvm-git 
-                           else throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'sense.llvm-git.enable = true'.";
-                
+                llvm-pkg =
+                  if (pkgs ? llvm-git) then
+                    pkgs.llvm-git
+                  else
+                    throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'sense.llvm-git.enable = true'.";
+
                 clang = llvm-pkg;
                 # llvm-git is already unwrapped
                 clang-unwrapped = llvm-pkg;
@@ -232,6 +235,16 @@ in
                   archs = sm_90,sm_100,sm_120
                 '';
 
+                # mdspan for std::mdspan on device (NVIDIA)
+                mdspan = pkgs.callPackage ../../packages/mdspan.nix { };
+
+                # GHC version from the package
+                ghc-version = hs-pkgs.ghc.version;
+
+                # Turing Registry flags from config (or defaults)
+                c-flags = lib.concatStringsSep " " (build-cfg.toolchain.cxx.c-flags or [ ]);
+                cxx-flags = lib.concatStringsSep " " (build-cfg.toolchain.cxx.cxx-flags or [ ]);
+
                 buckconfig-template = builtins.readFile ./devshell/buckconfig-local.ini;
                 buckconfig-filled =
                   builtins.replaceStrings
@@ -245,9 +258,12 @@ in
                       "@gcc_include@"
                       "@gcc_include_arch@"
                       "@glibc_include@"
+                      "@mdspan_include@"
                       "@gcc_lib@"
                       "@gcc_lib_base@"
                       "@glibc_lib@"
+                      "@c_flags@"
+                      "@cxx_flags@"
                       "@ghc@"
                       "@ghc_pkg@"
                       "@haddock@"
@@ -264,6 +280,8 @@ in
                       "@lean_include_dir@"
                       "@python_interpreter@"
                       "@python_include@"
+                      "@nanobind_include@"
+                      "@nanobind_cmake@"
                       "@pybind11_include@"
                     ]
                     [
@@ -276,15 +294,18 @@ in
                       "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}"
                       "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}/${pkgs.stdenv.hostPlatform.config}"
                       "${pkgs.glibc.dev}/include"
+                      "${mdspan}/include"
                       "${pkgs.gcc.cc}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${pkgs.gcc.cc.version}"
                       "${pkgs.gcc.cc.lib}/lib"
                       "${pkgs.glibc}/lib"
+                      c-flags
+                      cxx-flags
                       "${ghc-with-all-deps}/bin/ghc"
                       "${ghc-with-all-deps}/bin/ghc-pkg"
                       "${ghc-with-all-deps}/bin/haddock"
-                      "9.12.2"
-                      "${ghc-with-all-deps}/lib/ghc-9.12.2/lib"
-                      "${ghc-with-all-deps}/lib/ghc-9.12.2/lib/package.conf.d"
+                      ghc-version
+                      "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib"
+                      "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib/package.conf.d"
                       "${pkgs.rustc}/bin/rustc"
                       "${pkgs.rustc}/bin/rustdoc"
                       "${pkgs.clippy}/bin/clippy-driver"
@@ -295,6 +316,8 @@ in
                       "${pkgs.lean4}/include"
                       "${pkgs.python312}/bin/python3"
                       "${pkgs.python312}/include/python3.12"
+                      "${pkgs.python312Packages.nanobind}/lib/python3.12/site-packages/nanobind/include"
+                      "${pkgs.python312Packages.nanobind}/lib/python3.12/site-packages/nanobind"
                       "${pkgs.python312Packages.pybind11}/include"
                     ]
                     buckconfig-template;
