@@ -36,10 +36,11 @@
     };
 
     # nix-compile - Type inference and static analysis for Nix
-    nix-compile = {
-      url = "github:straylight-software/nix-compile";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    # TODO: Uncomment when repository is public
+    # nix-compile = {
+    #   url = "github:straylight-software/nix-compile";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
   };
 
   outputs =
@@ -48,18 +49,9 @@
       systems = import inputs.systems;
 
       imports = [
-        inputs.nix-compile.flakeModules.default
         ./nix/modules/flake/_index.nix
         (import ./nix/modules/flake/sensenet/default.nix { inherit inputs; })
       ];
-
-      nix-compile = {
-        enable = true;
-        profile = "strict";
-        layout = "straylight";
-        paths = [ "nix" ];
-        pre-commit.enable = true;
-      };
 
       # Export overlays
       flake.overlays = (import ./nix/overlays inputs).flake.overlays;
@@ -78,8 +70,6 @@
         devshell = ./nix/modules/flake/devshell.nix;
         nativelink = ./nix/modules/flake/nativelink/flake-module.nix;
         std = import ./nix/modules/flake/std.nix { inherit inputs; };
-        # nix-compile integration - typed Nix analysis + proof obligations
-        nix-compile = import ./nix/modules/flake/nix-compile/default.nix { inherit inputs; };
       };
 
       # Export lib for downstream use
