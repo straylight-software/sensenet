@@ -258,6 +258,73 @@ let std = cxxStd
 let binary = cxxBinary
 let deps = cxxDeps
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Toolchains
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let TC = ./Toolchain.dhall
+
+let cxxToolchain
+    : TC.CxxToolchain -> Text
+    = \(t : TC.CxxToolchain) ->
+        ''
+        llvm_toolchain(
+            name = ${q t.name},
+            c_extra_flags = ${list t.c_extra_flags},
+            cxx_extra_flags = ${list t.cxx_extra_flags},
+            link_flags = ${list t.link_flags},
+            link_style = ${q t.link_style},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let haskellToolchain
+    : TC.HaskellToolchain -> Text
+    = \(t : TC.HaskellToolchain) ->
+        ''
+        haskell_toolchain(
+            name = ${q t.name},
+            compiler_flags = ${list t.compiler_flags},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let executionPlatform
+    : TC.ExecutionPlatform -> Text
+    = \(t : TC.ExecutionPlatform) ->
+        let localStr = if t.local_enabled then "True" else "False"
+        let remoteStr = if t.remote_enabled then "True" else "False"
+        in ''
+        lre_execution_platform(
+            name = ${q t.name},
+            cpu_configuration = host_configuration.cpu,
+            os_configuration = host_configuration.os,
+            local_enabled = ${localStr},
+            remote_enabled = ${remoteStr},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let pythonBootstrap
+    : TC.PythonBootstrap -> Text
+    = \(t : TC.PythonBootstrap) ->
+        ''
+        system_python_bootstrap_toolchain(
+            name = ${q t.name},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let genruleToolchain
+    : TC.GenruleToolchain -> Text
+    = \(t : TC.GenruleToolchain) ->
+        ''
+        system_genrule_toolchain(
+            name = ${q t.name},
+            visibility = ${vis t.vis},
+        )
+        ''
+
 in  { q, list, flakes, locals
     , cxxStd, rustEdition, vis, Flags
     -- C++
@@ -274,6 +341,9 @@ in  { q, list, flakes, locals
     , nvBinary, nvLibrary
     -- PureScript
     , purescriptApp, purescriptBinary, purescriptLibrary
+    -- Toolchains
+    , cxxToolchain, haskellToolchain, executionPlatform
+    , pythonBootstrap, genruleToolchain
     -- backward compat
     , std, binary, deps
     }

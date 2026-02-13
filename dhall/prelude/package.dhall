@@ -7,6 +7,7 @@ let H = ./Haskell.dhall
 let L = ./Lean.dhall
 let N = ./Nv.dhall
 let PS = ./PureScript.dhall
+let TC = ./Toolchain.dhall
 
 in  { -- Types
       Dep = T.Dep
@@ -51,6 +52,17 @@ in  { -- Types
     , purescriptBinary = PS.binary
     , PureScriptLibrary = PS.Library
     , purescriptLibrary = PS.library
+    -- Toolchains
+    , CxxToolchain = TC.CxxToolchain
+    , cxxToolchain = TC.cxxToolchain
+    , HaskellToolchain = TC.HaskellToolchain
+    , haskellToolchain = TC.haskellToolchain
+    , ExecutionPlatform = TC.ExecutionPlatform
+    , executionPlatform = TC.executionPlatform
+    , PythonBootstrap = TC.PythonBootstrap
+    , pythonBootstrap = TC.pythonBootstrap
+    , GenruleToolchain = TC.GenruleToolchain
+    , genruleToolchain = TC.genruleToolchain
     -- Backward compat (short names for common case)
     , Binary = C.Binary
     , binary = C.binary
