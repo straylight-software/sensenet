@@ -8,6 +8,9 @@ let H = ./Haskell.dhall
 let L = ./Lean.dhall
 let N = ./Nv.dhall
 let PS = ./PureScript.dhall
+let G = ./Genrule.dhall
+let RC = ./RustCrate.dhall
+let NC = ./NixCxx.dhall
 
 let q = \(t : Text) -> "\"${t}\""
 
@@ -376,6 +379,87 @@ let purescriptToolchain
         )
         ''
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Genrule
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let genrule
+    : G.Genrule -> Text
+    = \(g : G.Genrule) ->
+        let srcs = if P.List.null Text g.srcs
+                   then ""
+                   else "    srcs = ${list g.srcs},\n"
+        in ''
+        genrule(
+            name = ${q g.name},
+        ${srcs}    out = ${q g.out},
+            cmd = ${q g.cmd},
+            visibility = ${vis g.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Rust Crates
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let cratesIo
+    : RC.CratesIo -> Text
+    = \(c : RC.CratesIo) ->
+        let features = if P.List.null Text c.features
+                       then ""
+                       else "    features = ${list c.features},\n"
+        let deps = if P.List.null Text c.deps
+                   then ""
+                   else "    deps = ${list c.deps},\n"
+        let procMacro = if c.proc_macro then "    proc_macro = True,\n" else ""
+        in ''
+        crates_io(
+            name = ${q c.name},
+            version = ${q c.version},
+            sha256 = ${q c.sha256},
+        ${features}${deps}${procMacro}    visibility = ${vis c.vis},
+        )
+        ''
+
+let httpArchive
+    : RC.HttpArchive -> Text
+    = \(a : RC.HttpArchive) ->
+        let stripPrefix = merge { Some = \(p : Text) -> "    strip_prefix = ${q p},\n"
+                                , None = "" } a.strip_prefix
+        in ''
+        http_archive(
+            name = ${q a.name},
+            url = ${q a.url},
+            sha256 = ${q a.sha256},
+        ${stripPrefix}    visibility = ${vis a.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Nix C++
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let nixCxxBinary
+    : NC.NixBinary -> Text
+    = \(b : NC.NixBinary) ->
+        let deps = if P.List.null Text b.deps
+                   then ""
+                   else "    deps = ${list b.deps},\n"
+        let cflags = if P.List.null Text b.compiler_flags
+                     then ""
+                     else "    compiler_flags = ${list b.compiler_flags},\n"
+        let lflags = if P.List.null Text b.linker_flags
+                     then ""
+                     else "    linker_flags = ${list b.linker_flags},\n"
+        in ''
+        nix_cxx_binary(
+            name = ${q b.name},
+            srcs = ${list b.srcs},
+            deps = ${list b.nix_deps},
+        ${deps}${cflags}${lflags}    visibility = ${vis b.vis},
+        )
+        ''
+
 in  { q, list, flakes, locals
     , cxxStd, rustEdition, vis, Flags
     -- C++
@@ -392,6 +476,12 @@ in  { q, list, flakes, locals
     , nvBinary, nvLibrary
     -- PureScript
     , purescriptApp, purescriptBinary, purescriptLibrary
+    -- Genrule
+    , genrule
+    -- Rust crates
+    , cratesIo, httpArchive
+    -- Nix C++
+    , nixCxxBinary
     -- Toolchains
     , cxxToolchain, haskellToolchain, executionPlatform
     , pythonBootstrap, genruleToolchain

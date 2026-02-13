@@ -8,6 +8,9 @@ let L = ./Lean.dhall
 let N = ./Nv.dhall
 let PS = ./PureScript.dhall
 let TC = ./Toolchain.dhall
+let G = ./Genrule.dhall
+let RC = ./RustCrate.dhall
+let NC = ./NixCxx.dhall
 
 in  { -- Types
       Dep = T.Dep
@@ -72,6 +75,17 @@ in  { -- Types
     , leanToolchain = TC.leanToolchain
     , PureScriptToolchain = TC.PureScriptToolchain
     , purescriptToolchain = TC.purescriptToolchain
+    -- Genrule
+    , Genrule = G.Genrule
+    , genrule = G.genrule
+    -- Rust crates
+    , CratesIo = RC.CratesIo
+    , cratesIo = RC.cratesIo
+    , HttpArchive = RC.HttpArchive
+    , httpArchive = RC.httpArchive
+    -- Nix C++
+    , NixCxxBinary = NC.NixBinary
+    , nixCxxBinary = NC.nixBinary
     -- Backward compat (short names for common case)
     , Binary = C.Binary
     , binary = C.binary
