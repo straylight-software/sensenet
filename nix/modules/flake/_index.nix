@@ -27,8 +27,9 @@
   sense.nixpkgs.overlays = [ inputs.purescript-overlay.overlays.default ];
 
   # Enable nix-compile static analysis
+  # TODO: Enable when nix-compile input is uncommented in flake.nix
   sense.nix-compile = {
-    enable = true;
+    enable = false; # requires inputs.nix-compile
     profile = "strict";
     verify-dhall = true;
     cross-language = false; # TODO: enable when cross-lang is implemented
