@@ -198,7 +198,16 @@ callBuck2 :: [String] -> IO ()
 callBuck2 args = do
     -- Check for BUCK2 env var, otherwise use "buck2"
     buck2 <- fromMaybe "buck2" <$> lookupEnv "BUCK2"
-    -- Use spawnProcess to inherit stdin/stdout/stderr
-    ph <- spawnProcess buck2 args
-    code <- waitForProcess ph
-    exitWith code
+    -- Check if buck2 exists
+    result <- try $ spawnProcess buck2 args
+    case result of
+        Left (e :: SomeException) -> do
+            putStrLn "error: buck2 not found"
+            putStrLn ""
+            putStrLn "sense requires buck2 in PATH. Either:"
+            putStrLn "  1. Run from devshell: nix develop"
+            putStrLn "  2. Set BUCK2 env var: BUCK2=/path/to/buck2 sense build"
+            exitFailure
+        Right ph -> do
+            code <- waitForProcess ph
+            exitWith code
