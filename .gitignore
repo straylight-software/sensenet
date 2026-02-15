@@ -6,6 +6,10 @@ buck-out/
 nix/build/
 bin/
 
+# sense CLI binary (built from src/sense/)
+/sense
+dist-newstyle/
+
 # Generated BUCK files (from BUILD.dhall) - zero starlark
 # All BUCK files are generated, users only edit BUILD.dhall
 src/**/BUCK

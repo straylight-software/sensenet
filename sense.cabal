@@ -1,0 +1,22 @@
+cabal-version: 3.0
+name:          sense
+version:       0.1.0
+synopsis:      Typed builds with Dhall + Buck2
+description:   sense wraps Buck2 with Dhall configuration, making builds
+               declarative and typed while Buck2 handles execution invisibly.
+license:       MIT
+author:        straylight
+maintainer:    dev@straylight.ai
+category:      Build
+build-type:    Simple
+
+executable sense
+  main-is:          Main.hs
+  hs-source-dirs:   src/sense
+  default-language: GHC2024
+  ghc-options:      -Wall -O2
+  build-depends:
+    , base        >=4.18 && <5
+    , directory   >=1.3
+    , filepath    >=1.4
+    , process     >=1.6
