@@ -22,7 +22,7 @@ Bootstrap:
 module Main where
 
 import Control.Exception (SomeException, try)
-import Control.Monad (forM_, unless, when)
+import Control.Monad (forM_, when)
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Maybe (fromMaybe)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
@@ -241,7 +241,7 @@ callBuck2 args = do
     -- Check if buck2 exists
     result <- try $ spawnProcess buck2 args
     case result of
-        Left (e :: SomeException) -> do
+        Left (_ :: SomeException) -> do
             putStrLn "error: buck2 not found"
             putStrLn ""
             putStrLn "sense requires buck2 in PATH. Either:"
