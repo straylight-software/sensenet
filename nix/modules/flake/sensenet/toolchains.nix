@@ -3,6 +3,13 @@
 # Generate .buckconfig.local content for a Buck2 project.
 #
 { lib, pkgs }:
+let
+  # Import centralized render-dhall function
+  render-dhall = import ../../../lib/render-dhall.nix { inherit pkgs lib; };
+
+  # Scripts directory for Dhall templates
+  scripts-dir = ./toolchains;
+in
 {
   # Generate buckconfig.local INI content from toolchain config
   mkBuckconfigLocal =
@@ -46,22 +53,22 @@
       gcc-version = gcc-unwrapped.version;
       triple = pkgs.stdenv.hostPlatform.config;
     in
-    ''
-
-      [cxx]
-      cc = ${llvm.clang}/bin/clang
-      cxx = ${llvm.clang}/bin/clang++
-      cpp = ${llvm.clang}/bin/clang-cpp
-      ar = ${llvm.lld}/bin/llvm-ar
-      ld = ${llvm.lld}/bin/ld.lld
-      clang_resource_dir = ${llvm.clang}/resource-root
-      gcc_include = ${gcc-unwrapped}/include/c++/${gcc-version}
-      gcc_include_arch = ${gcc-unwrapped}/include/c++/${gcc-version}/${triple}
-      glibc_include = ${pkgs.glibc.dev}/include
-      gcc_lib = ${gcc-unwrapped}/lib/gcc/${triple}/${gcc-version}
-      gcc_lib_base = ${gcc.cc.lib}/lib
-      glibc_lib = ${pkgs.glibc}/lib
-    '';
+    builtins.readFile (
+      render-dhall "cxx-section" (scripts-dir + "/cxx-section.dhall") {
+        cc = "${llvm.clang}/bin/clang";
+        cxx = "${llvm.clang}/bin/clang++";
+        cpp = "${llvm.clang}/bin/clang-cpp";
+        ar = "${llvm.lld}/bin/llvm-ar";
+        ld = "${llvm.lld}/bin/ld.lld";
+        clang_resource_dir = "${llvm.clang}/resource-root";
+        gcc_include = "${gcc-unwrapped}/include/c++/${gcc-version}";
+        gcc_include_arch = "${gcc-unwrapped}/include/c++/${gcc-version}/${triple}";
+        glibc_include = "${pkgs.glibc.dev}/include";
+        gcc_lib = "${gcc-unwrapped}/lib/gcc/${triple}/${gcc-version}";
+        gcc_lib_base = "${gcc.cc.lib}/lib";
+        glibc_lib = "${pkgs.glibc}/lib";
+      }
+    );
 
   # Haskell toolchain section
   mkHaskellSection =
@@ -71,22 +78,14 @@
       ghcPkgWrapper ? null,
       stan ? null,
     }:
-    ''
-
-      [haskell]
-      ghc = ${ghc}/bin/ghc
-      ghc_pkg = ${ghc}/bin/ghc-pkg
-      haddock = ${ghc}/bin/haddock
-      ghc_version = ${ghcVersion}
-      ghc_lib_dir = ${ghc}/lib/ghc-${ghcVersion}/lib
-      global_package_db = ${ghc}/lib/ghc-${ghcVersion}/lib/package.conf.d
-    ''
-    + lib.optionalString (ghcPkgWrapper != null) ''
-      ghc_pkg_wrapper = ${ghcPkgWrapper}
-    ''
-    + lib.optionalString (stan != null) ''
-      stan = ${stan}/bin/stan
-    '';
+    builtins.readFile (
+      render-dhall "haskell-section" (scripts-dir + "/haskell-section.dhall") {
+        ghc = "${ghc}";
+        ghc-version = "${ghcVersion}";
+        ghc-pkg-wrapper = if ghcPkgWrapper != null then "${ghcPkgWrapper}" else "";
+        stan = if stan != null then "${stan}" else "";
+      }
+    );
 
   # Rust toolchain section
   mkRustSection = _: ''
@@ -124,17 +123,14 @@
       # withPackages returns an env that wraps the original python
       pythonPkg = python.passthru.pythonOnBuildForHost or python.passthru.python or python;
       pyVersion = lib.versions.majorMinor pythonPkg.version;
-      pybind11Section = lib.optionalString (pybind11 != null) ''
-        pybind11_include = ${pybind11}/include
-      '';
     in
-    ''
-
-      [python]
-      # Python toolchain from Nix
-      interpreter = ${python}/bin/python3
-      python_include = ${python}/include/python${pyVersion}
-      ${pybind11Section}'';
+    builtins.readFile (
+      render-dhall "python-section" (scripts-dir + "/python-section.dhall") {
+        python = "${python}";
+        python-include = "${python}/include/python${pyVersion}";
+        pybind11-include = if pybind11 != null then "${pybind11}/include" else "";
+      }
+    );
 
   # NVIDIA toolchain section
   mkNvSection =
@@ -143,20 +139,13 @@
       clang-unwrapped,
       mdspan,
     }:
-    ''
-
-      [nv]
-      nvidia_sdk_path = ${nvidia-sdk}
-      nvidia_sdk_include = ${nvidia-sdk}/include
-      nvidia_sdk_lib = ${nvidia-sdk}/lib
-      ptxas = ${nvidia-sdk}/bin/ptxas
-      fatbinary = ${nvidia-sdk}/bin/fatbinary
-      archs = sm_90
-      # Use unwrapped clang for CUDA (avoids NixOS hardening flags like -fzero-call-used-regs)
-      clang = ${clang-unwrapped}/bin/clang++
-      # mdspan for device code (Kokkos reference implementation)
-      mdspan_include = ${mdspan}/include
-    '';
+    builtins.readFile (
+      render-dhall "nv-section" (scripts-dir + "/nv-section.dhall") {
+        nvidia-sdk = "${nvidia-sdk}";
+        clang = "${clang-unwrapped}/bin/clang++";
+        mdspan = "${mdspan}";
+      }
+    );
 
   # PureScript toolchain section
   mkPureScriptSection = _: ''
@@ -180,24 +169,14 @@
     let
       tlsStr = if tls then "true" else "false";
     in
-    ''
-
-      # ────────────────────────────────────────────────────────────────────────────
-      # NativeLink Remote Execution
-      # ────────────────────────────────────────────────────────────────────────────
-
-      [build]
-      execution_platforms = toolchains//:lre
-
-      [buck2_re_client]
-      engine_address = grpc://${scheduler}:${toString schedulerPort}
-      cas_address = grpc://${cas}:${toString casPort}
-      action_cache_address = grpc://${cas}:${toString casPort}
-      tls = ${tlsStr}
-      instance_name = ${instanceName}
-
-      [buck2_re_client.platform_properties]
-      OSFamily = linux
-      container-image = nix-worker
-    '';
+    builtins.readFile (
+      render-dhall "remote-exec-section" (scripts-dir + "/remote-exec-section.dhall") {
+        scheduler = "${scheduler}";
+        scheduler-port = "${toString schedulerPort}";
+        cas = "${cas}";
+        cas-port = "${toString casPort}";
+        tls = "${tlsStr}";
+        instance-name = "${instanceName}";
+      }
+    );
 }

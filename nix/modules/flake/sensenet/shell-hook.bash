@@ -52,10 +52,10 @@ if [ ! -L nix/build/prelude ]; then
 fi
 # Copy toolchains (Buck2 doesn't follow symlinks to paths outside project root)
 if [ ! -d nix/build/toolchains ] || [ "@toolchainsPath@" != "$(cat nix/build/toolchains/.source 2>/dev/null)" ]; then
-	rm -rf nix/build/toolchains
-	cp -rL @toolchainsPath@ nix/build/toolchains
-	chmod -R u+w nix/build/toolchains
-	echo "@toolchainsPath@" >nix/build/toolchains/.source
+  rm -rf nix/build/toolchains
+  cp -rL @toolchainsPath@ nix/build/toolchains
+  chmod -R u+w nix/build/toolchains
+  echo "@toolchainsPath@" >nix/build/toolchains/.source
 fi
 
 # Generate .buckconfig.local

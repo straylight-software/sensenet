@@ -28,6 +28,12 @@
     let
       toolchainlib = import ./toolchains.nix { inherit lib pkgs; };
 
+      # Import centralized render-dhall function
+      render-dhall = import ../../../lib/render-dhall.nix { inherit pkgs lib; };
+
+      # Scripts directory for Dhall templates
+      scripts-dir = ./scripts;
+
       mkproject =
         {
           name,
@@ -208,42 +214,35 @@
               pkgs.cacert
             ];
 
-            buildPhase = ''
-              export HOME=$TMPDIR
-
-              # Set up prelude
-              mkdir -p nix/build
-              ln -sf ${preludepath} nix/build/prelude
-
-              # Generate buckconfig.local
-              cp ${buckconfiglocalfile} .buckconfig.local
-
-              # Build targets
-              buck2 build ${lib.concatStringsSep " " targets}
-            '';
+            buildPhase =
+              let
+                buildPhaseScript = render-dhall "build-phase" (scripts-dir + "/build-phase.dhall") {
+                  prelude-path = preludepath;
+                  buckconfig-local-file = buckconfiglocalfile;
+                  targets = lib.concatStringsSep " " targets;
+                };
+              in
+              builtins.readFile buildPhaseScript;
 
             installPhase =
               if installphase != null then
                 installphase
               else
-                ''
-                  mkdir -p $out
-
-                  ${lib.optionalString installbinaries ''
-                    mkdir -p $out/bin
-                    find buck-out/v2/gen -type f -executable -not -name "*.so" -not -name "*.a" 2>/dev/null | while read bin; do
-                      if file "$bin" | grep -q "ELF.*executable"; then
-                        install -m 755 "$bin" "$out/bin/" 2>/dev/null || true
-                      fi
-                    done
-                  ''}
-
-                  # Always create a marker file
-                  echo "${lib.concatStringsSep " " targets}" > $out/.sensenet-targets
-                '';
+                let
+                  installPhaseScript = render-dhall "install-phase" (scripts-dir + "/install-phase.dhall") {
+                    install-binaries = if installbinaries then "1" else "0";
+                    targets = lib.concatStringsSep " " targets;
+                  };
+                in
+                builtins.readFile installPhaseScript;
 
             "dontConfigure" = true;
             "dontFixup" = true;
+
+            meta = {
+              description = "Sense/Net build package for ${name}";
+              license = lib.licenses.mit;
+            };
           };
 
           # ── Development shell ──────────────────────────────────────────────────

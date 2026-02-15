@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# dhall type check script
+
+cd @inputsSelf@
+echo "sense/net: type-checking Dhall configurations"
+
+# Type-check each Dhall file
+for f in dhall/*.dhall; do
+  echo "  checking $f"
+  dhall --file "$f" >/dev/null
+done
+
+# Verify package.dhall exports are consistent
+echo "  checking dhall/package.dhall"
+dhall --file dhall/package.dhall >/dev/null
+
+touch $out

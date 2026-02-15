@@ -36,6 +36,7 @@ let
 
   cfg = config.sense.devshell;
   build-cfg = config.sense.build;
+
 in
 {
   _class = "flake";
@@ -110,6 +111,12 @@ in
         # PureScript packages from purescript-overlay (if available)
         purs-pkgs =
           if inputs ? purescript-overlay then inputs.purescript-overlay.packages.${system} else { };
+
+        # Import centralized render-dhall function
+        render-dhall = import ../../lib/render-dhall.nix { inherit pkgs lib; };
+
+        # Scripts directory for Dhall templates
+        scripts-dir = ./devshell;
 
         # All env vars defined here, not in shellHook
         # Env var names use CUDA/NVIDIA because that's what tools expect
@@ -248,17 +255,14 @@ in
                 lld = llvm-pkg;
 
                 # NV config if enabled
-                nv-config = optional-string (cfg.nv.enable && pkgs ? nvidia-sdk) ''
-                  [nv]
-                  nvidia_sdk_path = ${pkgs.nvidia-sdk}
-                  nvidia_sdk_include = ${pkgs.nvidia-sdk}/include
-                  nvidia_sdk_lib = ${pkgs.nvidia-sdk}/lib
-                  clang = ${clang-unwrapped}/bin/clang++
-                  ptxas = ${pkgs.nvidia-sdk}/bin/ptxas
-                  fatbinary = ${pkgs.nvidia-sdk}/bin/fatbinary
-                  mdspan_include = ${pkgs.callPackage ../../packages/mdspan.nix { }}/include
-                  archs = sm_90,sm_100,sm_120
-                '';
+                nv-config =
+                  let
+                    nv-config-script = render-dhall "nv-config" (scripts-dir + "/nv-config.dhall") {
+                      inherit (pkgs) nvidia-sdk;
+                      inherit clang-unwrapped;
+                    };
+                  in
+                  optional-string (cfg.nv.enable && pkgs ? nvidia-sdk) (builtins.readFile nv-config-script);
 
                 # mdspan for std::mdspan on device (NVIDIA)
                 mdspan = pkgs.callPackage ../../packages/mdspan.nix { };
@@ -381,19 +385,30 @@ in
                   fi
                 '';
               in
-              ''
-                echo "━━━ sense devshell ━━━"
-                echo "GHC: $(${ghc-with-all-deps}/bin/ghc --version)"
-                ${straylight-nix-check}
-                ${buckconfig-hook}
-                # Add sense CLI to PATH (bootstrap binary in repo root)
-                export PATH="$PWD:$PATH"
-                ${config.sense.build.shellHook or ""}
-                ${config.sense.shortlist.shellHook or ""}
-                ${config.sense.lre.shellHook or ""}
-                ${hie-yaml-hook}
-                ${cfg.extra-shell-hook}
-              '';
+              builtins.replaceStrings
+                [
+                  "@ghcWithAllDeps@"
+                  "@straylightNixCheck@"
+                  "@buckconfigHook@"
+                  "@preludePath@"
+                  "@buildShellHook@"
+                  "@shortlistShellHook@"
+                  "@lreShellHook@"
+                  "@hieYamlHook@"
+                  "@extraShellHook@"
+                ]
+                [
+                  "${ghc-with-all-deps}"
+                  straylight-nix-check
+                  buckconfig-hook
+                  (toString (config.sense.build.prelude.path or inputs.buck2-prelude))
+                  (config.sense.build.shellHook or "")
+                  (config.sense.shortlist.shellHook or "")
+                  (config.sense.lre.shellHook or "")
+                  hie-yaml-hook
+                  cfg.extra-shell-hook
+                ]
+                (builtins.readFile ./devshell/shell-hook.template);
           }
           // nv-env
           // sensenet-env

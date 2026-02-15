@@ -22,8 +22,15 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   pkgs,
+  lib,
 }:
 let
+  # Import centralized render-dhall function
+  render-dhall = import ../../../nix/lib/render-dhall.nix { inherit pkgs lib; };
+
+  # Scripts directory for Dhall templates
+  scripts-dir = ./.;
+
   # ────────────────────────────────────────────────────────────────────────────
   # Layer 1: Nix toolchain paths
   # nix-compile should infer: { cc : Path, cxx : Path, ar : Path, ... }
@@ -45,20 +52,19 @@ let
   # ────────────────────────────────────────────────────────────────────────────
 
   # FAILING: nix-compile should verify this generates valid Dhall
-  toolchain-dhall = pkgs.writeText "toolchain-generated.dhall" ''
-    -- Auto-generated from Nix toolchain configuration
-    -- DO NOT EDIT - regenerate with `nix run .#gen-toolchain-dhall`
-
-    let Toolchain = ../dhall/Toolchain.dhall
-
-    in  Toolchain::{
-        , cc = "${cxx-toolchain.cc}"
-        , cxx = "${cxx-toolchain.cxx}"
-        , ar = "${cxx-toolchain.ar}"
-        , ld = "${cxx-toolchain.ld}"
-        , sysroot = Some "${cxx-toolchain.sysroot}"
-        }
-  '';
+  toolchain-dhall =
+    let
+      toolchain-dhall-script =
+        render-dhall "toolchain-generated" (scripts-dir + "/toolchain-generated.dhall")
+          {
+            inherit (cxx-toolchain) cc;
+            inherit (cxx-toolchain) cxx;
+            inherit (cxx-toolchain) ar;
+            inherit (cxx-toolchain) ld;
+            inherit (cxx-toolchain) sysroot;
+          };
+    in
+    pkgs.writeText "toolchain-generated.dhall" (builtins.readFile toolchain-dhall-script);
 
   # ────────────────────────────────────────────────────────────────────────────
   # Layer 3: Dhall → Starlark generation
@@ -126,6 +132,10 @@ let
       mkdir -p $out
       touch $out/result
     '';
+    meta = {
+      description = "Test build with fetched source for cross-language analysis";
+      license = lib.licenses.mit;
+    };
   };
 
 in

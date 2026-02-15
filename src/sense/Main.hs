@@ -25,6 +25,7 @@ import Control.Exception (SomeException, try)
 import Control.Monad (forM_, when)
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Maybe (fromMaybe)
+import Data.Semigroup ((<>))
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
@@ -129,8 +130,7 @@ cmdTargets args = do
             [] -> "."
             (d : _) -> d
     genIfNeeded dir
-    let pattern = "//" <> dir <> ":*"
-    callBuck2 ["targets", pattern]
+    callBuck2 ["targets", ("//" ++ dir ++ ":*")]
 
 -- | Show Stan static analysis report
 cmdStan :: [String] -> IO ()
@@ -175,17 +175,17 @@ genIfNeeded dir = do
 genFile :: FilePath -> FilePath -> IO ()
 genFile dhallPath buckPath = do
     putStrLn $ "gen: " <> dhallPath <> " -> " <> buckPath
-    
+
     -- First, check the dhall type to determine format
     (typeCode, typeOut, _) <- readProcessWithExitCode "dhall" ["type", "--file", dhallPath] ""
-    
+
     case typeCode of
         ExitFailure _ -> do
             putStrLn $ "error: failed to type-check " <> dhallPath
             exitFailure
         ExitSuccess -> do
             let isNewFormat = "rules" `isInfixOf` typeOut && "header" `isInfixOf` typeOut
-            
+
             if isNewFormat
                 then genNewFormat dhallPath buckPath
                 else genLegacyFormat dhallPath buckPath
@@ -194,24 +194,30 @@ genFile dhallPath buckPath = do
 genNewFormat :: FilePath -> FilePath -> IO ()
 genNewFormat dhallPath buckPath = do
     -- Extract header using bash to handle dhall's path resolution
-    (_, header, _) <- readProcessWithExitCode "bash" ["-c", 
-        "dhall text <<< '(./" <> dhallPath <> ").header'"] ""
-    
-    -- Extract and join rules  
+    (_, header, _) <-
+        readProcessWithExitCode
+            "bash"
+            [ "-c"
+            , "dhall text <<< '(./" <> dhallPath <> ").header'"
+            ]
+            ""
+
+    -- Extract and join rules
     let rulesCmd = "dhall text <<< 'let P = ./dhall/prelude/Prelude.dhall in P.Text.concatSep \"\\n\" (./" <> dhallPath <> ").rules'"
     (rulesCode, rules, rulesErr) <- readProcessWithExitCode "bash" ["-c", rulesCmd] ""
-    
+
     case rulesCode of
         ExitFailure _ -> do
             putStrLn $ "error: failed to extract rules from " <> dhallPath
             putStrLn rulesErr
             exitFailure
         ExitSuccess -> do
-            let content = unlines
-                    [ "# Generated from " <> dhallPath
-                    , header
-                    , rules
-                    ]
+            let content =
+                    unlines
+                        [ "# Generated from " <> dhallPath
+                        , header
+                        , rules
+                        ]
             writeFile buckPath content
 
 -- | Generate BUCK from legacy format (fallback to dhall-to-buck script)

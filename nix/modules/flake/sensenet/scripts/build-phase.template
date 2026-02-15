@@ -1,0 +1,11 @@
+export HOME=$TMPDIR
+
+# Set up prelude
+mkdir -p nix/build
+ln -sf @preludePath@ nix/build/prelude
+
+# Generate buckconfig.local
+cp @buckconfigLocalFile@ .buckconfig.local
+
+# Build targets
+buck2 build @targets@

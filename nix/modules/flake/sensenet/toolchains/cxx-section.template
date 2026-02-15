@@ -1,0 +1,14 @@
+
+[cxx]
+cc = @clang@/bin/clang
+cxx = @clang@/bin/clang++
+cpp = @clang@/bin/clang-cpp
+ar = @lld@/bin/llvm-ar
+ld = @lld@/bin/ld.lld
+clang_resource_dir = @clang@/resource-root
+gcc_include = @gcc-unwrapped@/include/c++/@gcc-version@
+gcc_include_arch = @gcc-unwrapped@/include/c++/@gcc-version@/@triple@
+glibc_include = @glibc-dev@/include
+gcc_lib = @gcc-unwrapped@/lib/gcc/@triple@/@gcc-version@
+gcc_lib_base = @gcc-lib@/lib
+glibc_lib = @glibc@/lib

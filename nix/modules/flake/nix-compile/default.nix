@@ -152,135 +152,88 @@ in
         # Path arguments
         path-args = lib.escapeShellArgs cfg.paths;
 
+        # Import centralized render-dhall function
+        render-dhall = import ../../lib/render-dhall.nix { inherit pkgs lib; };
+
+        # Scripts directory for Dhall templates
+        scripts-dir = ./scripts;
+
         # ── nix-compile check ───────────────────────────────────────────────
-        check-nix =
-          pkgs.runCommand "sense-nix-compile"
-            {
-              nativeBuildInputs = [ nix-compile ];
-            }
-            ''
-              cd ${inputs.self}
-              echo "sense/net: running nix-compile (profile: ${cfg.profile})"
-              nix-compile -p ${cfg.profile} ${path-args}
-              touch $out
-            '';
+        check-nix-script = render-dhall "check-nix-script" (scripts-dir + "/check-nix.dhall") {
+          inputs-self = inputs.self;
+          inherit (cfg) profile;
+          inherit path-args;
+        };
+        check-nix = pkgs.runCommand "sense-nix-compile" {
+          nativeBuildInputs = [ nix-compile ];
+        } (builtins.readFile check-nix-script);
 
         # ── dhall type check ────────────────────────────────────────────────
-        check-dhall =
-          pkgs.runCommand "sense-dhall-typecheck"
-            {
-              nativeBuildInputs = [
-                dhall
-                dhall-json
-              ];
-            }
-            ''
-              cd ${inputs.self}
-              echo "sense/net: type-checking Dhall configurations"
-
-              # Type-check each Dhall file
-              for f in dhall/*.dhall; do
-                echo "  checking $f"
-                dhall --file "$f" > /dev/null
-              done
-
-              # Verify package.dhall exports are consistent
-              echo "  checking dhall/package.dhall"
-              dhall --file dhall/package.dhall > /dev/null
-
-              touch $out
-            '';
+        check-dhall-script = render-dhall "check-dhall-script" (scripts-dir + "/check-dhall.dhall") {
+          inputs-self = inputs.self;
+        };
+        check-dhall = pkgs.runCommand "sense-dhall-typecheck" {
+          nativeBuildInputs = [
+            dhall
+            dhall-json
+          ];
+        } (builtins.readFile check-dhall-script);
 
         # ── cross-language check ────────────────────────────────────────────
-        check-cross-lang =
-          pkgs.runCommand "sense-cross-language"
+        check-cross-lang-script =
+          render-dhall "check-cross-lang-script" (scripts-dir + "/check-cross-lang.dhall")
             {
-              nativeBuildInputs = [
-                nix-compile
-                dhall
-                dhall-json
-              ];
-            }
-            ''
-              cd ${inputs.self}
-              echo "sense/net: cross-language dependency analysis"
-
-              # Extract Nix toolchain paths
-              echo "  extracting Nix toolchain definitions..."
-
-              # Extract Dhall resource requirements
-              echo "  extracting Dhall coeffect requirements..."
-              dhall-to-json --file dhall/Resource.dhall > /tmp/resources.json
-
-              # Verify consistency between Nix and Dhall
-              echo "  verifying Nix ↔ Dhall consistency..."
-              # TODO: nix-compile --cross-lang-report
-
-              touch $out
-            '';
+              inputs-self = inputs.self;
+            };
+        check-cross-lang = pkgs.runCommand "sense-cross-language" {
+          nativeBuildInputs = [
+            nix-compile
+            dhall
+            dhall-json
+          ];
+        } (builtins.readFile check-cross-lang-script);
 
         # ── buck2 graph check ───────────────────────────────────────────────
-        check-buck2-graph =
-          pkgs.runCommand "sense-buck2-graph"
+        check-buck2-graph-script =
+          render-dhall "check-buck2-graph-script" (scripts-dir + "/check-buck2-graph.dhall")
             {
-              nativeBuildInputs = [
-                pkgs.buck2
-                dhall
-                dhall-json
-              ];
-            }
-            ''
-              cd ${inputs.self}
-              echo "sense/net: analyzing buck2 build graph"
-
-              # Generate build graph
-              # buck2 audit cell . > /tmp/cells.txt
-              # buck2 targets //... > /tmp/targets.txt
-
-              # Verify Dhall → Starlark consistency
-              echo "  verifying Dhall → Starlark transpilation..."
-
-              touch $out
-            '';
+              inputs-self = inputs.self;
+            };
+        check-buck2-graph = pkgs.runCommand "sense-buck2-graph" {
+          nativeBuildInputs = [
+            pkgs.buck2
+            dhall
+            dhall-json
+          ];
+        } (builtins.readFile check-buck2-graph-script);
 
         # ── proof verification ──────────────────────────────────────────────
-        check-proofs =
-          pkgs.runCommand "sense-proof-verify"
-            {
-              nativeBuildInputs = [
-                pkgs.lean4
-                dhall
-                dhall-json
-              ];
-            }
-            ''
-              cd ${inputs.self}
-              echo "sense/net: verifying proof obligations"
-
-              # Extract proof structure from Dhall
-              dhall-to-json --file dhall/DischargeProof.dhall > /tmp/proofs.json
-
-              # TODO: lake build Continuity.DischargeProof
-              # TODO: verify that Dhall proof structure matches Lean4 formalization
-
-              touch $out
-            '';
+        check-proofs-script = render-dhall "check-proofs-script" (scripts-dir + "/check-proofs.dhall") {
+          inputs-self = inputs.self;
+        };
+        check-proofs = pkgs.runCommand "sense-proof-verify" {
+          nativeBuildInputs = [
+            pkgs.lean4
+            dhall
+            dhall-json
+          ];
+        } (builtins.readFile check-proofs-script);
 
         # ── combined check ──────────────────────────────────────────────────
-        all-checks =
-          pkgs.runCommand "sense-all-checks"
-            {
-              nativeBuildInputs = [ ];
-            }
-            ''
-              echo "sense/net: all checks passed"
-              mkdir -p $out
-              ln -s ${check-nix} $out/nix-compile
-              ${lib.optionalString cfg.verify-dhall "ln -s ${check-dhall} $out/dhall"}
-              ${lib.optionalString cfg.cross-language "ln -s ${check-cross-lang} $out/cross-language"}
-              ${lib.optionalString cfg.buck2-graph "ln -s ${check-buck2-graph} $out/buck2-graph"}
-              ${lib.optionalString cfg.verify-proofs "ln -s ${check-proofs} $out/proofs"}
-            '';
+        all-checks-script = render-dhall "all-checks-script" (scripts-dir + "/all-checks.dhall") {
+          inherit check-nix;
+          inherit check-dhall;
+          inherit check-cross-lang;
+          inherit check-buck2-graph;
+          inherit check-proofs;
+          inherit (cfg) verify-dhall;
+          inherit (cfg) cross-language;
+          inherit (cfg) buck2-graph;
+          inherit (cfg) verify-proofs;
+        };
+        all-checks = pkgs.runCommand "sense-all-checks" {
+          nativeBuildInputs = [ ];
+        } (builtins.readFile all-checks-script);
 
       in
       {

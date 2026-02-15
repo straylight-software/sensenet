@@ -1,0 +1,16 @@
+echo "━━━ sense devshell ━━━"
+echo "GHC: $(@ghcWithAllDeps@/bin/ghc --version)"
+@straylightNixCheck@
+@buckconfigHook@
+# Add sense CLI to PATH (bootstrap binary in repo root)
+export PATH="$PWD:$PATH"
+# Set up buck2 prelude symlink if not already present
+if [ ! -L "nix/build/prelude" ] && [ -d "@preludePath@" ]; then
+  mkdir -p nix/build
+  ln -sf "@preludePath@" nix/build/prelude
+fi
+@buildShellHook@
+@shortlistShellHook@
+@lreShellHook@
+@hieYamlHook@
+@extraShellHook@
