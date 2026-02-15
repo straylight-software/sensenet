@@ -23,7 +23,7 @@ module Main where
 
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_, unless, when)
-import Data.List (isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import Data.Maybe (fromMaybe)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.Environment (getArgs, lookupEnv)
@@ -157,25 +157,65 @@ genIfNeeded dir = do
 
 -- | Generate BUCK file from BUILD.dhall
 genFile :: FilePath -> FilePath -> IO ()
-genFile dhall buck = do
-    putStrLn $ "gen: " <> dhall <> " -> " <> buck
-    -- Find dhall-to-buck script: check repo root, then PATH
-    script <- findDhallToBuck
-    (code, out, err) <- readProcessWithExitCode script [dhall] ""
-    case code of
-        ExitSuccess -> writeFile buck out
+genFile dhallPath buckPath = do
+    putStrLn $ "gen: " <> dhallPath <> " -> " <> buckPath
+    
+    -- First, check the dhall type to determine format
+    (typeCode, typeOut, _) <- readProcessWithExitCode "dhall" ["type", "--file", dhallPath] ""
+    
+    case typeCode of
         ExitFailure _ -> do
-            putStrLn $ "Error generating " <> buck <> ":"
-            putStrLn err
+            putStrLn $ "error: failed to type-check " <> dhallPath
             exitFailure
+        ExitSuccess -> do
+            let isNewFormat = "rules" `isInfixOf` typeOut && "header" `isInfixOf` typeOut
+            
+            if isNewFormat
+                then genNewFormat dhallPath buckPath
+                else genLegacyFormat dhallPath buckPath
 
--- | Find dhall-to-buck script
-findDhallToBuck :: IO FilePath
-findDhallToBuck = do
-    -- First check in repo root (where sense was likely invoked from)
-    let local = "./dhall-to-buck"
-    exists <- doesFileExist local
-    if exists then pure local else pure "dhall-to-buck"
+-- | Generate BUCK from new format: { rules : List Text, header : Text }
+genNewFormat :: FilePath -> FilePath -> IO ()
+genNewFormat dhallPath buckPath = do
+    -- Extract header using bash to handle dhall's path resolution
+    (_, header, _) <- readProcessWithExitCode "bash" ["-c", 
+        "dhall text <<< '(./" <> dhallPath <> ").header'"] ""
+    
+    -- Extract and join rules  
+    let rulesCmd = "dhall text <<< 'let P = ./dhall/prelude/Prelude.dhall in P.Text.concatSep \"\\n\" (./" <> dhallPath <> ").rules'"
+    (rulesCode, rules, rulesErr) <- readProcessWithExitCode "bash" ["-c", rulesCmd] ""
+    
+    case rulesCode of
+        ExitFailure _ -> do
+            putStrLn $ "error: failed to extract rules from " <> dhallPath
+            putStrLn rulesErr
+            exitFailure
+        ExitSuccess -> do
+            let content = unlines
+                    [ "# Generated from " <> dhallPath
+                    , header
+                    , rules
+                    ]
+            writeFile buckPath content
+
+-- | Generate BUCK from legacy format (fallback to dhall-to-buck script)
+genLegacyFormat :: FilePath -> FilePath -> IO ()
+genLegacyFormat dhallPath buckPath = do
+    -- For legacy format, fall back to the bash script if it exists
+    scriptExists <- doesFileExist "./dhall-to-buck"
+    if scriptExists
+        then do
+            (code, out, err) <- readProcessWithExitCode "./dhall-to-buck" [dhallPath] ""
+            case code of
+                ExitSuccess -> writeFile buckPath out
+                ExitFailure _ -> do
+                    putStrLn $ "error: legacy dhall-to-buck failed for " <> dhallPath
+                    putStrLn err
+                    exitFailure
+        else do
+            putStrLn $ "error: legacy BUILD.dhall format not supported without dhall-to-buck script"
+            putStrLn $ "  convert " <> dhallPath <> " to new format: { rules : List Text, header : Text }"
+            exitFailure
 
 -- | Generate all BUILD.dhall in a directory tree
 genDir :: FilePath -> IO ()
