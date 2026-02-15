@@ -183,6 +183,7 @@
                   hp.crypton
                   hp.memory
                   hp.hasktorch
+                  hp.stan
                 ];
               };
               rust.enable = true;
@@ -234,6 +235,7 @@
                   hp.bytestring
                   hp.containers
                   hp.text
+                  hp.stan
                 ];
               };
               rust.enable = true;

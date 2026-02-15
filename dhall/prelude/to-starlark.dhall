@@ -94,6 +94,18 @@ let rustLibrary
 -- Haskell
 -- ══════════════════════════════════════════════════════════════════════════════
 
+let renderStanConfig
+    : Optional H.StanConfig -> Text
+    = \(stan : Optional H.StanConfig) ->
+        merge
+            { Some = \(s : H.StanConfig) ->
+                let cfg = merge { Some = \(f : Text) -> "    stan_config = ${q f},\n"
+                                , None = "" } s.config_file
+                let sev = merge { Some = \(sev : Text) -> "    stan_severity = ${q sev},\n"
+                                , None = "" } s.severity
+                in cfg ++ sev
+            , None = "" } stan
+
 let haskellBinary
     : H.Binary -> Text
     = \(b : H.Binary) ->
@@ -106,7 +118,7 @@ let haskellBinary
             srcs = ${list b.srcs},
             main = ${q b.main},
             packages = ${list b.packages},
-        ${exts}    ghc_options = ${list b.ghc_options},
+        ${exts}${renderStanConfig b.stan}    ghc_options = ${list b.ghc_options},
             visibility = ${vis b.vis},
         )
         ''
@@ -122,7 +134,7 @@ let haskellLibrary
             name = ${q lib.name},
             srcs = ${list lib.srcs},
             packages = ${list lib.packages},
-        ${exts}    ghc_options = ${list lib.ghc_options},
+        ${exts}${renderStanConfig lib.stan}    ghc_options = ${list lib.ghc_options},
             visibility = ${vis lib.vis},
         )
         ''

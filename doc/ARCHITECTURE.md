@@ -86,11 +86,11 @@ data Rule
 The frontend:
 
 1. Finds all `BUILD.dhall` files
-2. Evaluates them to typed Haskell values
-3. Constructs the target graph
-4. Resolves Nix flake references to store paths
-5. Schedules actions for execution
-6. Calls into Rust backend via FFI
+1. Evaluates them to typed Haskell values
+1. Constructs the target graph
+1. Resolves Nix flake references to store paths
+1. Schedules actions for execution
+1. Calls into Rust backend via FFI
 
 ### Rust Backend
 
@@ -239,8 +239,8 @@ cabal build sensenet
 The bootstrap builds:
 
 1. Haskell frontend (dhall + FFI bindings)
-2. Rust backend (DICE + superconsole + RE)
-3. Links them together
+1. Rust backend (DICE + superconsole + RE)
+1. Links them together
 
 After bootstrap, SENSENET builds itself.
 
@@ -345,16 +345,16 @@ sensenet/
 
 ## Comparison
 
-| Feature          | Buck2          | SENSENET     |
+| Feature | Buck2 | SENSENET |
 | ---------------- | -------------- | ------------ |
-| Config language  | Starlark       | Dhall        |
-| Type checking    | Runtime        | Compile time |
-| Rule definitions | .bzl files     | Dhall types  |
-| Queries          | BXL            | dhall + jq   |
-| Toolchains       | Starlark       | Nix          |
-| Bootstrap        | Buck2 or Cargo | Cabal (once) |
-| Incremental      | DICE           | DICE         |
-| Remote exec      | RE API         | NativeLink   |
+| Config language | Starlark | Dhall |
+| Type checking | Runtime | Compile time |
+| Rule definitions | .bzl files | Dhall types |
+| Queries | BXL | dhall + jq |
+| Toolchains | Starlark | Nix |
+| Bootstrap | Buck2 or Cargo | Cabal (once) |
+| Incremental | DICE | DICE |
+| Remote exec | RE API | NativeLink |
 
 ## Milestones
 

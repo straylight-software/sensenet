@@ -36,6 +36,7 @@ in  { -- Rule union (for BUILD.dhall files)
     , RustLibrary = R.Library
     , rustLibrary = R.library
     -- Haskell rules
+    , StanConfig = H.StanConfig
     , HaskellBinary = H.Binary
     , haskellBinary = H.binary
     , HaskellLibrary = H.Library

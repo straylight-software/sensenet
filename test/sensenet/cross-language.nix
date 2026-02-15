@@ -21,7 +21,6 @@
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
-  lib,
   pkgs,
 }:
 let
@@ -87,9 +86,9 @@ let
   # FAILING: nix-compile should detect this type mismatch
   # We're passing a string where a path is expected
   broken-toolchain = {
-    cc = "clang";  # ERROR: should be Path, not String
+    cc = "clang"; # ERROR: should be Path, not String
     cxx = "${pkgs.llvmPackages_18.clang}/bin/clang++";
-    ar = null;  # ERROR: should be Path, not Null
+    ar = null; # ERROR: should be Path, not Null
     ld = "${pkgs.llvmPackages_18.lld}/bin/ld.lld";
   };
 

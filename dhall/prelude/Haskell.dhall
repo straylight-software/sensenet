@@ -2,6 +2,13 @@
 
 let T = ./Types.dhall
 
+let StanConfig =
+      { config_file : Optional Text
+      , severity : Optional Text
+      }
+
+let noStan = None StanConfig
+
 let Binary =
       { name : Text
       , srcs : List Text
@@ -13,6 +20,7 @@ let Binary =
       , extra_libs : List Text
       , extra_lib_dirs : List Text
       , vis : T.Vis
+      , stan : Optional StanConfig
       }
 
 let binary
@@ -28,6 +36,7 @@ let binary
         , extra_libs = [] : List Text
         , extra_lib_dirs = [] : List Text
         , vis = T.Vis.Public
+        , stan = noStan
         }
 
 let Library =
@@ -37,7 +46,8 @@ let Library =
       , language_extensions : List Text
       , ghc_options : List Text
       , deps : List T.Dep
-      , vis : T.Vis
+        , vis : T.Vis
+      , stan : Optional StanConfig
       }
 
 let library
@@ -50,6 +60,7 @@ let library
         , ghc_options = [ "-O2", "-Wall" ] : List Text
         , deps = [] : List T.Dep
         , vis = T.Vis.Public
+        , stan = noStan
         }
 
 let FFIBinary =
@@ -84,4 +95,4 @@ let ffiBinary
         , vis = T.Vis.Public
         }
 
-in  { Binary, binary, Library, library, FFIBinary, ffiBinary }
+in  { StanConfig, Binary, binary, Library, library, FFIBinary, ffiBinary }

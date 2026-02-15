@@ -51,8 +51,38 @@ def _get_ghc_pkg() -> str:
 def _get_package_db() -> str | None:
     return read_root_config("haskell", "global_package_db", None)
 
+def _get_stan() -> str | None:
+    return read_root_config("haskell", "stan", None)
 
-
+def _run_stan_analysis(ctx: AnalysisContext, hie_dir: Artifact, srcs: list, category: str) -> Artifact:
+    """Run Stan static analysis on HIE files."""
+    stan = _get_stan()
+    stan_report = ctx.actions.declare_output("stan-report.json")
+    
+    if stan == None:
+        # Stan not available, create empty report
+        ctx.actions.run(
+            cmd_args("/bin/echo", "'{}'"),
+            category = "stan_skip",
+            identifier = ctx.attrs.name,
+        )
+        return stan_report
+    
+    stan_cmd = cmd_args([stan])
+    stan_cmd.add("--hie-dir", hie_dir)
+    stan_cmd.add("--json")
+    stan_cmd.add("-o", stan_report.as_output())
+    
+    # Add optional Stan configuration
+    if ctx.attrs.stan_config:
+        stan_cmd.add("--config", ctx.attrs.stan_config)
+    
+    # Add severity filter if specified
+    if ctx.attrs.stan_severity:
+        stan_cmd.add("--severity", ctx.attrs.stan_severity)
+    
+    ctx.actions.run(stan_cmd, category = category, identifier = ctx.attrs.name)
+    return stan_report
 
 def _haskell_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     """Haskell toolchain with paths from .buckconfig.local"""
@@ -172,6 +202,9 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     )
     ctx.actions.run(ar_cmd, category = "haskell_archive", identifier = ctx.attrs.name)
     
+    # Run Stan static analysis on HIE files
+    stan_report = _run_stan_analysis(ctx, hie_dir, ctx.attrs.srcs, "stan_library")
+    
     return [
         DefaultInfo(
             default_output = lib,
@@ -180,6 +213,7 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 "stubs": [DefaultInfo(default_outputs = [stub_dir])],
                 "objects": [DefaultInfo(default_outputs = [obj_dir])],
                 "hie": [DefaultInfo(default_outputs = [hie_dir])],
+                "stan": [DefaultInfo(default_outputs = [stan_report])],
             },
         ),
         HaskellLibraryInfo(
@@ -202,6 +236,8 @@ haskell_library = rule(
         "packages": attrs.list(attrs.string(), default = []),
         "ghc_options": attrs.list(attrs.string(), default = []),
         "language_extensions": attrs.list(attrs.string(), default = []),
+        "stan_config": attrs.option(attrs.source(), default = None),
+        "stan_severity": attrs.option(attrs.string(), default = None),
     },
 )
 
@@ -285,12 +321,16 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     
     ctx.actions.run(cmd, category = "ghc", identifier = ctx.attrs.name)
     
+    # Run Stan static analysis
+    stan_report = _run_stan_analysis(ctx, hie_dir, ctx.attrs.srcs, "stan_analysis")
+    
     return [
         DefaultInfo(
             default_output = out,
             sub_targets = {
                 "hi": [DefaultInfo(default_outputs = [hi_dir])],
                 "hie": [DefaultInfo(default_outputs = [hie_dir])],
+                "stan": [DefaultInfo(default_outputs = [stan_report])],
             },
         ),
         RunInfo(args = cmd_args(out)),
@@ -307,6 +347,8 @@ haskell_binary = rule(
         "ghc_options": attrs.list(attrs.string(), default = []),
         "language_extensions": attrs.list(attrs.string(), default = []),
         "compiler_flags": attrs.list(attrs.string(), default = []),
+        "stan_config": attrs.option(attrs.source(), default = None),
+        "stan_severity": attrs.option(attrs.string(), default = None),
     },
 )
 

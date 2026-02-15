@@ -27,7 +27,6 @@
 {
   lib,
   pkgs,
-  inputs,
 }:
 let
   # Toolchain path configuration
@@ -44,23 +43,41 @@ let
   # :: ToolchainConfig → Toolchain
   mk-toolchain =
     {
-      cxx ? { enable = false; },
-      haskell ? { enable = false; },
-      lean ? { enable = false; },
-      rust ? { enable = false; },
-      nv ? { enable = false; },
+      cxx ? {
+        enable = false;
+      },
+      haskell ? {
+        enable = false;
+      },
+      lean ? {
+        enable = false;
+      },
+      rust ? {
+        enable = false;
+      },
+      nv ? {
+        enable = false;
+      },
     }:
     {
-      inherit cxx haskell lean rust nv;
+      inherit
+        cxx
+        haskell
+        lean
+        rust
+        nv
+        ;
       paths = toolchain-paths;
       # :: Derivation
       shell = pkgs.mkShell {
         packages =
-          [ ]
-          ++ lib.optionals cxx.enable [ pkgs.llvmPackages_18.clang ]
+          lib.optionals cxx.enable [ pkgs.llvmPackages_18.clang ]
           ++ lib.optionals haskell.enable [ pkgs.haskell.compiler.ghc912 ]
           ++ lib.optionals lean.enable [ pkgs.lean4 ]
-          ++ lib.optionals rust.enable [ pkgs.rustc pkgs.cargo ]
+          ++ lib.optionals rust.enable [
+            pkgs.rustc
+            pkgs.cargo
+          ]
           ++ lib.optionals nv.enable [ pkgs.cudaPackages.cuda_nvcc ];
       };
     };
@@ -71,7 +88,10 @@ let
     cxx.enable = true;
     haskell = {
       enable = true;
-      packages = hp: [ hp.aeson hp.text ];
+      packages = hp: [
+        hp.aeson
+        hp.text
+      ];
     };
     nv.enable = true;
   };
