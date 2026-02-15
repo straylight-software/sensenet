@@ -286,6 +286,7 @@ in
                       "@ghc_version@"
                       "@ghc_lib_dir@"
                       "@global_package_db@"
+                      "@ghc_pkg_wrapper@"
                       "@rustc@"
                       "@rustdoc@"
                       "@clippy_driver@"
@@ -326,6 +327,7 @@ in
                       ghc-version
                       "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib"
                       "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib/package.conf.d"
+                      "toolchains/scripts/ghc-pkg-id"
                       "${pkgs.rustc}/bin/rustc"
                       "${pkgs.rustc}/bin/rustdoc"
                       "${pkgs.clippy}/bin/clippy-driver"
@@ -371,6 +373,8 @@ in
                 echo "GHC: $(${ghc-with-all-deps}/bin/ghc --version)"
                 ${straylight-nix-check}
                 ${buckconfig-hook}
+                # Add sense CLI to PATH (bootstrap binary in repo root)
+                export PATH="$PWD:$PATH"
                 ${config.sense.build.shellHook or ""}
                 ${config.sense.shortlist.shellHook or ""}
                 ${config.sense.lre.shellHook or ""}
