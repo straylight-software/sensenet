@@ -93,6 +93,9 @@
       # Export Dhall prelude
       flake.dhall = ./dhall;
 
+      # Export NixOS modules
+      flake.nixosModules = import ./nix/modules/nixos/_index.nix;
+
       # Self-use: packages and minimal devshell for this repo
       perSystem =
         { pkgs, ... }:
