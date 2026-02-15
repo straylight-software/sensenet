@@ -278,6 +278,7 @@ in
                       "@gcc_lib@"
                       "@gcc_lib_base@"
                       "@glibc_lib@"
+                      "@dynamic_linker@"
                       "@c_flags@"
                       "@cxx_flags@"
                       "@ghc@"
@@ -319,6 +320,9 @@ in
                       "${pkgs.gcc.cc}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${pkgs.gcc.cc.version}"
                       "${pkgs.gcc.cc.lib}/lib"
                       "${pkgs.glibc}/lib"
+                      "${pkgs.glibc}/lib/ld-linux-${
+                        if pkgs.stdenv.hostPlatform.isAarch64 then "aarch64" else "x86-64"
+                      }.so.${if pkgs.stdenv.hostPlatform.isAarch64 then "1" else "2"}"
                       c-flags
                       cxx-flags
                       "${ghc-with-all-deps}/bin/ghc"

@@ -200,9 +200,11 @@ def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
             "-B" + glibc_lib,
             "-L" + glibc_lib,
             "-Wl,-rpath," + glibc_lib,
-            # Set dynamic linker explicitly (lld needs this for unwrapped clang)
-            "-Wl,--dynamic-linker=" + glibc_lib + "/ld-linux-x86-64.so.2",
         ])
+        # Set dynamic linker explicitly (lld needs this for unwrapped clang)
+        dynamic_linker = read_root_config("cxx", "dynamic_linker", None)
+        if dynamic_linker:
+            link_flags.append("-Wl,--dynamic-linker=" + dynamic_linker)
     
     # Link into binary
     out = ctx.actions.declare_output(ctx.attrs.name)
