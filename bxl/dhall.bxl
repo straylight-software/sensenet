@@ -1,0 +1,172 @@
+# dhall.bxl - Zero-litter Dhall-to-Buck build system
+#
+# This BXL script automates BUCK file generation from BUILD.dhall files,
+# then builds the requested targets. BUCK files are generated on-demand
+# and can be gitignored.
+#
+# Usage:
+#   buck2 bxl //bxl/dhall.bxl:build -- --targets //...
+#   buck2 bxl //bxl/dhall.bxl:gen   -- (just generate, don't build)
+
+def _find_build_dhall_files(ctx, dirs):
+    """Recursively find all BUILD.dhall files in given directories."""
+    result = []
+    for dir in dirs:
+        if not ctx.fs.exists(dir):
+            continue
+        if ctx.fs.is_file(dir):
+            if dir.endswith("BUILD.dhall"):
+                result.append(dir)
+            continue
+        for entry in ctx.fs.list(dir):
+            # entry is a FileNode, get the basename
+            name = str(entry).split("/")[-1]
+            path = "{}/{}".format(dir, name)
+            if ctx.fs.is_dir(path):
+                result.extend(_find_build_dhall_files(ctx, [path]))
+            elif name == "BUILD.dhall":
+                result.append(path)
+    return result
+
+def _gen_impl(ctx):
+    """Generate BUCK files from all BUILD.dhall files."""
+    # Search directories
+    search_dirs = ["src"]
+    
+    # Find all BUILD.dhall files
+    dhall_files = _find_build_dhall_files(ctx, search_dirs)
+    
+    # Also check toolchains cell
+    if ctx.fs.exists("toolchains/BUILD.dhall"):
+        dhall_files.append("toolchains/BUILD.dhall")
+    
+    ctx.output.print("Found {} BUILD.dhall files:".format(len(dhall_files)))
+    for f in dhall_files:
+        ctx.output.print("  - {}".format(f))
+    
+    # For each BUILD.dhall, we need to generate a BUCK file
+    # This requires running dhall-to-buck which is a shell command
+    # BXL can run actions, so we'll create a genrule-style action
+    
+    bxl_actions = ctx.bxl_actions()
+    actions = bxl_actions.actions
+    
+    # Get the dhall-to-buck script as a source artifact
+    dhall_to_buck = ctx.fs.source("dhall-to-buck")
+    
+    generated = []
+    for dhall_file in dhall_files:
+        # Get the directory containing BUILD.dhall
+        dir_path = "/".join(dhall_file.split("/")[:-1])
+        
+        # Create output artifact
+        out = actions.declare_output("gen/{}/BUCK".format(dir_path) if dir_path else "gen/BUCK")
+        
+        # Get the BUILD.dhall as source artifact
+        dhall_src = ctx.fs.source(dhall_file)
+        
+        # Build command: run dhall-to-buck from the directory containing BUILD.dhall
+        # The script expects to be run from a directory where ./dhall/ is accessible
+        cmd = cmd_args(
+            "bash", "-c",
+            # Script: cd to repo root, run dhall-to-buck, write to output
+            "\"$1\" \"$2\" > \"$3\"",
+            "--",  # end of bash options
+            dhall_to_buck,
+            dhall_src, 
+            out.as_output(),
+        )
+        
+        actions.run(
+            cmd,
+            category = "dhall_to_buck",
+            identifier = dhall_file,
+            local_only = True,
+        )
+        
+        generated.append((dhall_file, out))
+    
+    # Ensure all outputs are materialized
+    for dhall_file, out in generated:
+        ensured = ctx.output.ensure(out)
+        ctx.output.print("Generated: {} -> {}".format(dhall_file, ensured))
+
+gen = bxl_main(
+    impl = _gen_impl,
+    cli_args = {},
+)
+
+def _build_impl(ctx):
+    """Generate BUCK files and then build targets."""
+    targets = ctx.cli_args.targets
+    
+    ctx.output.print("Building targets: {}".format(targets))
+    
+    # First, ensure BUCK files are up to date by running gen
+    # For now, we assume they're already generated via shell hook
+    # A more sophisticated version would check mtimes
+    
+    # Parse and build the targets
+    target_nodes = ctx.configured_targets(targets)
+    
+    # Build all targets
+    build_result = ctx.build(target_nodes)
+    
+    # Report results
+    for target, result in build_result.items():
+        if result.artifacts():
+            for artifact in result.artifacts():
+                ensured = ctx.output.ensure(artifact)
+                ctx.output.print("{}: {}".format(target, ensured))
+        else:
+            ctx.output.print("{}: (no artifacts)".format(target))
+
+build = bxl_main(
+    impl = _build_impl,
+    cli_args = {
+        "targets": cli_args.list(cli_args.string(), default = ["//..."]),
+    },
+)
+
+def _targets_impl(ctx):
+    """List all targets defined via BUILD.dhall files."""
+    # Search directories for BUILD.dhall
+    # Note: toolchains is a separate cell, so we handle it differently
+    search_dirs = ["src"]
+    dhall_files = _find_build_dhall_files(ctx, search_dirs)
+    
+    # Also check toolchains cell
+    if ctx.fs.exists("toolchains/BUILD.dhall"):
+        dhall_files.append("toolchains/BUILD.dhall")
+    
+    ctx.output.print("Packages with BUILD.dhall:")
+    for f in dhall_files:
+        dir_path = "/".join(f.split("/")[:-1])
+        
+        # Determine cell prefix
+        if dir_path.startswith("toolchains"):
+            # toolchains is its own cell
+            subpath = dir_path[len("toolchains"):].lstrip("/")
+            if subpath:
+                package = "toolchains//{}:".format(subpath)
+            else:
+                package = "toolchains//:"
+            buck_path = "{}/BUCK".format(dir_path)
+        else:
+            package = "//{}:".format(dir_path) if dir_path else "//:"
+            buck_path = "{}/BUCK".format(dir_path) if dir_path else "BUCK"
+        
+        ctx.output.print("  {}".format(package))
+        
+        # Query targets in this package (only if BUCK exists)
+        if ctx.fs.exists(buck_path):
+            pkg_targets = ctx.uquery().eval(package)
+            for t in pkg_targets:
+                ctx.output.print("    :{}".format(t.label.name))
+        else:
+            ctx.output.print("    (BUCK not generated yet)")
+
+targets = bxl_main(
+    impl = _targets_impl,
+    cli_args = {},
+)

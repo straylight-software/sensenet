@@ -78,7 +78,7 @@ _generate_buck_files() {
 						((count++)) || true
 					fi
 				fi
-			done < <(find "$search_dir" -maxdepth 2 -name "BUILD.dhall" -print0 2>/dev/null)
+			done < <(find "$search_dir" -name "BUILD.dhall" -print0 2>/dev/null)
 		fi
 	done
 
