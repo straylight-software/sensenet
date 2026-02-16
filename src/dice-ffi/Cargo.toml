@@ -1,0 +1,33 @@
+[package]
+name = "dice-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C FFI bindings for DICE incremental computation engine"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+# DICE dependencies - path to vendored dice in aleph
+# Path from sensenet/src/dice-ffi -> aleph/src/vendor/dice
+allocative = { path = "../../../aleph/src/vendor/dice/allocative" }
+dupe = { path = "../../../aleph/src/vendor/dice/dupe" }
+dice = { path = "../../../aleph/src/vendor/dice/dice" }
+dice_futures = { path = "../../../aleph/src/vendor/dice/dice_futures" }
+dice_error = { path = "../../../aleph/src/vendor/dice/dice_error" }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# FFI helpers
+libc = "0.2"
+
+# Crypto for content-addressing
+sha2 = "0.10"
+hex = "0.4"
+
+[build-dependencies]
+cbindgen = "0.28"
