@@ -20,6 +20,7 @@ executable sensenet
     SenseNet.Dhall
     SenseNet.Discover
     SenseNet.IR
+    SenseNet.Toolchains
   hs-source-dirs:   src/sensenet
   default-language: GHC2024
   ghc-options:      -Wall -O2

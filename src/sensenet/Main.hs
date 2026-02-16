@@ -22,6 +22,7 @@ import SenseNet.Discover (DhallFile(..), discover)
 import qualified SenseNet.DICE as DICE
 import qualified SenseNet.Dhall as Dhall
 import SenseNet.IR (Package(..), Rule, ruleName)
+import qualified SenseNet.Toolchains as TC
 
 main :: IO ()
 main = do
@@ -78,6 +79,10 @@ cmdBuild :: [Text] -> IO ()
 cmdBuild args = do
   projectRoot <- getCurrentDirectory
   
+  -- Load toolchains
+  let tcPath = TC.defaultToolchainsPath projectRoot
+  tc <- TC.loadToolchains tcPath
+  
   case args of
     [] -> do
       -- Build all targets
@@ -86,7 +91,7 @@ cmdBuild args = do
       forM_ files $ \file -> do
         pkg <- Dhall.parsePackageFile projectRoot (dhallPath file)
         forM_ pkg.rules $ \rule -> do
-          buildTarget projectRoot pkg (ruleName rule)
+          buildTarget tc projectRoot pkg (ruleName rule)
     
     (target : _) -> do
       -- Parse target like //src/examples/cxx:hello-cxx
@@ -98,12 +103,12 @@ cmdBuild args = do
         Just (pkgPath, targetName) -> do
           let dhallPath = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
           pkg <- Dhall.parsePackageFile projectRoot dhallPath
-          buildTarget projectRoot pkg targetName
+          buildTarget tc projectRoot pkg targetName
 
-buildTarget :: FilePath -> Package -> Text -> IO ()
-buildTarget projectRoot pkg targetName = do
+buildTarget :: TC.Toolchains -> FilePath -> Package -> Text -> IO ()
+buildTarget tc projectRoot pkg targetName = do
   TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
-  result <- build projectRoot pkg targetName
+  result <- build tc projectRoot pkg targetName
   case result of
     Left err -> do
       TIO.putStrLn $ "  ✗ " <> showError err
