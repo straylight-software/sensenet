@@ -76,14 +76,14 @@ in
       ghc,
       ghcVersion,
       ghcPkgWrapper ? null,
-      stan ? null,
+      stan,
     }:
     builtins.readFile (
       render-dhall "haskell-section" (scripts-dir + "/haskell-section.dhall") {
         ghc = "${ghc}";
         ghc-version = "${ghcVersion}";
         ghc-pkg-wrapper = if ghcPkgWrapper != null then "${ghcPkgWrapper}" else "";
-        stan = if stan != null then "${stan}" else "";
+        stan = lib.getExe stan;
       }
     );
 
