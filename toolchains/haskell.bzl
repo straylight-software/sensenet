@@ -524,6 +524,11 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     ghc_cmd.add("-odir", obj_dir.as_output())
     ghc_cmd.add("-hidir", hi_dir.as_output())
     
+    # Generate .hie files for IDE support and Stan analysis
+    hie_dir = ctx.actions.declare_output("hie", dir = True)
+    ghc_cmd.add("-fwrite-ide-info")
+    ghc_cmd.add("-hiedir", hie_dir.as_output())
+    
     # Mandatory flags (non-negotiable)
     ghc_cmd.add(MANDATORY_GHC_FLAGS)
     ghc_cmd.add("-XGHC2024")
@@ -565,14 +570,36 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     for pkg in ctx.attrs.packages:
         ghc_cmd.add("-package", pkg)
     
+    # Include directories for Haskell FFI (cbits)
+    for inc_dir in ctx.attrs.include_dirs:
+        ghc_cmd.add("-I" + inc_dir)
+    
     ghc_cmd.add(ctx.attrs.compiler_flags)
     ghc_cmd.add(ctx.attrs.hs_srcs)
     ghc_cmd.add(cxx_objects)
     
     ctx.actions.run(ghc_cmd, category = "ghc_link", identifier = ctx.attrs.name)
     
+    # Run Stan static analysis (skip for FFI code that inherently uses patterns Stan flags)
+    if not ctx.attrs.skip_stan:
+        stan_report = _run_stan_analysis(ctx, hie_dir, ctx.attrs.hs_srcs, "stan_ffi")
+        other_outputs = [stan_report]
+        sub_targets = {
+            "hie": [DefaultInfo(default_outputs = [hie_dir])],
+            "stan": [DefaultInfo(default_outputs = [stan_report])],
+        }
+    else:
+        other_outputs = []
+        sub_targets = {
+            "hie": [DefaultInfo(default_outputs = [hie_dir])],
+        }
+    
     return [
-        DefaultInfo(default_output = out),
+        DefaultInfo(
+            default_output = out,
+            other_outputs = other_outputs,
+            sub_targets = sub_targets,
+        ),
         RunInfo(args = [out]),
     ]
 
@@ -592,6 +619,7 @@ haskell_ffi_binary = rule(
         "extra_lib_dirs": attrs.list(attrs.string(), default = []),
         "include_dirs": attrs.list(attrs.string(), default = []),
         "linker_flags": attrs.list(attrs.string(), default = []),
+        "skip_stan": attrs.bool(default = False),
     },
 )
 
@@ -661,6 +689,11 @@ def _haskell_ffi_test_impl(ctx: AnalysisContext) -> list[Provider]:
     ghc_cmd.add("-odir", obj_dir.as_output())
     ghc_cmd.add("-hidir", hi_dir.as_output())
     
+    # Generate .hie files for IDE support and Stan analysis
+    hie_dir = ctx.actions.declare_output("hie", dir = True)
+    ghc_cmd.add("-fwrite-ide-info")
+    ghc_cmd.add("-hiedir", hie_dir.as_output())
+    
     # Mandatory flags (non-negotiable)
     ghc_cmd.add(MANDATORY_GHC_FLAGS)
     ghc_cmd.add("-XGHC2024")
@@ -702,14 +735,36 @@ def _haskell_ffi_test_impl(ctx: AnalysisContext) -> list[Provider]:
     for pkg in ctx.attrs.packages:
         ghc_cmd.add("-package", pkg)
     
+    # Include directories for Haskell FFI (cbits)
+    for inc_dir in ctx.attrs.include_dirs:
+        ghc_cmd.add("-I" + inc_dir)
+    
     ghc_cmd.add(ctx.attrs.compiler_flags)
     ghc_cmd.add(ctx.attrs.hs_srcs)
     ghc_cmd.add(cxx_objects)
     
     ctx.actions.run(ghc_cmd, category = "ghc_link", identifier = ctx.attrs.name)
     
+    # Run Stan static analysis (skip for FFI code that inherently uses patterns Stan flags)
+    if not ctx.attrs.skip_stan:
+        stan_report = _run_stan_analysis(ctx, hie_dir, ctx.attrs.hs_srcs, "stan_ffi_test")
+        other_outputs = [stan_report]
+        sub_targets = {
+            "hie": [DefaultInfo(default_outputs = [hie_dir])],
+            "stan": [DefaultInfo(default_outputs = [stan_report])],
+        }
+    else:
+        other_outputs = []
+        sub_targets = {
+            "hie": [DefaultInfo(default_outputs = [hie_dir])],
+        }
+    
     return [
-        DefaultInfo(default_output = out),
+        DefaultInfo(
+            default_output = out,
+            other_outputs = other_outputs,
+            sub_targets = sub_targets,
+        ),
         RunInfo(args = [out]),
     ]
 
@@ -729,6 +784,7 @@ haskell_ffi_test = rule(
         "extra_lib_dirs": attrs.list(attrs.string(), default = []),
         "include_dirs": attrs.list(attrs.string(), default = []),
         "linker_flags": attrs.list(attrs.string(), default = []),
+        "skip_stan": attrs.bool(default = False),
     },
 )
 
