@@ -1,4 +1,4 @@
---| Multi-file Lean 4 project
+--| Multi-file Lean 4 project (new format)
 --|
 --| Demonstrates:
 --|   - Hierarchical module imports (Straylight.Derivation, etc.)
@@ -7,7 +7,6 @@
 --|   - Hermetic build via Buck2 + Nix toolchain
 
 let A = ../../../dhall/prelude/package.dhall
-let S = ../../../dhall/prelude/to-starlark.dhall
 
 let straylight =
       (A.leanBinary "straylight"
@@ -19,8 +18,4 @@ let straylight =
         ])
         with root_module = Some "Straylight"
 
-in  { rules = [ S.leanBinary straylight ]
-    , header = ''
-        load("@toolchains//:lean.bzl", "lean_binary")
-        ''
-    }
+in  { targets = [ A.rule.leanBinary straylight ] }

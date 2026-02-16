@@ -1,4 +1,4 @@
---| Hasktorch examples - tensor operations with libtorch
+--| Hasktorch examples - tensor operations with libtorch (new format)
 --|
 --| Demonstrates:
 --|   - haskell_binary with packages attr
@@ -6,7 +6,6 @@
 --|   - Hasktorch tensor API
 
 let A = ../../../dhall/prelude/package.dhall
-let S = ../../../dhall/prelude/to-starlark.dhall
 
 let hasktorch_demo =
       (A.haskellBinary "hasktorch_demo" ["Main.hs"])
@@ -18,11 +17,8 @@ let linear_regression =
         with packages = ["base", "hasktorch"]
         with language_extensions = ["RecordWildCards"]
 
-in  { rules =
-        [ S.haskellBinary hasktorch_demo
-        , S.haskellBinary linear_regression
+in  { targets =
+        [ A.rule.haskellBinary hasktorch_demo
+        , A.rule.haskellBinary linear_regression
         ]
-    , header = ''
-        load("@toolchains//:haskell.bzl", "haskell_binary")
-        ''
     }

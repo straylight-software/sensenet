@@ -16,6 +16,7 @@
 #   )
 
 
+load("@prelude//http_archive:http_archive.bzl", "http_archive")
 
 RustCrateInfo = provider(fields = ["rlib", "rmeta", "crate_name", "edition", "features", "is_proc_macro", "transitive_deps"])
 
@@ -66,7 +67,7 @@ def crates_io(
     archive_name = "{}-{}.crate".format(name, version)
     
     # Fetch the crate
-    native.http_archive(
+    http_archive(
         name = archive_name,
         urls = [_crate_url(pkg, version)],
         sha256 = sha256,

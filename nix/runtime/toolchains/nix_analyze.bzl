@@ -18,42 +18,40 @@
 
 
 
-def nix_cxx_binary(name, nix_deps = [], deps = [], preprocessor_flags = [], linker_flags = [], compiler_flags = [], **kwargs):
+def nix_cxx_binary(name, deps = [], preprocessor_flags = [], linker_flags = [], **kwargs):
     """
-    Wrapper around cxx_binary that supports Nix flake references.
+    Wrapper around cxx_binary that supports Nix flake references in 'deps'.
     
-    Args:
-        name: Target name
-        nix_deps: List of Nix flake references (e.g. "nixpkgs#zlib")
-        deps: Regular Buck2 dependencies
-        preprocessor_flags: Preprocessor flags
-        linker_flags: Linker flags
-        compiler_flags: Compiler flags
-        **kwargs: Additional arguments passed to cxx_binary
+    Any dependency string containing '#' is treated as a Nix flake reference.
+    It will be automatically resolved to compiler flags using nix-analyze.
     """
+    real_deps = []
     nix_flags = []
     
-    for dep in nix_deps:
-        # Generate a unique name for this dependency target within this package
-        # e.g. "mybin_nixpkgs_zlib"
-        slug = dep.replace("#", "_").replace("/", "_").replace(".", "_")
-        target_name = "{}_{}".format(name, slug)
-        
-        nix_library(
-            name = target_name,
-            flake_ref = dep,
-        )
-        
-        # Add location macro to flags
-        flag = "@$(location :{})".format(target_name)
-        nix_flags.append(flag)
+    for dep in deps:
+        # Check if it looks like a flake ref (has #)
+        if type(dep) == "string" and "#" in dep:
+            # Generate a unique name for this dependency target within this package
+            # e.g. "mybin_nixpkgs_zlib"
+            slug = dep.replace("#", "_").replace("/", "_").replace(".", "_")
+            target_name = "{}_{}".format(name, slug)
+            
+            nix_library(
+                name = target_name,
+                flake_ref = dep,
+            )
+            
+            # Add location macro to flags
+            flag = "@$(location :{})".format(target_name)
+            nix_flags.append(flag)
+        else:
+            real_deps.append(dep)
             
     native.cxx_binary(
         name = name,
-        deps = deps,
+        deps = real_deps,
         preprocessor_flags = nix_flags + preprocessor_flags,
         linker_flags = nix_flags + linker_flags,
-        compiler_flags = compiler_flags,
         **kwargs
     )
 

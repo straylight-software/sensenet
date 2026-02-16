@@ -332,7 +332,8 @@ purescript_binary = rule(
 
 def _purescript_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     """PureScript toolchain with paths from .buckconfig.local"""
-    # read_root_config cannot be called during analysis - use attrs directly
+    # Attrs are populated from .buckconfig.local via read_root_config at load time
+    # (see purescript_toolchain macro wrapper if needed)
     return [
         DefaultInfo(),
         PureScriptToolchainInfo(

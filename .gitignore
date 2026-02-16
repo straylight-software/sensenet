@@ -39,3 +39,4 @@ platforms/BUCK
 .cache/
 .haskell-sources/
 *.gen
+src/dice-ffi/target/

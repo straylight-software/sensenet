@@ -1,7 +1,6 @@
---| Test fetching and building crates from crates.io
+--| Test fetching and building crates from crates.io (new format)
 
 let A = ../../../dhall/prelude/package.dhall
-let S = ../../../dhall/prelude/to-starlark.dhall
 
 -- Simple crate with no dependencies
 let onceCrate =
@@ -12,13 +11,8 @@ let onceCrate =
 let testBinary =
       A.rustBinary "test_once_cell" ["test_once_cell.rs"] [A.local ":once_cell"]
 
-in  { rules =
-        [ S.cratesIo onceCrate
-        , S.rustBinary testBinary
+in  { targets =
+        [ A.rule.cratesIo onceCrate
+        , A.rule.rustBinary testBinary
         ]
-    , header = ''
-        load("@toolchains//:rust_crate.bzl", "crates_io", "rust_crate")
-        load("@toolchains//:rust.bzl", "rust_binary")
-        load("@straylight_prelude//http_archive.bzl", "http_archive")
-        ''
     }

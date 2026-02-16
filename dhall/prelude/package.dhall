@@ -11,9 +11,13 @@ let TC = ./Toolchain.dhall
 let G = ./Genrule.dhall
 let RC = ./RustCrate.dhall
 let NC = ./NixCxx.dhall
+let Ru = ./Rule.dhall
 
-in  { -- Types
-      Dep = T.Dep
+in  { -- Rule union (for BUILD.dhall files)
+      Rule = Ru.Rule
+    , rule = Ru
+    -- Types
+    , Dep = T.Dep
     , CxxStd = T.CxxStd
     , RustEdition = R.Edition
     , Vis = T.Vis
