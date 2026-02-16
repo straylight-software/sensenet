@@ -155,6 +155,9 @@
           # ── Shell hook ─────────────────────────────────────────────────────────
           shellhooktemplate = builtins.readFile ./shell-hook.bash;
 
+          # Toolchains path (from inputs.self)
+          toolchainspath = inputs.self + "/toolchains";
+
           shellhook =
             builtins.replaceStrings
               [
@@ -165,6 +168,7 @@
                 "@haskellEnabled@"
                 "@ghcBin@"
                 "@preludePath@"
+                "@toolchainsPath@"
                 "@buckconfigLocalFile@"
                 "@configsPath@"
                 "@cxxEnabled@"
@@ -181,6 +185,7 @@
                 (lib.optionalString haskellenabled "true")
                 "${ghc}/bin"
                 (toString preludepath)
+                (toString toolchainspath)
                 (toString buckconfiglocalfile)
                 (toString configspath)
                 (lib.optionalString cxxenabled "true")

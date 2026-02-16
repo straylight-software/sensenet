@@ -164,11 +164,11 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     
     ctx.actions.run(cmd, category = "haskell_compile", identifier = ctx.attrs.name)
     
-    # Create static library from objects
+    # Create static library from objects (use find for nested module hierarchies)
     lib = ctx.actions.declare_output("lib{}.a".format(ctx.attrs.name))
     ar_cmd = cmd_args(
         "/bin/sh", "-c",
-        cmd_args("ar rcs", lib.as_output(), cmd_args(obj_dir, format = "{}/*.o"), delimiter = " "),
+        cmd_args("ar rcs", lib.as_output(), cmd_args(obj_dir, format = "$(find {} -name '*.o')"), delimiter = " "),
     )
     ctx.actions.run(ar_cmd, category = "haskell_archive", identifier = ctx.attrs.name)
     

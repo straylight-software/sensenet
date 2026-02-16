@@ -39,10 +39,13 @@ if [ -n "@nvEnabled@" ]; then
 	export LD_LIBRARY_PATH="@nvSdkLib@${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-# Set up prelude symlink
+# Set up prelude and toolchains symlinks
 mkdir -p nix/build
 if [ ! -L nix/build/prelude ]; then
 	ln -sfn @preludePath@ nix/build/prelude
+fi
+if [ ! -L nix/build/toolchains ]; then
+	ln -sfn @toolchainsPath@ nix/build/toolchains
 fi
 
 # Generate .buckconfig.local
