@@ -39,13 +39,19 @@ if [ -n "@nvEnabled@" ]; then
 	export LD_LIBRARY_PATH="@nvSdkLib@${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-# Set up prelude and toolchains symlinks
+# Set up prelude symlink and toolchains copy
+# Note: prelude symlinks work, but toolchains must be copied because
+# Buck2 canonicalizes cell paths and rejects symlinks to external paths.
 mkdir -p nix/build
 if [ ! -L nix/build/prelude ]; then
 	ln -sfn @preludePath@ nix/build/prelude
 fi
-if [ ! -L nix/build/toolchains ]; then
-	ln -sfn @toolchainsPath@ nix/build/toolchains
+# Copy toolchains (Buck2 doesn't follow symlinks to paths outside project root)
+if [ ! -d nix/build/toolchains ] || [ "@toolchainsPath@" != "$(cat nix/build/toolchains/.source 2>/dev/null)" ]; then
+	rm -rf nix/build/toolchains
+	cp -rL @toolchainsPath@ nix/build/toolchains
+	chmod -R u+w nix/build/toolchains
+	echo "@toolchainsPath@" >nix/build/toolchains/.source
 fi
 
 # Generate .buckconfig.local
