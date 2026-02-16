@@ -204,6 +204,7 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     return [
         DefaultInfo(
             default_output = lib,
+            other_outputs = [stan_report],
             sub_targets = {
                 "hi": [DefaultInfo(default_outputs = [hi_dir])],
                 "stubs": [DefaultInfo(default_outputs = [stub_dir])],
@@ -323,6 +324,7 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     return [
         DefaultInfo(
             default_output = out,
+            other_outputs = [stan_report],
             sub_targets = {
                 "hi": [DefaultInfo(default_outputs = [hi_dir])],
                 "hie": [DefaultInfo(default_outputs = [hie_dir])],
