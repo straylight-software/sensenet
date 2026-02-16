@@ -103,9 +103,27 @@
           # GHC 9.12 with haskell overlay applied (via std.nix)
           inherit (pkgs.haskell.packages) ghc912;
 
+          # Build sensenet CLI - use pre-generated nix expression
+          sensenet = pkgs.callPackage ./nix/packages/sensenet.nix {
+            inherit (ghc912)
+              mkDerivation
+              base
+              bytestring
+              containers
+              dhall
+              directory
+              filepath
+              process
+              shelly
+              temporary
+              text
+              unix
+              ;
+          };
         in
         {
           packages.sense-lint = pkgs.callPackage ./nix/packages/sense-lint.nix { };
+          packages.sensenet = sensenet;
 
           # Declare examples as a Sensenet project
           sensenet.projects.examples = {
@@ -127,9 +145,14 @@
                   hp.aeson
                   hp.bytestring
                   hp.containers
+                  hp.dhall
                   hp.directory
+                  hp.filepath
                   hp.process
+                  hp.shelly
+                  hp.temporary
                   hp.text
+                  hp.unix
                   hp.crypton
                   hp.memory
                   hp.hasktorch
@@ -155,9 +178,11 @@
             };
             devshellpackages = [
               pkgs.ast-grep
+              pkgs.cabal-install
               pkgs.dhall
               pkgs.dhall-json
               ghc912.haskell-language-server
+              sensenet
             ];
           };
 

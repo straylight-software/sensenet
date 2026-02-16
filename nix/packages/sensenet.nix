@@ -18,7 +18,7 @@
 mkDerivation {
   pname = "sensenet";
   version = "0.1.0";
-  src = ../../.;
+  src = lib.cleanSource ../../.;
   isLibrary = false;
   isExecutable = true;
   executableHaskellDepends = [
@@ -37,4 +37,6 @@ mkDerivation {
   description = "SENSE // NET — Typed builds with Dhall + DICE";
   license = lib.licenses.mit;
   mainProgram = "sensenet";
+  # Skip patch phase (no patches needed)
+  patchPhase = ":";
 }

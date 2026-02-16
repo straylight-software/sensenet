@@ -1,3 +1,7 @@
+# Export paths for sensenet CLI
+export SENSENET_PRELUDE="@preludePath@"
+export SENSENET_TOOLCHAINS="@toolchainsPath@"
+
 echo "ℵ Sensenet project: @name@"
 
 if [ -n "@reEnabled@" ]; then

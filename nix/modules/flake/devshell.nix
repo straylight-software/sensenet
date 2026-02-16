@@ -121,6 +121,12 @@ in
           LD_LIBRARY_PATH = "${pkgs.nvidia-sdk}/lib";
         };
 
+        # sensenet CLI env vars
+        sensenet-env = {
+          SENSENET_PRELUDE = "${inputs.buck2-prelude}";
+          SENSENET_TOOLCHAINS = "${inputs.self}/toolchains";
+        };
+
         # ────────────────────────────────────────────────────────────────────────
         # Haskell Configuration
         # ────────────────────────────────────────────────────────────────────────
@@ -166,6 +172,9 @@ in
               pkgs.just
               pkgs.buck2
               ghc-with-all-deps
+
+              # sensenet CLI - typed build system wrapping Buck2
+              config.packages.sensenet
 
               # ════════════════════════════════════════════════════════════════
               # LSP servers - go-to-definition works out of the box
@@ -387,6 +396,7 @@ in
               '';
           }
           // nv-env
+          // sensenet-env
           // cfg.extra-env
           // optional-attrs (cfg.nv.enable && pkgs ? nvidia-sdk) {
             # Ensure ptxas/fatbinary are in PATH for Clang
