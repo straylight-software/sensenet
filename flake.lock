@@ -42,6 +42,21 @@
     },
     "crane": {
       "locked": {
+        "lastModified": 1771121070,
+        "narHash": "sha256-aIlv7FRXF9q70DNJPI237dEDAznSKaXmL5lfK/Id/bI=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "a2812c19f1ed2e5ed5ce2ef7109798b575c180e1",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
+    "crane_2": {
+      "locked": {
         "lastModified": 1747587869,
         "narHash": "sha256-Zay3WJdSvC2VQmNqWSVLBOg/1iS/0/Q0c9JOBsB+3qw=",
         "owner": "ipetkov",
@@ -306,7 +321,7 @@
     },
     "nativelink": {
       "inputs": {
-        "crane": "crane",
+        "crane": "crane_2",
         "flake-parts": "flake-parts_3",
         "git-hooks": "git-hooks",
         "nix2container": "nix2container",
@@ -508,6 +523,7 @@
     "root": {
       "inputs": {
         "buck2-prelude": "buck2-prelude",
+        "crane": "crane",
         "flake-parts": "flake-parts",
         "ghc-source-gen-src": "ghc-source-gen-src",
         "llvm-project": "llvm-project",
@@ -515,6 +531,7 @@
         "nixpkgs": "nixpkgs_2",
         "nvidia-sdk": "nvidia-sdk",
         "purescript-overlay": "purescript-overlay",
+        "rust-overlay": "rust-overlay_2",
         "systems": "systems_3",
         "treefmt-nix": "treefmt-nix"
       }
@@ -532,6 +549,26 @@
         "owner": "oxalica",
         "repo": "rust-overlay",
         "rev": "6b1cf12374361859242a562e1933a7930649131a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "type": "github"
+      }
+    },
+    "rust-overlay_2": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1771211437,
+        "narHash": "sha256-lcNK438i4DGtyA+bPXXyVLHVmJjYpVKmpux9WASa3ro=",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "c62195b3d6e1bb11e0c2fb2a494117d3b55d410f",
         "type": "github"
       },
       "original": {

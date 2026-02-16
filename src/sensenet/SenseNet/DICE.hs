@@ -71,7 +71,7 @@ import Foreign.C.String
 import Foreign.C.Types
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr
-import Foreign.Storable (peek)
+import Foreign.Storable (peek, pokeByteOff)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Opaque Handle Types
@@ -330,7 +330,7 @@ compute (Runtime rtPtr) (Transaction txnPtr) key = do
         if errPtr == nullPtr
           then do
             c_dice_result_free resultPtr
-            return $ Left "Unknown error"
+            return $ Left (T.pack "Unknown error")
           else do
             len <- peek lenPtr
             errBS <- BS.packCStringLen (errPtr, fromIntegral len)
@@ -341,7 +341,7 @@ compute (Runtime rtPtr) (Transaction txnPtr) key = do
     getOutput ptr idx = alloca $ \lenPtr -> do
       outPtr <- c_dice_result_output_at ptr idx lenPtr
       if outPtr == nullPtr
-        then return ""
+        then return T.empty
         else do
           len <- peek lenPtr
           bs <- BS.packCStringLen (outPtr, fromIntegral len)

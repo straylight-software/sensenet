@@ -42,6 +42,15 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # Crane - Rust build tool for Nix
+    crane.url = "github:ipetkov/crane";
+
+    # Rust overlay for toolchain selection
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     # nix-compile - Type inference and static analysis for Nix
     # TODO: Uncomment when repository is public
     # nix-compile = {
@@ -98,10 +107,13 @@
 
       # Self-use: packages and minimal devshell for this repo
       perSystem =
-        { pkgs, ... }:
+        { pkgs, system, ... }:
         let
           # GHC 9.12 with haskell overlay applied (via std.nix)
           inherit (pkgs.haskell.packages) ghc912;
+
+          # DICE FFI library
+          dice-ffi = pkgs.callPackage ./nix/packages/dice-ffi.nix { };
 
           # Build sensenet CLI - use pre-generated nix expression
           sensenet = pkgs.callPackage ./nix/packages/sensenet.nix {
@@ -119,11 +131,13 @@
               text
               unix
               ;
+            inherit dice-ffi;
           };
         in
         {
           packages.sense-lint = pkgs.callPackage ./nix/packages/sense-lint.nix { };
           packages.sensenet = sensenet;
+          packages.dice-ffi = dice-ffi;
 
           # Declare examples as a Sensenet project
           sensenet.projects.examples = {
