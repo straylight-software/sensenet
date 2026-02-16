@@ -50,6 +50,7 @@ main = do
     ("run" : rest) -> cmdRun (map T.pack rest)
     ("clean" : _) -> cmdClean
     ("targets" : rest) -> cmdTargets (map T.pack rest)
+    ("query" : rest) -> cmdQuery (map T.pack rest)
     ("emit-buck" : rest) -> cmdEmitBuck rest
     ("graph" : rest) -> cmdGraph rest
     ("--version" : _) -> version
@@ -76,6 +77,7 @@ usage = putStrLn $ unlines
   , "  run <target>       Build and run"
   , "  clean              Clean build outputs"
   , "  targets [pattern]  List targets"
+  , "  query <expr>       Query the build graph (buck2 cquery)"
   , "  emit-buck <file>   Emit BUCK from BUILD.dhall (new format)"
   , "  graph [pattern]    Show build graph"
   , ""
@@ -87,6 +89,8 @@ usage = putStrLn $ unlines
   , "  sensenet build                    # build all"
   , "  sensenet build //src/foo:bar      # build specific target"
   , "  sensenet run //src/hello:hello    # build and run"
+  , "  sensenet query //...              # list all targets"
+  , "  sensenet query 'deps(//foo:bar)'  # query dependencies"
   , "  sensenet emit-buck src/foo/BUILD.dhall"
   ]
 
@@ -114,6 +118,12 @@ cmdTargets args = withNamespace $ \cfg files -> do
         [] -> "//..."
         (p : _) -> p
   execInNamespace cfg files "buck2" ["targets", pattern]
+
+-- | Query command (wraps buck2 cquery)
+cmdQuery :: [Text] -> IO ()
+cmdQuery args = withNamespace $ \cfg files -> do
+  let queryArgs = if null args then ["//..."] else args
+  execInNamespace cfg files "buck2" ("cquery" : queryArgs)
 
 -- | Emit BUCK from a BUILD.dhall file (new format)
 cmdEmitBuck :: [String] -> IO ()
