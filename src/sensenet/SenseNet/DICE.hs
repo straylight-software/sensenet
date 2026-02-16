@@ -1,376 +1,405 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
-{-# LANGUAGE CApiFFI #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DerivingStrategies #-}
 
--- | FFI bindings to DICE (Dynamic Incremental Computation Engine)
+-- | DICE (Dynamic Incremental Computation Engine) for Haskell
 --
--- This module provides Haskell bindings to the Rust DICE library,
--- enabling incremental computation for builds without Buck2/Starlark.
+-- This module provides a clean, type-safe interface to DICE, enabling
+-- incremental builds without Buck2 or Starlark.
 --
--- Usage:
+-- = Quick Start
 --
 -- @
--- import qualified SenseNet.DICE as DICE
+-- import SenseNet.DICE
 --
--- main = DICE.withEngine $ \engine -> do
---   -- Register compute callback
---   DICE.registerCompute engine "action" $ \key deps -> do
---     -- Execute build action
---     return $ DICE.ActionResult ["output.o"] "hash123" 0 ""
+-- main :: IO ()
+-- main = do
+--   result <- runDICE $ do
+--     -- Inject source files
+--     inject "src/main.cpp" "abc123" 1024
+--     inject "src/lib.cpp" "def456" 2048
 --
---   -- Inject source files
---   DICE.withTransaction engine $ \txn -> do
---     DICE.injectSource txn "src/main.cpp" "abc123" 1024
---     DICE.injectSource txn "src/lib.cpp" "def456" 2048
+--     -- Compute an action
+--     compute "compile-main"
 --
---   -- Request computation
---   result <- DICE.compute engine "action-key-hash"
 --   case result of
---     Right outputs -> putStrLn $ "Built: " ++ show outputs
---     Left err -> putStrLn $ "Error: " ++ err
+--     Left err -> putStrLn $ "Error: " <> show err
+--     Right outputs -> putStrLn $ "Built: " <> show outputs
 -- @
+--
+-- = Architecture
+--
+-- DICE uses a transactional model:
+--
+-- 1. Create an engine (holds the computation graph)
+-- 2. Start a transaction (inject source file metadata)
+-- 3. Commit the transaction
+-- 4. Request computations (DICE handles caching/invalidation)
+--
+-- The 'DICE' monad handles all of this automatically.
 module SenseNet.DICE
-  ( -- * Handles
-    Runtime
-  , Engine
-  , Updater
-  , Transaction
-  , Result
+  ( -- * The DICE Monad
+    DICE
+  , runDICE
+  , runDICE'
 
-    -- * Lifecycle
-  , withRuntime
-  , withEngine
-  , withTransaction
+    -- * Errors
+  , DICEError(..)
+
+    -- * Core Operations
+  , inject
+  , compute
 
     -- * Callbacks
-  , ComputeFn
-  , registerCompute
-
-    -- * Injection
-  , injectSource
-
-    -- * Computation
-  , compute
-  , ActionResult(..)
+  , onCompute
 
     -- * Utilities
-  , hashSHA256
-  , version
+  , sha256
+  , diceVersion
+
+    -- * Low-level Access (rarely needed)
+  , withEngine
+  , withTransaction
   ) where
 
-import Control.Exception (bracket)
-import Control.Monad (when)
+import Control.Exception (Exception, bracket, try, SomeException)
+import Control.Monad.IO.Class (MonadIO(..))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Unsafe as BSU
+import Data.IORef
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Data.Word (Word64)
-import Foreign.C.String
-import Foreign.C.Types
-import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr
-import Foreign.Storable (peek, pokeByteOff)
+import Data.Word (Word8, Word64)
+import Foreign.C.String (peekCString, peekCStringLen)
+import Foreign.C.Types (CSize(..))
+import Foreign.Marshal.Alloc (alloca, mallocBytes)
+import Foreign.Marshal.Utils (copyBytes)
+import Foreign.Ptr (Ptr, nullPtr, castPtr, plusPtr)
+import Foreign.Storable (peek, poke)
 
--- ═══════════════════════════════════════════════════════════════════════════
--- Opaque Handle Types
--- ═══════════════════════════════════════════════════════════════════════════
+import qualified SenseNet.DICE.FFI as FFI
 
--- | Tokio runtime handle
-newtype Runtime = Runtime (Ptr ())
+-- ════════════════════════════════════════════════════════════════════════════
+-- Error Types
+-- ════════════════════════════════════════════════════════════════════════════
 
--- | DICE engine handle
-newtype Engine = Engine (Ptr ())
+-- | Errors that can occur during DICE operations
+data DICEError
+  = RuntimeCreateFailed
+  | EngineCreateFailed
+  | UpdaterCreateFailed
+  | CommitFailed
+  | ComputeFailed Text
+  | InjectFailed Text
+  | CallbackRegistrationFailed Text
+  | HashFailed
+  deriving stock (Show, Eq)
 
--- | Transaction updater handle
-newtype Updater = Updater (Ptr ())
+instance Exception DICEError
 
--- | Transaction handle
-newtype Transaction = Transaction (Ptr ())
+-- ════════════════════════════════════════════════════════════════════════════
+-- DICE Monad
+-- ════════════════════════════════════════════════════════════════════════════
 
--- | Computation result handle
-newtype Result = Result (Ptr ())
+-- | The DICE monad for incremental computation.
+--
+-- This monad manages:
+--
+-- * DICE engine lifecycle
+-- * Transaction state (injected sources)
+-- * Error handling
+--
+-- Use 'runDICE' to execute DICE computations.
+newtype DICE a = DICE { unDICE :: DICEEnv -> IO (Either DICEError a) }
 
--- ═══════════════════════════════════════════════════════════════════════════
--- FFI Imports
--- ═══════════════════════════════════════════════════════════════════════════
+instance Functor DICE where
+  fmap f (DICE g) = DICE $ \env -> fmap (fmap f) (g env)
 
--- Runtime
-foreign import ccall unsafe "dice_runtime_new"
-  c_dice_runtime_new :: IO (Ptr ())
+instance Applicative DICE where
+  pure a = DICE $ \_ -> pure (Right a)
+  DICE f <*> DICE a = DICE $ \env -> do
+    ef <- f env
+    case ef of
+      Left err -> pure (Left err)
+      Right fn -> fmap (fmap fn) (a env)
 
-foreign import ccall unsafe "dice_runtime_free"
-  c_dice_runtime_free :: Ptr () -> IO ()
+instance Monad DICE where
+  DICE m >>= f = DICE $ \env -> do
+    ea <- m env
+    case ea of
+      Left err -> pure (Left err)
+      Right a -> unDICE (f a) env
 
--- Engine
-foreign import ccall unsafe "dice_engine_new"
-  c_dice_engine_new :: IO (Ptr ())
+instance MonadIO DICE where
+  liftIO io = DICE $ \_ -> Right <$> io
 
-foreign import ccall unsafe "dice_engine_free"
-  c_dice_engine_free :: Ptr () -> IO ()
+-- | Internal environment for DICE operations
+data DICEEnv = DICEEnv
+  { envRuntime :: FFI.RuntimePtr
+  , envEngine :: FFI.EnginePtr
+  , envSources :: IORef [(Text, Text, Word64)]  -- (path, hash, size)
+  }
 
--- Callbacks
-foreign import ccall unsafe "dice_register_compute"
-  c_dice_register_compute
-    :: CString -> CSize -> FunPtr ComputeFnC -> Ptr () -> IO CInt
+-- | Throw a DICE error
+throwDICE :: DICEError -> DICE a
+throwDICE err = DICE $ \_ -> pure (Left err)
 
--- Transaction
-foreign import ccall unsafe "dice_updater_new"
-  c_dice_updater_new :: Ptr () -> IO (Ptr ())
+-- | Catch IO exceptions and convert to DICE errors
+tryIO :: IO a -> (SomeException -> DICEError) -> DICE a
+tryIO io mkErr = DICE $ \_ -> do
+  result <- try io
+  case result of
+    Left exc -> pure (Left (mkErr exc))
+    Right a -> pure (Right a)
 
-foreign import ccall unsafe "dice_inject_source"
-  c_dice_inject_source
-    :: Ptr () -> CString -> CSize -> CString -> CSize -> Word64 -> IO CInt
+-- ════════════════════════════════════════════════════════════════════════════
+-- Running DICE
+-- ════════════════════════════════════════════════════════════════════════════
 
-foreign import ccall unsafe "dice_commit"
-  c_dice_commit :: Ptr () -> Ptr () -> IO (Ptr ())
-
-foreign import ccall unsafe "dice_updater_free"
-  c_dice_updater_free :: Ptr () -> IO ()
-
-foreign import ccall unsafe "dice_transaction_free"
-  c_dice_transaction_free :: Ptr () -> IO ()
-
--- Computation
-foreign import ccall unsafe "dice_compute_action"
-  c_dice_compute_action
-    :: Ptr () -> Ptr () -> CString -> CSize -> IO (Ptr ())
-
-foreign import ccall unsafe "dice_result_ok"
-  c_dice_result_ok :: Ptr () -> IO CInt
-
-foreign import ccall unsafe "dice_result_exit_code"
-  c_dice_result_exit_code :: Ptr () -> IO CInt
-
-foreign import ccall unsafe "dice_result_output_count"
-  c_dice_result_output_count :: Ptr () -> IO CSize
-
-foreign import ccall unsafe "dice_result_output_at"
-  c_dice_result_output_at :: Ptr () -> CSize -> Ptr CSize -> IO CString
-
-foreign import ccall unsafe "dice_result_error"
-  c_dice_result_error :: Ptr () -> Ptr CSize -> IO CString
-
-foreign import ccall unsafe "dice_result_free"
-  c_dice_result_free :: Ptr () -> IO ()
-
--- Utilities
-foreign import ccall unsafe "dice_hash_sha256"
-  c_dice_hash_sha256 :: Ptr Word8 -> CSize -> IO CString
-
-foreign import ccall unsafe "dice_free_string"
-  c_dice_free_string :: CString -> IO ()
-
-foreign import ccall unsafe "dice_version"
-  c_dice_version :: IO CString
-
--- ═══════════════════════════════════════════════════════════════════════════
--- Callback Types
--- ═══════════════════════════════════════════════════════════════════════════
-
--- | C callback function type
-type ComputeFnC =
-  CString -> CSize -> CString -> CSize -> Ptr () -> IO CString
-
--- | Haskell compute function type
--- Takes: key, dependencies JSON
--- Returns: JSON result string (will be freed by Rust)
-type ComputeFn = Text -> Text -> IO Text
-
--- Foreign wrapper for callbacks
-foreign import ccall "wrapper"
-  mkComputeFn :: ComputeFnC -> IO (FunPtr ComputeFnC)
-
--- ═══════════════════════════════════════════════════════════════════════════
--- Data Types
--- ═══════════════════════════════════════════════════════════════════════════
-
--- | Result of an action computation
-data ActionResult = ActionResult
-  { arOutputs :: [Text]
-  , arOutputHash :: Text
-  , arExitCode :: Int
-  , arLog :: Text
-  } deriving (Show, Eq)
-
--- ═══════════════════════════════════════════════════════════════════════════
--- Lifecycle Functions
--- ═══════════════════════════════════════════════════════════════════════════
-
--- | Run action with a DICE runtime
-withRuntime :: (Runtime -> IO a) -> IO a
-withRuntime f = bracket
-  (Runtime <$> c_dice_runtime_new)
-  (\(Runtime p) -> c_dice_runtime_free p)
-  f
-
--- | Run action with a DICE engine
--- Note: Currently doesn't use the runtime, but will when we add proper async
-withEngine :: (Engine -> IO a) -> IO a
-withEngine f = bracket
-  (Engine <$> c_dice_engine_new)
-  (\(Engine p) -> c_dice_engine_free p)
-  f
-
--- | Run action with a transaction
--- Creates an updater, runs the action to inject values, then commits
-withTransaction :: Runtime -> Engine -> (Updater -> IO ()) -> IO Transaction
-withTransaction (Runtime rtPtr) (Engine engPtr) inject = do
-  updaterPtr <- c_dice_updater_new engPtr
-  when (updaterPtr == nullPtr) $
-    error "Failed to create DICE updater"
-  
-  -- Run injection
-  inject (Updater updaterPtr)
-  
-  -- Commit
-  txnPtr <- c_dice_commit rtPtr updaterPtr
-  when (txnPtr == nullPtr) $
-    error "Failed to commit DICE transaction"
-  
-  return (Transaction txnPtr)
-
--- ═══════════════════════════════════════════════════════════════════════════
--- Callback Registration
--- ═══════════════════════════════════════════════════════════════════════════
-
--- | Register a compute callback for a key type
-registerCompute :: Text -> ComputeFn -> IO ()
-registerCompute keyType callback = do
-  -- Wrap the Haskell callback
-  let wrappedCallback :: ComputeFnC
-      wrappedCallback keyPtr keyLen depsPtr depsLen _userData = do
-        -- Convert key from C string
-        keyBS <- BS.packCStringLen (keyPtr, fromIntegral keyLen)
-        let key = TE.decodeUtf8 keyBS
-        
-        -- Convert deps from C string
-        depsBS <- BS.packCStringLen (depsPtr, fromIntegral depsLen)
-        let deps = TE.decodeUtf8 depsBS
-        
-        -- Call Haskell callback
-        result <- callback key deps
-        
-        -- Return result as C string (caller will free)
-        -- Note: We use malloc to match what Rust expects
-        let resultBS = TE.encodeUtf8 result
-        BS.useAsCStringLen resultBS $ \(ptr, len) -> do
-          -- Allocate and copy
-          dest <- mallocBytes (len + 1)
-          copyBytes dest ptr len
-          pokeByteOff dest len (0 :: Word8)
-          return $ castPtr dest
-  
-  -- Create function pointer
-  fnPtr <- mkComputeFn wrappedCallback
-  
-  -- Register with DICE
-  let keyTypeBS = TE.encodeUtf8 keyType
-  BS.useAsCStringLen keyTypeBS $ \(ptr, len) -> do
-    rc <- c_dice_register_compute ptr (fromIntegral len) fnPtr nullPtr
-    when (rc /= 0) $
-      error $ "Failed to register compute callback for: " ++ T.unpack keyType
-
--- Need these for the callback implementation
-foreign import ccall unsafe "malloc"
-  mallocBytes :: Int -> IO (Ptr a)
-
-foreign import ccall unsafe "memcpy"
-  copyBytes :: Ptr a -> Ptr b -> Int -> IO ()
-
--- ═══════════════════════════════════════════════════════════════════════════
--- Injection Functions
--- ═══════════════════════════════════════════════════════════════════════════
-
--- | Inject a source file into the transaction
-injectSource :: Updater -> Text -> Text -> Word64 -> IO ()
-injectSource (Updater updPtr) path hash size = do
-  let pathBS = TE.encodeUtf8 path
-      hashBS = TE.encodeUtf8 hash
-  
-  BS.useAsCStringLen pathBS $ \(pathPtr, pathLen) ->
-    BS.useAsCStringLen hashBS $ \(hashPtr, hashLen) -> do
-      rc <- c_dice_inject_source
-        updPtr
-        pathPtr (fromIntegral pathLen)
-        hashPtr (fromIntegral hashLen)
-        size
-      when (rc /= 0) $
-        error $ "Failed to inject source: " ++ T.unpack path
-
--- ═══════════════════════════════════════════════════════════════════════════
--- Computation Functions
--- ═══════════════════════════════════════════════════════════════════════════
-
--- | Compute an action by key
-compute :: Runtime -> Transaction -> Text -> IO (Either Text [Text])
-compute (Runtime rtPtr) (Transaction txnPtr) key = do
-  let keyBS = TE.encodeUtf8 key
-  
-  resultPtr <- BS.useAsCStringLen keyBS $ \(keyPtr, keyLen) ->
-    c_dice_compute_action rtPtr txnPtr keyPtr (fromIntegral keyLen)
-  
-  when (resultPtr == nullPtr) $
-    error "Failed to compute action"
-  
-  -- Check result
-  ok <- c_dice_result_ok resultPtr
-  if ok == 1
-    then do
-      -- Get outputs
-      count <- c_dice_result_output_count resultPtr
-      outputs <- mapM (getOutput resultPtr) [0 .. count - 1]
-      c_dice_result_free resultPtr
-      return $ Right outputs
-    else do
-      -- Get error
-      alloca $ \lenPtr -> do
-        errPtr <- c_dice_result_error resultPtr lenPtr
-        if errPtr == nullPtr
-          then do
-            c_dice_result_free resultPtr
-            return $ Left (T.pack "Unknown error")
+-- | Run a DICE computation.
+--
+-- Creates the runtime, engine, and transaction automatically.
+-- All resources are properly cleaned up on exit.
+--
+-- @
+-- result <- runDICE $ do
+--   inject "src/main.cpp" hash size
+--   compute "build-main"
+-- @
+runDICE :: DICE a -> IO (Either DICEError a)
+runDICE dice =
+  bracket createRuntime FFI.c_runtime_free $ \rtPtr -> do
+    if rtPtr == nullPtr
+      then pure (Left RuntimeCreateFailed)
+      else bracket createEngine FFI.c_engine_free $ \engPtr -> do
+        if engPtr == nullPtr
+          then pure (Left EngineCreateFailed)
           else do
-            len <- peek lenPtr
-            errBS <- BS.packCStringLen (errPtr, fromIntegral len)
-            c_dice_result_free resultPtr
-            return $ Left $ TE.decodeUtf8 errBS
+            sourcesRef <- newIORef []
+            let env = DICEEnv rtPtr engPtr sourcesRef
+            unDICE dice env
   where
-    getOutput :: Ptr () -> CSize -> IO Text
+    createRuntime = FFI.c_runtime_new
+    createEngine = FFI.c_engine_new
+
+-- | Run DICE and throw on error (for simple scripts)
+runDICE' :: DICE a -> IO a
+runDICE' dice = do
+  result <- runDICE dice
+  case result of
+    Left err -> fail $ "DICE error: " <> show err
+    Right a -> pure a
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Core Operations
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Inject a source file into the current transaction.
+--
+-- This tells DICE about a source file's identity (path, content hash, size).
+-- DICE uses this to track dependencies and invalidation.
+--
+-- @
+-- inject "src/main.cpp" "a1b2c3..." 1024
+-- @
+inject :: Text -> Text -> Word64 -> DICE ()
+inject path hash size = DICE $ \env -> do
+  modifyIORef' (envSources env) ((path, hash, size) :)
+  pure (Right ())
+
+-- | Request computation of an action.
+--
+-- Commits any pending source injections, then computes the action.
+-- Returns the list of output paths on success.
+--
+-- @
+-- outputs <- compute "compile-main"
+-- @
+compute :: Text -> DICE [Text]
+compute key = DICE $ \env -> do
+  -- Get pending sources
+  sources <- readIORef (envSources env)
+  
+  -- Create updater
+  updPtr <- FFI.c_updater_new (envEngine env)
+  if updPtr == nullPtr
+    then pure (Left UpdaterCreateFailed)
+    else do
+      -- Inject all sources
+      injectResult <- injectAll updPtr (reverse sources)
+      case injectResult of
+        Left err -> do
+          FFI.c_updater_free updPtr
+          pure (Left err)
+        Right () -> do
+          -- Commit transaction
+          txnPtr <- FFI.c_commit (envRuntime env) updPtr
+          if txnPtr == nullPtr
+            then pure (Left CommitFailed)
+            else do
+              -- Compute
+              result <- computeAction (envRuntime env) txnPtr key
+              FFI.c_transaction_free txnPtr
+              pure result
+  where
+    injectAll _ [] = pure (Right ())
+    injectAll updPtr ((p, h, s) : rest) = do
+      let pathBS = TE.encodeUtf8 p
+          hashBS = TE.encodeUtf8 h
+      rc <- BS.useAsCStringLen pathBS $ \(pathPtr, pathLen) ->
+        BS.useAsCStringLen hashBS $ \(hashPtr, hashLen) ->
+          FFI.c_inject_source updPtr
+            pathPtr (fromIntegral pathLen)
+            hashPtr (fromIntegral hashLen)
+            s
+      if rc /= 0
+        then pure (Left (InjectFailed p))
+        else injectAll updPtr rest
+
+    computeAction rtPtr txnPtr k = do
+      let keyBS = TE.encodeUtf8 k
+      resultPtr <- BS.useAsCStringLen keyBS $ \(keyPtr, keyLen) ->
+        FFI.c_compute_action rtPtr txnPtr keyPtr (fromIntegral keyLen)
+      if resultPtr == nullPtr
+        then pure (Left (ComputeFailed k))
+        else do
+          ok <- FFI.c_result_ok resultPtr
+          if ok == 1
+            then do
+              count <- FFI.c_result_output_count resultPtr
+              outputs <- mapM (getOutput resultPtr) [0 .. count - 1]
+              FFI.c_result_free resultPtr
+              pure (Right outputs)
+            else do
+              errText <- getError resultPtr
+              FFI.c_result_free resultPtr
+              pure (Left (ComputeFailed errText))
+
     getOutput ptr idx = alloca $ \lenPtr -> do
-      outPtr <- c_dice_result_output_at ptr idx lenPtr
+      outPtr <- FFI.c_result_output_at ptr idx lenPtr
       if outPtr == nullPtr
-        then return T.empty
+        then pure T.empty
         else do
           len <- peek lenPtr
           bs <- BS.packCStringLen (outPtr, fromIntegral len)
-          return $ TE.decodeUtf8 bs
+          pure (TE.decodeUtf8 bs)
 
--- ═══════════════════════════════════════════════════════════════════════════
--- Utility Functions
--- ═══════════════════════════════════════════════════════════════════════════
+    getError ptr = alloca $ \lenPtr -> do
+      errPtr <- FFI.c_result_error ptr lenPtr
+      if errPtr == nullPtr
+        then pure (T.pack "Unknown error")
+        else do
+          len <- peek lenPtr
+          bs <- BS.packCStringLen (errPtr, fromIntegral len)
+          pure (TE.decodeUtf8 bs)
 
--- | Compute SHA256 hash of data
-hashSHA256 :: ByteString -> IO Text
-hashSHA256 bs = BSU.unsafeUseAsCStringLen bs $ \(ptr, len) -> do
-  hashPtr <- c_dice_hash_sha256 (castPtr ptr) (fromIntegral len)
-  when (hashPtr == nullPtr) $
-    error "Failed to compute SHA256 hash"
-  
-  hash <- peekCString hashPtr
-  c_dice_free_string hashPtr
-  return $ T.pack hash
+-- ════════════════════════════════════════════════════════════════════════════
+-- Callbacks
+-- ════════════════════════════════════════════════════════════════════════════
 
--- | Get DICE library version
-version :: IO Text
-version = do
-  vPtr <- c_dice_version
+-- | Register a compute callback for a key type.
+--
+-- When DICE needs to compute a key of this type, it will call your function.
+--
+-- @
+-- onCompute "action" $ \\key deps -> do
+--   -- Run build command
+--   pure "{\"outputs\": [\"out.o\"], \"exit_code\": 0}"
+-- @
+--
+-- Note: Callbacks are global and persist for the program lifetime.
+onCompute :: Text -> (Text -> Text -> IO Text) -> DICE ()
+onCompute keyType callback = DICE $ \_ -> do
+  let wrapped keyPtr keyLen depsPtr depsLen _userData = do
+        keyBS <- BS.packCStringLen (keyPtr, fromIntegral keyLen)
+        depsBS <- BS.packCStringLen (depsPtr, fromIntegral depsLen)
+        result <- callback (TE.decodeUtf8 keyBS) (TE.decodeUtf8 depsBS)
+        -- Allocate result string for Rust to free
+        let resultBS = TE.encodeUtf8 result
+        BS.useAsCStringLen resultBS $ \(srcPtr, len) -> do
+          dest <- mallocBytes (len + 1)
+          copyBytes dest srcPtr len
+          poke (dest `plusPtr` len) (0 :: Word8)
+          pure (castPtr dest)
+
+  fnPtr <- FFI.mkComputeCallback wrapped
+  let keyTypeBS = TE.encodeUtf8 keyType
+  rc <- BS.useAsCStringLen keyTypeBS $ \(ptr, len) ->
+    FFI.c_register_compute ptr (fromIntegral len) fnPtr nullPtr
+  if rc /= 0
+    then pure (Left (CallbackRegistrationFailed keyType))
+    else pure (Right ())
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Utilities
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Compute SHA256 hash of data.
+--
+-- Uses the DICE library's hash implementation for consistency.
+--
+-- @
+-- hash <- sha256 fileContents
+-- @
+sha256 :: ByteString -> DICE Text
+sha256 bs = DICE $ \_ ->
+  BSU.unsafeUseAsCStringLen bs $ \(ptr, len) -> do
+    hashPtr <- FFI.c_hash_sha256 (castPtr ptr) (fromIntegral len)
+    if hashPtr == nullPtr
+      then pure (Left HashFailed)
+      else do
+        hash <- peekCString hashPtr
+        FFI.c_free_string hashPtr
+        pure (Right (T.pack hash))
+
+-- | Get DICE library version.
+diceVersion :: IO Text
+diceVersion = do
+  vPtr <- FFI.c_version
   v <- peekCString vPtr
-  return $ T.pack v
+  pure (T.pack v)
 
--- ═══════════════════════════════════════════════════════════════════════════
--- Word8 type for FFI
--- ═══════════════════════════════════════════════════════════════════════════
+-- ════════════════════════════════════════════════════════════════════════════
+-- Low-level Access
+-- ════════════════════════════════════════════════════════════════════════════
 
-type Word8 = Foreign.C.Types.CUChar
+-- | Run an action with direct engine access.
+--
+-- For advanced use cases that need the raw engine handle.
+withEngine :: (FFI.EnginePtr -> IO a) -> DICE a
+withEngine f = DICE $ \env -> Right <$> f (envEngine env)
+
+-- | Run an action with direct transaction access.
+--
+-- Creates a transaction from pending sources, runs the action,
+-- then cleans up.
+withTransaction :: (FFI.TransactionPtr -> IO a) -> DICE a
+withTransaction f = DICE $ \env -> do
+  sources <- readIORef (envSources env)
+  updPtr <- FFI.c_updater_new (envEngine env)
+  if updPtr == nullPtr
+    then pure (Left UpdaterCreateFailed)
+    else do
+      -- Inject sources
+      mapM_ (injectOne updPtr) (reverse sources)
+      -- Commit
+      txnPtr <- FFI.c_commit (envRuntime env) updPtr
+      if txnPtr == nullPtr
+        then pure (Left CommitFailed)
+        else do
+          result <- f txnPtr
+          FFI.c_transaction_free txnPtr
+          pure (Right result)
+  where
+    injectOne updPtr (p, h, s) = do
+      let pathBS = TE.encodeUtf8 p
+          hashBS = TE.encodeUtf8 h
+      BS.useAsCStringLen pathBS $ \(pathPtr, pathLen) ->
+        BS.useAsCStringLen hashBS $ \(hashPtr, hashLen) ->
+          FFI.c_inject_source updPtr
+            pathPtr (fromIntegral pathLen)
+            hashPtr (fromIntegral hashLen)
+            s
+
+

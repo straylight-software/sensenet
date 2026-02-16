@@ -16,6 +16,7 @@ executable sensenet
   other-modules:
     SenseNet.Config
     SenseNet.DICE
+    SenseNet.DICE.FFI
     SenseNet.Dhall
     SenseNet.Discover
     SenseNet.Emit
