@@ -215,8 +215,8 @@
           };
 
           # Example with NativeLink remote execution enabled
-          # Usage: nix develop .#sensenet-examples-remote
-          #        buck2 build --prefer-remote //src/examples/cxx:hello-cxx
+          # Usage: nix develop .#sensenet-examples-remote \
+          #   --command "buck2 build --prefer-remote //src/examples/cxx:hello-cxx"
           sensenet.projects.examples-remote = {
             src = ./.;
             targets = [

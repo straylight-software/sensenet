@@ -16,6 +16,7 @@
 #   )
 
 
+load("@prelude//:rules.bzl", "http_archive")
 
 RustCrateInfo = provider(fields = ["rlib", "rmeta", "crate_name", "edition", "features", "is_proc_macro", "transitive_deps"])
 

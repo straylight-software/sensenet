@@ -56,7 +56,7 @@ module Nix (
     getBuildInputs,
 ) where
 
-import Control.Exception (SomeException, finally, try)
+import Control.Exception (IOException, SomeException, catch, finally, try)
 import Control.Monad (forM, forM_)
 import Data.Aeson (FromJSON, ToJSON (..), eitherDecode, encode)
 import qualified Data.Aeson as Aeson
@@ -177,31 +177,43 @@ queryPkgConfig pkgConfigPath ref = do
         -- Strip version suffix if present (e.g., simdjson-4.2.4 -> simdjson)
         basePkg = T.takeWhile (/= '-') $ T.takeWhile (/= '.') pkg
 
-    -- Try pkg-config with the package name
-    (exitCode, stdout, _) <-
-        readProcessWithExitCode
-            "pkg-config"
-            ["--libs", T.unpack basePkg]
-            ""
-            `withEnv` [("PKG_CONFIG_PATH", T.unpack pkgConfigPath)]
+    -- Check if pkg-config is available
+    pkgConfigAvailable <-
+        catch @IOException
+            ( do
+                _ <- readProcessWithExitCode "which" ["pkg-config"] ""
+                pure True
+            )
+            (const $ pure False)
 
-    case exitCode of
-        ExitSuccess -> pure $ extractLibFlags (T.pack stdout)
-        ExitFailure _ -> do
-            -- Try scanning for .pc files
-            pcNames <- findPkgConfigNames pkgConfigPath
-            case pcNames of
-                (pcName : _) -> do
-                    (ec, out, _) <-
-                        readProcessWithExitCode
-                            "pkg-config"
-                            ["--libs", T.unpack pcName]
-                            ""
-                            `withEnv` [("PKG_CONFIG_PATH", T.unpack pkgConfigPath)]
-                    case ec of
-                        ExitSuccess -> pure $ extractLibFlags (T.pack out)
-                        ExitFailure _ -> pure ["-l" <> basePkg]
-                [] -> pure ["-l" <> basePkg] -- Fall back to package name
+    if not pkgConfigAvailable
+        then pure ["-l" <> basePkg] -- pkg-config not found, fall back
+        else do
+            -- Try pkg-config with the package name
+            (exitCode, stdout, _) <-
+                readProcessWithExitCode
+                    "pkg-config"
+                    ["--libs", T.unpack basePkg]
+                    ""
+                    `withEnv` [("PKG_CONFIG_PATH", T.unpack pkgConfigPath)]
+
+            case exitCode of
+                ExitSuccess -> pure $ extractLibFlags (T.pack stdout)
+                ExitFailure _ -> do
+                    -- Try scanning for .pc files
+                    pcNames <- findPkgConfigNames pkgConfigPath
+                    case pcNames of
+                        (pcName : _) -> do
+                            (ec, out, _) <-
+                                readProcessWithExitCode
+                                    "pkg-config"
+                                    ["--libs", T.unpack pcName]
+                                    ""
+                                    `withEnv` [("PKG_CONFIG_PATH", T.unpack pkgConfigPath)]
+                            case ec of
+                                ExitSuccess -> pure $ extractLibFlags (T.pack out)
+                                ExitFailure _ -> pure ["-l" <> basePkg]
+                        [] -> pure ["-l" <> basePkg] -- Fall back to package name
 
 -- | Run an action with modified environment, properly restoring on completion/error
 withEnv :: IO a -> [(String, String)] -> IO a

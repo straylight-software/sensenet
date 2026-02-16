@@ -272,7 +272,7 @@ let file =
 #   )
 ''
         with loads =
-            [ R.load "@straylight_prelude//http_archive.bzl" ["http_archive"]
+            [ R.load "@prelude//:rules.bzl" ["http_archive"]
             ]
         with globals = globals
         with providers = [ rustCrateInfo ]

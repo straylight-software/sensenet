@@ -74,6 +74,8 @@
           hspkgsfn = toolchain.haskell.packages or (_hp: [ ]);
           ghcversion = hspackages.ghc.version;
           ghc = hspackages.ghcWithPackages hspkgsfn;
+          # Stan static analysis tool for Haskell
+          inherit (hspackages) stan;
           # hoogleWithPackages builds a hoogle with pre-generated database for our packages
           hooglewithdb = hspackages.hoogleWithPackages hspkgsfn;
           python = toolchain.python.package or pkgs.python312;
@@ -86,7 +88,7 @@
             cxx = lib.optionalString cxxenabled (toolchainlib.mkCxxSection { llvmPackages = llvmpackages; });
             haskell = lib.optionalString haskellenabled (
               toolchainlib.mkHaskellSection {
-                inherit ghc;
+                inherit ghc stan;
                 ghcVersion = ghcversion;
                 # ghc-pkg-id wrapper for GHC 9.12 -package workaround
                 ghcPkgWrapper = "${inputs.self}/toolchains/scripts/ghc-pkg-id";

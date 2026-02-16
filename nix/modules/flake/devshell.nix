@@ -178,6 +178,7 @@ in
               pkgs.fd
               pkgs.just
               pkgs.buck2
+              pkgs.pkg-config
               ghc-with-all-deps
 
               # sensenet CLI - typed build system wrapping Buck2
@@ -260,6 +261,7 @@ in
                     nv-config-script = render-dhall "nv-config" (scripts-dir + "/nv-config.dhall") {
                       inherit (pkgs) nvidia-sdk;
                       inherit clang-unwrapped;
+                      inherit mdspan;
                     };
                   in
                   optional-string (cfg.nv.enable && pkgs ? nvidia-sdk) (builtins.readFile nv-config-script);
@@ -301,6 +303,7 @@ in
                       "@ghc_lib_dir@"
                       "@global_package_db@"
                       "@ghc_pkg_wrapper@"
+                      "@stan@"
                       "@rustc@"
                       "@rustdoc@"
                       "@clippy_driver@"
@@ -345,6 +348,7 @@ in
                       "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib"
                       "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib/package.conf.d"
                       "toolchains/scripts/ghc-pkg-id"
+                      "${hs-pkgs.stan}/bin/stan"
                       "${pkgs.rustc}/bin/rustc"
                       "${pkgs.rustc}/bin/rustdoc"
                       "${pkgs.clippy}/bin/clippy-driver"

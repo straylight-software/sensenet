@@ -90,22 +90,17 @@ def nv_link_flags(nv_toolchain_info: NvToolchainInfo) -> list[str]:
 let nvToolchain =
       { impl =
           (R.ruleImpl "nv_toolchain" ''
-    # Read from config, fall back to attrs
-    nvidia_sdk_path = read_root_config("nv", "nvidia_sdk_path", ctx.attrs.nvidia_sdk_path)
-    nvidia_sdk_include = read_root_config("nv", "nvidia_sdk_include", ctx.attrs.nvidia_sdk_include)
-    nvidia_sdk_lib = read_root_config("nv", "nvidia_sdk_lib", ctx.attrs.nvidia_sdk_lib)
-
     return [
         DefaultInfo(),
         NvToolchainInfo(
-            nvidia_sdk_path = nvidia_sdk_path,
-            nvidia_sdk_include = nvidia_sdk_include,
-            nvidia_sdk_lib = nvidia_sdk_lib,
+            nvidia_sdk_path = ctx.attrs.nvidia_sdk_path,
+            nvidia_sdk_include = ctx.attrs.nvidia_sdk_include,
+            nvidia_sdk_lib = ctx.attrs.nvidia_sdk_lib,
             nv_archs = ctx.attrs.nv_archs,
         ),
     ]
 '')
-            with doc = "NVIDIA toolchain with paths from .buckconfig.local"
+            with doc = "NVIDIA toolchain with paths from attributes"
             with is_toolchain = True
       , attrs =
           [ R.stringListAttr "nv_archs"

@@ -60,28 +60,24 @@ def _run_stan_analysis(ctx: AnalysisContext, hie_dir: Artifact, srcs: list, cate
     stan_report = ctx.actions.declare_output("stan-report.json")
     
     if stan == None:
-        # Stan not available, create empty report
-        ctx.actions.run(
-            cmd_args("/bin/echo", "'{}'"),
-            category = "stan_skip",
-            identifier = ctx.attrs.name,
-        )
-        return stan_report
+        # Stan not available, fail the build
+        fail("Stan is not configured. Please add 'stan = <path>' to the [haskell] section of .buckconfig.local")
     
-    stan_cmd = cmd_args([stan])
-    stan_cmd.add("--hie-dir", hie_dir)
-    stan_cmd.add("--json")
-    stan_cmd.add("-o", stan_report.as_output())
+    # Build stan command - capture JSON to check for issues, then print human-readable output on failure
+    # Stan uses --hiedir (not --hie-dir)
+    stan_shell_cmd = cmd_args([
+        "/bin/sh", "-c",
+        stan + " --hiedir $1 --json-output > $2 && " +
+        "if [ \"$(jq '.observations | length' $2)\" -gt 0 ]; then " +
+        "  echo 'Stan found linting issues:' && " +
+        stan + " --hiedir $1 && exit 1; " +
+        "fi",
+        "--",
+        hie_dir,
+        stan_report.as_output(),
+    ])
     
-    # Add optional Stan configuration
-    if ctx.attrs.stan_config:
-        stan_cmd.add("--config", ctx.attrs.stan_config)
-    
-    # Add severity filter if specified
-    if ctx.attrs.stan_severity:
-        stan_cmd.add("--severity", ctx.attrs.stan_severity)
-    
-    ctx.actions.run(stan_cmd, category = category, identifier = ctx.attrs.name)
+    ctx.actions.run(stan_shell_cmd, category = category, identifier = ctx.attrs.name)
     return stan_report
 
 def _haskell_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
