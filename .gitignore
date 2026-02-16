@@ -13,7 +13,6 @@ dist-newstyle/
 # Generated BUCK files (from BUILD.dhall) - zero starlark
 # All BUCK files are generated, users only edit BUILD.dhall
 src/**/BUCK
-toolchains/BUCK
 platforms/BUCK
 /BUCK
 
