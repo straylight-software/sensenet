@@ -1,45 +1,27 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedRecordDot #-}
-{-# LANGUAGE ExtendedDefaultRules #-}
-{-# OPTIONS_GHC -fno-warn-type-defaults #-}
 
-{- |
-Module      : Main
-Description : SENSE // NET — The invisible build system
-
-sensenet wraps Buck2 with Dhall configuration, running Buck2 in a
-namespace with a constructed filesystem view. No Starlark, no prelude
-complexity — just Dhall and DICE.
-
-Usage:
-  sensenet build //target       Build a target
-  sensenet build                Build current directory's targets
-  sensenet run //target         Build and run
-  sensenet clean                Clean build outputs
-
-The magic: Buck2 runs in a Linux namespace where toolchains, prelude,
-and BUCK files appear to exist, generated from Dhall on the fly.
--}
+-- | sensenet — Direct builds with Dhall + DICE
+--
+-- No Buck2, no Starlark, no BUCK file generation.
+-- Just: BUILD.dhall → IR → DICE → execute
 module Main where
 
-import Control.Monad (forM_, when)
+import Control.Monad (forM_)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Shelly
-import System.Environment (getArgs, lookupEnv)
-import System.IO.Temp (withSystemTempDirectory)
+import System.Environment (getArgs)
+import System.Directory (getCurrentDirectory)
+import System.Exit (exitFailure)
+import System.FilePath ((</>), takeDirectory, makeRelative)
 
-import SenseNet.Config
+import SenseNet.Build (build, BuildResult(..), BuildError(..))
 import SenseNet.Discover (DhallFile(..), discover)
-import SenseNet.Emit (emitBuck)
-import SenseNet.Generate
-import SenseNet.IR (Package(..), ruleName)
-import SenseNet.Namespace
+import qualified SenseNet.DICE as DICE
 import qualified SenseNet.Dhall as Dhall
-
-default (Text)
+import SenseNet.IR (Package(..), Rule, ruleName)
 
 main :: IO ()
 main = do
@@ -47,148 +29,124 @@ main = do
   case args of
     [] -> usage
     ("build" : rest) -> cmdBuild (map T.pack rest)
-    ("run" : rest) -> cmdRun (map T.pack rest)
-    ("clean" : _) -> cmdClean
     ("targets" : rest) -> cmdTargets (map T.pack rest)
-    ("query" : rest) -> cmdQuery (map T.pack rest)
-    ("emit-buck" : rest) -> cmdEmitBuck rest
-    ("graph" : rest) -> cmdGraph rest
+    ("query" : rest) -> cmdTargets (map T.pack rest)  -- alias
+    ("graph" : _) -> cmdGraph
     ("--version" : _) -> version
     ("-V" : _) -> version
     ("--help" : _) -> usage
     ("-h" : _) -> usage
-    (c : _) -> do
-      putStrLn $ "Unknown command: " <> c
+    (cmd : _) -> do
+      TIO.putStrLn $ "Unknown command: " <> T.pack cmd
       usage
 
 version :: IO ()
 version = do
-  putStrLn "sensenet 0.1.0"
-  putStrLn "SENSE // NET — Dhall + DICE build system"
+  diceVer <- DICE.diceVersion
+  TIO.putStrLn $ "sensenet 0.2.0 (DICE " <> diceVer <> ")"
+  putStrLn "Direct builds with Dhall + DICE — no Buck2"
 
 usage :: IO ()
 usage = putStrLn $ unlines
-  [ "sensenet — SENSE // NET"
+  [ "sensenet — Direct builds with Dhall + DICE"
   , ""
   , "Usage: sensenet <command> [options]"
   , ""
   , "Commands:"
   , "  build [target]     Build target(s)"
-  , "  run <target>       Build and run"
-  , "  clean              Clean build outputs"
-  , "  targets [pattern]  List targets"
-  , "  query <expr>       Query the build graph (buck2 cquery)"
-  , "  emit-buck <file>   Emit BUCK from BUILD.dhall (new format)"
-  , "  graph [pattern]    Show build graph"
+  , "  targets [pattern]  List available targets"
+  , "  query [pattern]    Alias for targets"
+  , "  graph              Show build graph"
   , ""
   , "Options:"
   , "  --version, -V      Show version"
   , "  --help, -h         Show this help"
   , ""
   , "Examples:"
-  , "  sensenet build                    # build all"
-  , "  sensenet build //src/foo:bar      # build specific target"
-  , "  sensenet run //src/hello:hello    # build and run"
-  , "  sensenet query //...              # list all targets"
-  , "  sensenet query 'deps(//foo:bar)'  # query dependencies"
-  , "  sensenet emit-buck src/foo/BUILD.dhall"
+  , "  sensenet build                       # build all"
+  , "  sensenet build //src/examples/cxx:hello-cxx"
+  , "  sensenet targets                     # list all targets"
+  , ""
+  , "Output goes to sensenet-out/"
   ]
 
--- | Build command
+-- ════════════════════════════════════════════════════════════════════════════
+-- Commands
+-- ════════════════════════════════════════════════════════════════════════════
+
 cmdBuild :: [Text] -> IO ()
-cmdBuild args = withNamespace $ \cfg files -> do
-  let targets = if null args then [":"] else args
-  execInNamespace cfg files "buck2" ("build" : targets)
-
--- | Run command  
-cmdRun :: [Text] -> IO ()
-cmdRun args = withNamespace $ \cfg files -> do
+cmdBuild args = do
+  projectRoot <- getCurrentDirectory
+  
   case args of
-    [] -> errorExit "Usage: sensenet run <target>"
-    (target : rest) -> execInNamespace cfg files "buck2" ("run" : target : rest)
-
--- | Clean command
-cmdClean :: IO ()
-cmdClean = shelly $ run_ "buck2" ["clean"]
-
--- | Targets command
-cmdTargets :: [Text] -> IO ()
-cmdTargets args = withNamespace $ \cfg files -> do
-  let pattern = case args of
-        [] -> "//..."
-        (p : _) -> p
-  execInNamespace cfg files "buck2" ["targets", pattern]
-
--- | Query command (wraps buck2 cquery)
-cmdQuery :: [Text] -> IO ()
-cmdQuery args = withNamespace $ \cfg files -> do
-  let queryArgs = if null args then ["//..."] else args
-  execInNamespace cfg files "buck2" ("cquery" : queryArgs)
-
--- | Emit BUCK from a BUILD.dhall file (new format)
-cmdEmitBuck :: [String] -> IO ()
-cmdEmitBuck args = case args of
-  [] -> putStrLn "Usage: sensenet emit-buck <BUILD.dhall>"
-  (path : _) -> do
-    cwd <- shelly pwd
-    let projectRoot = T.unpack $ toTextIgnore cwd
-    pkg <- Dhall.parsePackageFile projectRoot path
-    TIO.putStr $ emitBuck pkg
-
--- | Show build graph
-cmdGraph :: [String] -> IO ()
-cmdGraph args = case args of
-  [] -> do
-    cwd <- shelly pwd
-    let projectRoot = T.unpack $ toTextIgnore cwd
-    files <- discover projectRoot
-    forM_ files $ \file -> do
-      when (isBuildDhallNew (dhallPath file)) $ do
+    [] -> do
+      -- Build all targets
+      files <- discover projectRoot
+      TIO.putStrLn $ "Found " <> T.pack (show $ length files) <> " BUILD.dhall files"
+      forM_ files $ \file -> do
         pkg <- Dhall.parsePackageFile projectRoot (dhallPath file)
-        putStrLn $ "# " <> pkg.path
         forM_ pkg.rules $ \rule -> do
-          putStrLn $ "  " <> T.unpack (ruleName rule)
-  (path : _) -> do
-    cwd <- shelly pwd
-    let projectRoot = T.unpack $ toTextIgnore cwd
-    pkg <- Dhall.parsePackageFile projectRoot path
-    putStrLn $ "# " <> pkg.path
-    forM_ pkg.rules $ \rule -> do
-      putStrLn $ "  " <> T.unpack (ruleName rule)
-  where
-    isBuildDhallNew :: FilePath -> Bool
-    isBuildDhallNew p = "BUILD.dhall.new" `T.isSuffixOf` T.pack p
+          buildTarget projectRoot pkg (ruleName rule)
+    
+    (target : _) -> do
+      -- Parse target like //src/examples/cxx:hello-cxx
+      case parseTarget target of
+        Nothing -> do
+          TIO.putStrLn $ "Invalid target: " <> target
+          TIO.putStrLn "Expected format: //path/to/pkg:target"
+          exitFailure
+        Just (pkgPath, targetName) -> do
+          let dhallPath = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
+          pkg <- Dhall.parsePackageFile projectRoot dhallPath
+          buildTarget projectRoot pkg targetName
 
--- | Set up the namespace and run an action
-withNamespace :: (Config -> [DhallFile] -> Sh ()) -> IO ()
-withNamespace action = do
-  -- Get paths from environment (set by nix develop)
-  prelude <- lookupEnv "SENSENET_PRELUDE" >>= \case
-    Just p -> pure p
-    Nothing -> fail "SENSENET_PRELUDE not set. Run from nix develop."
-  
-  toolchains <- lookupEnv "SENSENET_TOOLCHAINS" >>= \case
-    Just t -> pure t
-    Nothing -> fail "SENSENET_TOOLCHAINS not set. Run from nix develop."
-  
-  -- Create temp directory for generated files
-  withSystemTempDirectory "sensenet" $ \tmp -> do
-    cwd <- shelly pwd
-    
-    let cfg = Config
-          { projectRoot = T.unpack $ toTextIgnore cwd
-          , preludePath = prelude
-          , toolchainsPath = toolchains
-          , tmpDir = tmp
-          }
-    
-    shelly $ do
-      -- Discover BUILD.dhall files
-      files <- liftIO $ discover (projectRoot cfg)
-      echo $ "found " <> T.pack (show $ length files) <> " BUILD.dhall files"
-      
-      -- Generate project structure
-      generate cfg files
-      
-      -- Execute in namespace (pass files for BUCK mounts)
-      action cfg files
+buildTarget :: FilePath -> Package -> Text -> IO ()
+buildTarget projectRoot pkg targetName = do
+  TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
+  result <- build projectRoot pkg targetName
+  case result of
+    Left err -> do
+      TIO.putStrLn $ "  ✗ " <> showError err
+      exitFailure
+    Right (BuildSuccess outputs) -> do
+      TIO.putStrLn $ "  ✓ Built: " <> T.intercalate ", " (map T.pack outputs)
+    Right (BuildCached outputs) -> do
+      TIO.putStrLn $ "  ✓ Cached: " <> T.intercalate ", " (map T.pack outputs)
+
+showError :: BuildError -> Text
+showError = \case
+  SourceNotFound path -> "Source not found: " <> T.pack path
+  CompileFailed cmd code stderr -> 
+    "Compile failed (exit " <> T.pack (show code) <> "): " <> stderr
+  LinkFailed cmd code stderr -> 
+    "Link failed (exit " <> T.pack (show code) <> "): " <> stderr
+  DICEFailed err -> "DICE error: " <> T.pack (show err)
+  TargetNotFound name -> "Target not found: " <> name
+  UnsupportedRule rule -> "Unsupported rule type: " <> rule
+
+-- | Parse //path/to/pkg:target
+parseTarget :: Text -> Maybe (Text, Text)
+parseTarget t = do
+  rest <- T.stripPrefix "//" t
+  case T.breakOn ":" rest of
+    (_, "") -> Nothing  -- No colon found
+    (pkgPath, colonTarget) -> Just (pkgPath, T.drop 1 colonTarget)
+
+cmdTargets :: [Text] -> IO ()
+cmdTargets _ = do
+  projectRoot <- getCurrentDirectory
+  files <- discover projectRoot
+  forM_ files $ \file -> do
+    pkg <- Dhall.parsePackageFile projectRoot (dhallPath file)
+    forM_ pkg.rules $ \rule -> do
+      TIO.putStrLn $ "//" <> T.pack pkg.path <> ":" <> ruleName rule
+
+cmdGraph :: IO ()
+cmdGraph = do
+  projectRoot <- getCurrentDirectory
+  files <- discover projectRoot
+  forM_ files $ \file -> do
+    pkg <- Dhall.parsePackageFile projectRoot (dhallPath file)
+    TIO.putStrLn $ "# " <> T.pack pkg.path
+    forM_ pkg.rules $ \rule -> do
+      TIO.putStrLn $ "  " <> ruleName rule

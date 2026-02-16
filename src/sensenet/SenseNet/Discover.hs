@@ -33,8 +33,8 @@ discover root = do
       entries <- listDirectory dir
       let paths = map (dir </>) entries
       
-      -- Find .dhall files (excluding BUILD.dhall for now, we want all dhall)
-      dhallFiles <- filterM doesFileExist $ filter isDhall paths
+      -- Find BUILD.dhall files only
+      dhallFiles <- filterM doesFileExist $ filter isBuildDhall paths
       let here = map (\fp -> DhallFile fp (makeRelative root fp)) dhallFiles
       
       -- Recurse into subdirectories
@@ -44,7 +44,7 @@ discover root = do
       children <- concat <$> forM validDirs (go ignores)
       pure (here ++ children)
     
-    isDhall p = ".dhall" `isSuffixOf` p
+    isBuildDhall p = takeFileName p == "BUILD.dhall"
     
     isSuffixOf suffix str = suffix == drop (length str - length suffix) str
 
