@@ -9,15 +9,20 @@
 module SenseNet.Build
   ( build,
     buildWithDeps,
+    buildWithConsole,
     BuildResult (..),
     BuildError (..),
   )
 where
 
-import Control.Monad (forM, forM_)
+import Control.Concurrent (forkIO, killThread, threadDelay)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (finally)
+import Control.Monad (forM, forM_, forever, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -27,6 +32,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Word (Word64)
 import GHC.IO.Handle (hGetContents)
+import SenseNet.Console qualified as Console
 import SenseNet.DICE (DICE, DICEError, clearTargets, compute, inject, registerTarget, runDICE, sha256)
 import SenseNet.IR qualified as IR
 import SenseNet.Toolchains qualified as TC
@@ -105,6 +111,212 @@ buildWithDeps tc projectRoot pkg targetName = do
       case result of
         Left err -> pure $ Left $ DICEFailed err
         Right outputs -> pure $ Right $ BuildSuccess (map T.unpack outputs)
+
+-- | Build state for console progress tracking
+data BuildState = BuildState
+  { bsTotal :: !Int,
+    bsCompleted :: !Int,
+    bsRunning :: !Int,
+    bsCached :: !Int,
+    bsActions :: ![(Word64, Text)], -- (action ID, name)
+    bsNextId :: !Word64,
+    bsLogs :: ![Text] -- Collected log messages to emit
+  }
+
+initialBuildState :: Int -> BuildState
+initialBuildState total =
+  BuildState
+    { bsTotal = total,
+      bsCompleted = 0,
+      bsRunning = 0,
+      bsCached = 0,
+      bsActions = [],
+      bsNextId = 1,
+      bsLogs = []
+    }
+
+-- | Build a target with dependency resolution and superconsole TUI
+buildWithConsole :: TC.Toolchains -> FilePath -> IR.Package -> Text -> IO (Either BuildError BuildResult)
+buildWithConsole tc projectRoot pkg targetName = do
+  -- Check if console is available
+  isCompatible <- Console.compatible
+  if not isCompatible
+    then do
+      -- Fall back to non-console build
+      TIO.putStrLn "(Console not available, using text output)"
+      buildWithDeps tc projectRoot pkg targetName
+    else do
+      -- Run with console
+      mResult <- Console.withBuildConsole $ \console progress -> do
+        buildWithConsoleInner tc projectRoot pkg targetName console progress
+      case mResult of
+        Nothing -> do
+          TIO.putStrLn "(Console initialization failed, using text output)"
+          buildWithDeps tc projectRoot pkg targetName
+        Just result -> pure result
+
+-- | Inner function that runs with an initialized console
+buildWithConsoleInner ::
+  TC.Toolchains ->
+  FilePath ->
+  IR.Package ->
+  Text ->
+  Console.Console ->
+  Console.BuildProgress ->
+  IO (Either BuildError BuildResult)
+buildWithConsoleInner tc projectRoot pkg targetName console progress = do
+  -- Find the target first
+  case findRule targetName pkg.rules of
+    Nothing -> pure $ Left $ TargetNotFound targetName
+    Just _rule -> do
+      -- Build rule map for quick lookup
+      let ruleMap = Map.fromList [(IR.ruleName r, r) | r <- pkg.rules]
+          totalTargets = length pkg.rules
+
+      -- Initialize build state
+      stateRef <- newIORef (initialBuildState totalTargets)
+
+      -- Initialize progress display
+      Console.updateProgress
+        progress
+        (fromIntegral totalTargets)
+        0
+        0
+        0
+
+      -- Start render thread (updates display at ~10 Hz)
+      renderDone <- newEmptyMVar
+      renderThread <- forkIO $ renderLoop console progress stateRef renderDone
+
+      -- Run the build
+      result <- runDICE $ do
+        clearTargets
+
+        -- Register all rules with their dependencies
+        forM_ pkg.rules $ \rule -> do
+          let name = IR.ruleName rule
+              deps = extractLocalDepNames (IR.ruleDeps rule)
+          registerTarget name deps (makeConsoleCallback tc projectRoot pkg.path ruleMap console progress stateRef)
+
+        -- Request computation of the target
+        compute targetName
+
+      -- Stop render thread
+      putMVar renderDone ()
+      killThread renderThread
+
+      -- Final render to show completion
+      state <- readIORef stateRef
+      Console.updateProgress
+        progress
+        (fromIntegral $ bsTotal state)
+        (fromIntegral $ bsCompleted state)
+        0
+        (fromIntegral $ bsCached state)
+      _ <- Console.renderProgress console progress
+
+      case result of
+        Left err -> pure $ Left $ DICEFailed err
+        Right outputs -> pure $ Right $ BuildSuccess (map T.unpack outputs)
+
+-- | Render loop that updates the console display
+renderLoop :: Console.Console -> Console.BuildProgress -> IORef BuildState -> MVar () -> IO ()
+renderLoop console progress stateRef done = go
+  where
+    go = do
+      -- Check if we should stop
+      -- Use a short delay for ~10 Hz refresh
+      threadDelay 100000 -- 100ms
+
+      -- Read current state
+      state <- readIORef stateRef
+
+      -- Emit any pending log messages
+      forM_ (bsLogs state) $ \msg ->
+        Console.emitLine console msg
+
+      -- Clear emitted logs
+      when (not $ null $ bsLogs state) $
+        modifyIORef' stateRef $
+          \s -> s {bsLogs = []}
+
+      -- Update progress
+      Console.updateProgress
+        progress
+        (fromIntegral $ bsTotal state)
+        (fromIntegral $ bsCompleted state)
+        (fromIntegral $ bsRunning state)
+        (fromIntegral $ bsCached state)
+
+      -- Render
+      _ <- Console.renderProgress console progress
+
+      -- Continue loop
+      go
+
+-- | Console-aware callback for DICE
+makeConsoleCallback ::
+  TC.Toolchains ->
+  FilePath ->
+  FilePath ->
+  Map Text IR.Rule ->
+  Console.Console ->
+  Console.BuildProgress ->
+  IORef BuildState ->
+  Text -> -- Target name
+  Text -> -- Deps JSON
+  IO Text -- Result JSON
+makeConsoleCallback tc projectRoot pkgPath ruleMap console progress stateRef targetName depsJson = do
+  -- Record action start
+  actionId <- modifyIORefRet stateRef $ \s ->
+    let newId = bsNextId s
+        newActions = (newId, targetName) : bsActions s
+     in (s {bsNextId = newId + 1, bsActions = newActions, bsRunning = bsRunning s + 1}, newId)
+
+  -- Add action to progress display
+  Console.addAction progress actionId targetName 0
+
+  -- Build the target
+  resultJson <- case Map.lookup targetName ruleMap of
+    Nothing -> pure $ mkResultJson [] 1 ("Target not found: " <> targetName)
+    Just rule -> do
+      let depOutputs = parseDepOutputs depsJson
+      result <- buildRuleWithDeps tc projectRoot pkgPath rule depOutputs
+      case result of
+        Left err -> pure $ mkResultJson [] 1 (T.pack $ show err)
+        Right (BuildSuccess outputs) -> pure $ mkResultJson outputs 0 ""
+        Right (BuildCached outputs) -> pure $ mkResultJson outputs 0 "cached"
+
+  -- Record action completion
+  Console.removeAction progress actionId
+
+  -- Parse result to determine success/cached
+  let isCached = "cached" `T.isInfixOf` resultJson
+      isSuccess = "\"exit_code\":0" `T.isInfixOf` resultJson
+
+  modifyIORef' stateRef $ \s ->
+    let newActions = filter ((/= actionId) . fst) (bsActions s)
+        logMsg =
+          if isSuccess
+            then "  ✓ " <> targetName
+            else "  ✗ " <> targetName
+     in s
+          { bsCompleted = bsCompleted s + 1,
+            bsRunning = bsRunning s - 1,
+            bsCached = if isCached then bsCached s + 1 else bsCached s,
+            bsActions = newActions,
+            bsLogs = bsLogs s ++ [logMsg]
+          }
+
+  pure resultJson
+
+-- | Modify an IORef and return a value
+modifyIORefRet :: IORef a -> (a -> (a, b)) -> IO b
+modifyIORefRet ref f = do
+  old <- readIORef ref
+  let (new, ret) = f old
+  writeIORef ref new
+  pure ret
 
 -- | Extract local dependency names from Dep list
 -- Strips the leading ":" from ":foo" style deps

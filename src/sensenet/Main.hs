@@ -13,7 +13,7 @@ import Data.List (partition)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import SenseNet.Build (BuildError (..), BuildResult (..), build, buildWithDeps)
+import SenseNet.Build (BuildError (..), BuildResult (..), build, buildWithConsole, buildWithDeps)
 import SenseNet.DICE qualified as DICE
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover)
@@ -31,7 +31,8 @@ data Options = Options
   { optRemote :: Bool,
     optRemoteHost :: String,
     optRemotePort :: Int,
-    optWithDeps :: Bool -- Use DICE-based dependency resolution
+    optWithDeps :: Bool, -- Use DICE-based dependency resolution
+    optTUI :: Bool -- Use superconsole TUI
   }
 
 defaultOptions :: Options
@@ -40,7 +41,8 @@ defaultOptions =
     { optRemote = False,
       optRemoteHost = "localhost",
       optRemotePort = 50051,
-      optWithDeps = False
+      optWithDeps = False,
+      optTUI = False
     }
 
 -- | Parse options from args, returning (options, remaining args)
@@ -52,6 +54,7 @@ parseOptions = go defaultOptions
     go opts ("--remote-host" : h : rest) = go opts {optRemoteHost = h} rest
     go opts ("--remote-port" : p : rest) = go opts {optRemotePort = read p} rest
     go opts ("--deps" : rest) = go opts {optWithDeps = True} rest
+    go opts ("--tui" : rest) = go opts {optTUI = True, optWithDeps = True} rest
     go opts (x : rest) =
       let (opts', rest') = go opts rest
        in (opts', x : rest')
@@ -101,7 +104,8 @@ usage =
         "  test-remote        Test connection to remote executor",
         "",
         "Options:",
-        "  --deps             Use DICE-based dependency resolution (experimental)",
+        "  --tui              Use superconsole TUI for build progress (implies --deps)",
+        "  --deps             Use DICE-based dependency resolution",
         "  --remote           Execute builds remotely via NativeLink",
         "  --remote-host H    Remote executor host (default: localhost)",
         "  --remote-port P    Remote executor port (default: 50051)",
@@ -112,6 +116,7 @@ usage =
         "  sensenet build                       # build all locally",
         "  sensenet build //src/examples/cxx:hello-cxx",
         "  sensenet build --deps //pkg:target   # build with dependency resolution",
+        "  sensenet build --tui //pkg:target    # build with TUI progress display",
         "  sensenet build --remote //pkg:target # build remotely",
         "  sensenet run //src/examples/rust:math_demo",
         "  sensenet clean                       # remove sensenet-out/",
@@ -179,11 +184,10 @@ buildTarget opts remoteCfg tc projectRoot pkg targetName = do
         Right outputs -> do
           TIO.putStrLn $ "  v Built: " <> T.intercalate ", " (map T.pack outputs)
     Nothing -> do
-      if opts.optWithDeps
+      if opts.optTUI
         then do
-          -- Use DICE-based dependency resolution
-          TIO.putStrLn $ "Building (with deps) " <> T.pack pkg.path <> ":" <> targetName
-          result <- buildWithDeps tc projectRoot pkg targetName
+          -- Use superconsole TUI with DICE dependency resolution
+          result <- buildWithConsole tc projectRoot pkg targetName
           case result of
             Left err -> do
               TIO.putStrLn $ "  x " <> showError err
@@ -192,18 +196,32 @@ buildTarget opts remoteCfg tc projectRoot pkg targetName = do
               TIO.putStrLn $ "  v Built: " <> T.intercalate ", " (map T.pack outputs)
             Right (BuildCached outputs) -> do
               TIO.putStrLn $ "  v Cached: " <> T.intercalate ", " (map T.pack outputs)
-        else do
-          -- Legacy build (no dep resolution)
-          TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
-          result <- build tc projectRoot pkg targetName
-          case result of
-            Left err -> do
-              TIO.putStrLn $ "  x " <> showError err
-              exitFailure
-            Right (BuildSuccess outputs) -> do
-              TIO.putStrLn $ "  v Built: " <> T.intercalate ", " (map T.pack outputs)
-            Right (BuildCached outputs) -> do
-              TIO.putStrLn $ "  v Cached: " <> T.intercalate ", " (map T.pack outputs)
+        else
+          if opts.optWithDeps
+            then do
+              -- Use DICE-based dependency resolution (text output)
+              TIO.putStrLn $ "Building (with deps) " <> T.pack pkg.path <> ":" <> targetName
+              result <- buildWithDeps tc projectRoot pkg targetName
+              case result of
+                Left err -> do
+                  TIO.putStrLn $ "  x " <> showError err
+                  exitFailure
+                Right (BuildSuccess outputs) -> do
+                  TIO.putStrLn $ "  v Built: " <> T.intercalate ", " (map T.pack outputs)
+                Right (BuildCached outputs) -> do
+                  TIO.putStrLn $ "  v Cached: " <> T.intercalate ", " (map T.pack outputs)
+            else do
+              -- Legacy build (no dep resolution)
+              TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
+              result <- build tc projectRoot pkg targetName
+              case result of
+                Left err -> do
+                  TIO.putStrLn $ "  x " <> showError err
+                  exitFailure
+                Right (BuildSuccess outputs) -> do
+                  TIO.putStrLn $ "  v Built: " <> T.intercalate ", " (map T.pack outputs)
+                Right (BuildCached outputs) -> do
+                  TIO.putStrLn $ "  v Cached: " <> T.intercalate ", " (map T.pack outputs)
 
 cmdTestRemote :: Options -> IO ()
 cmdTestRemote opts = do
@@ -299,8 +317,12 @@ cmdRun opts args = do
           let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
           pkg <- Dhall.parsePackageFile projectRoot dhallPath'
 
-          TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
-          result <- buildWithDeps tc projectRoot pkg targetName
+          result <-
+            if opts.optTUI
+              then buildWithConsole tc projectRoot pkg targetName
+              else do
+                TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
+                buildWithDeps tc projectRoot pkg targetName
 
           case result of
             Left err -> do
