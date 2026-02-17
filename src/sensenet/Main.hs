@@ -41,7 +41,7 @@ defaultOptions =
     { optRemote = False,
       optRemoteHost = "localhost",
       optRemotePort = 50051,
-      optWithDeps = False,
+      optWithDeps = True, -- DICE-based dependency resolution is now the default
       optTUI = False
     }
 
@@ -54,6 +54,7 @@ parseOptions = go defaultOptions
     go opts ("--remote-host" : h : rest) = go opts {optRemoteHost = h} rest
     go opts ("--remote-port" : p : rest) = go opts {optRemotePort = read p} rest
     go opts ("--deps" : rest) = go opts {optWithDeps = True} rest
+    go opts ("--no-deps" : rest) = go opts {optWithDeps = False} rest
     go opts ("--tui" : rest) = go opts {optTUI = True, optWithDeps = True} rest
     go opts (x : rest) =
       let (opts', rest') = go opts rest
@@ -104,8 +105,8 @@ usage =
         "  test-remote        Test connection to remote executor",
         "",
         "Options:",
-        "  --tui              Use superconsole TUI for build progress (implies --deps)",
-        "  --deps             Use DICE-based dependency resolution",
+        "  --tui              Use superconsole TUI for build progress",
+        "  --no-deps          Disable dependency resolution (legacy mode)",
         "  --remote           Execute builds remotely via NativeLink",
         "  --remote-host H    Remote executor host (default: localhost)",
         "  --remote-port P    Remote executor port (default: 50051)",
@@ -115,8 +116,8 @@ usage =
         "Examples:",
         "  sensenet build                       # build all locally",
         "  sensenet build //src/examples/cxx:hello-cxx",
-        "  sensenet build --deps //pkg:target   # build with dependency resolution",
         "  sensenet build --tui //pkg:target    # build with TUI progress display",
+        "  sensenet build --no-deps //pkg:target # legacy build without dep resolution",
         "  sensenet build --remote //pkg:target # build remotely",
         "  sensenet run //src/examples/rust:math_demo",
         "  sensenet clean                       # remove sensenet-out/",
