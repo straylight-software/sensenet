@@ -1,5 +1,6 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | DICE (Dynamic Incremental Computation Engine) for Haskell
 --
@@ -38,47 +39,51 @@
 -- The 'DICE' monad handles all of this automatically.
 module SenseNet.DICE
   ( -- * The DICE Monad
-    DICE
-  , runDICE
-  , runDICE'
+    DICE,
+    runDICE,
+    runDICE',
 
     -- * Errors
-  , DICEError(..)
+    DICEError (..),
 
     -- * Core Operations
-  , inject
-  , compute
+    inject,
+    compute,
 
-    -- * Callbacks
-  , onCompute
+    -- * Target Registration (dependency-aware)
+    registerTarget,
+    clearTargets,
+
+    -- * Callbacks (legacy)
+    onCompute,
 
     -- * Utilities
-  , sha256
-  , diceVersion
+    sha256,
+    diceVersion,
 
     -- * Low-level Access (rarely needed)
-  , withEngine
-  , withTransaction
-  ) where
+    withEngine,
+    withTransaction,
+  )
+where
 
-import Control.Exception (Exception, bracket, try, SomeException)
-import Control.Monad.IO.Class (MonadIO(..))
+import Control.Exception (Exception, SomeException, bracket, try)
+import Control.Monad.IO.Class (MonadIO (..))
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Unsafe as BSU
+import Data.ByteString qualified as BS
+import Data.ByteString.Unsafe qualified as BSU
 import Data.IORef
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import Data.Word (Word8, Word64)
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Word (Word64, Word8)
 import Foreign.C.String (peekCString, peekCStringLen)
-import Foreign.C.Types (CSize(..))
+import Foreign.C.Types (CSize (..))
 import Foreign.Marshal.Alloc (alloca, mallocBytes)
 import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Ptr (Ptr, nullPtr, castPtr, plusPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, poke)
-
-import qualified SenseNet.DICE.FFI as FFI
+import SenseNet.DICE.FFI qualified as FFI
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Error Types
@@ -111,7 +116,7 @@ instance Exception DICEError
 -- * Error handling
 --
 -- Use 'runDICE' to execute DICE computations.
-newtype DICE a = DICE { unDICE :: DICEEnv -> IO (Either DICEError a) }
+newtype DICE a = DICE {unDICE :: DICEEnv -> IO (Either DICEError a)}
 
 instance Functor DICE where
   fmap f (DICE g) = DICE $ \env -> fmap (fmap f) (g env)
@@ -136,9 +141,9 @@ instance MonadIO DICE where
 
 -- | Internal environment for DICE operations
 data DICEEnv = DICEEnv
-  { envRuntime :: FFI.RuntimePtr
-  , envEngine :: FFI.EnginePtr
-  , envSources :: IORef [(Text, Text, Word64)]  -- (path, hash, size)
+  { envRuntime :: FFI.RuntimePtr,
+    envEngine :: FFI.EnginePtr,
+    envSources :: IORef [(Text, Text, Word64)] -- (path, hash, size)
   }
 
 -- | Throw a DICE error
@@ -220,7 +225,7 @@ compute :: Text -> DICE [Text]
 compute key = DICE $ \env -> do
   -- Get pending sources
   sources <- readIORef (envSources env)
-  
+
   -- Create updater
   updPtr <- FFI.c_updater_new (envEngine env)
   if updPtr == nullPtr
@@ -249,9 +254,12 @@ compute key = DICE $ \env -> do
           hashBS = TE.encodeUtf8 h
       rc <- BS.useAsCStringLen pathBS $ \(pathPtr, pathLen) ->
         BS.useAsCStringLen hashBS $ \(hashPtr, hashLen) ->
-          FFI.c_inject_source updPtr
-            pathPtr (fromIntegral pathLen)
-            hashPtr (fromIntegral hashLen)
+          FFI.c_inject_source
+            updPtr
+            pathPtr
+            (fromIntegral pathLen)
+            hashPtr
+            (fromIntegral hashLen)
             s
       if rc /= 0
         then pure (Left (InjectFailed p))
@@ -295,10 +303,82 @@ compute key = DICE $ \env -> do
           pure (TE.decodeUtf8 bs)
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Callbacks
+-- Target Registration (Dependency-Aware)
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Register a compute callback for a key type.
+-- | Register a target with its dependencies.
+--
+-- This is the primary API for dependency-aware builds. When the target is computed:
+-- 1. DICE computes all dependencies first
+-- 2. Dep outputs are serialized to JSON
+-- 3. Your callback receives resolved dep outputs
+--
+-- @
+-- registerTarget "mybin" [":mylib"] $ \key depsJson -> do
+--   -- depsJson contains: [{\"name\": \"mylib\", \"outputs\": [\"libmylib.a\"]}]
+--   -- Use dep outputs to link
+--   pure "{\"outputs\": [\"mybin\"], \"exit_code\": 0}"
+-- @
+--
+-- Note: Targets are global and persist for the program lifetime.
+registerTarget :: Text -> [Text] -> (Text -> Text -> IO Text) -> DICE ()
+registerTarget targetName deps callback = DICE $ \_ -> do
+  let wrapped keyPtr keyLen depsPtr depsLen _userData = do
+        keyBS <- BS.packCStringLen (keyPtr, fromIntegral keyLen)
+        depsBS <- BS.packCStringLen (depsPtr, fromIntegral depsLen)
+        result <- callback (TE.decodeUtf8 keyBS) (TE.decodeUtf8 depsBS)
+        -- Allocate result string for Rust to free
+        let resultBS = TE.encodeUtf8 result
+        BS.useAsCStringLen resultBS $ \(srcPtr, len) -> do
+          dest <- mallocBytes (len + 1)
+          copyBytes dest srcPtr len
+          poke (dest `plusPtr` len) (0 :: Word8)
+          pure (castPtr dest)
+
+  fnPtr <- FFI.mkComputeCallback wrapped
+
+  -- Serialize deps to JSON array: ["dep1", "dep2", ...]
+  let depsJson = "[" <> T.intercalate "," (map (\d -> "\"" <> escapeJson d <> "\"") deps) <> "]"
+      nameBS = TE.encodeUtf8 targetName
+      depsBS = TE.encodeUtf8 depsJson
+
+  rc <- BS.useAsCStringLen nameBS $ \(namePtr, nameLen) ->
+    BS.useAsCStringLen depsBS $ \(depsPtr, depsLen) ->
+      FFI.c_register_target
+        namePtr
+        (fromIntegral nameLen)
+        depsPtr
+        (fromIntegral depsLen)
+        fnPtr
+        nullPtr
+
+  if rc /= 0
+    then pure (Left (CallbackRegistrationFailed targetName))
+    else pure (Right ())
+
+-- | Clear all registered targets (useful for tests/resets)
+clearTargets :: DICE ()
+clearTargets = DICE $ \_ -> do
+  FFI.c_clear_targets
+  pure (Right ())
+
+-- | Escape special characters for JSON strings
+escapeJson :: Text -> Text
+escapeJson = T.concatMap escapeChar
+  where
+    escapeChar :: Char -> Text
+    escapeChar '\\' = T.pack "\\\\"
+    escapeChar '"' = T.pack "\\\""
+    escapeChar '\n' = T.pack "\\n"
+    escapeChar '\r' = T.pack "\\r"
+    escapeChar '\t' = T.pack "\\t"
+    escapeChar c = T.singleton c
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Callbacks (Legacy)
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Register a compute callback for a key type (legacy API).
 --
 -- When DICE needs to compute a key of this type, it will call your function.
 --
@@ -309,6 +389,7 @@ compute key = DICE $ \env -> do
 -- @
 --
 -- Note: Callbacks are global and persist for the program lifetime.
+-- Prefer 'registerTarget' for dependency-aware builds.
 onCompute :: Text -> (Text -> Text -> IO Text) -> DICE ()
 onCompute keyType callback = DICE $ \_ -> do
   let wrapped keyPtr keyLen depsPtr depsLen _userData = do
@@ -397,9 +478,10 @@ withTransaction f = DICE $ \env -> do
           hashBS = TE.encodeUtf8 h
       BS.useAsCStringLen pathBS $ \(pathPtr, pathLen) ->
         BS.useAsCStringLen hashBS $ \(hashPtr, hashLen) ->
-          FFI.c_inject_source updPtr
-            pathPtr (fromIntegral pathLen)
-            hashPtr (fromIntegral hashLen)
+          FFI.c_inject_source
+            updPtr
+            pathPtr
+            (fromIntegral pathLen)
+            hashPtr
+            (fromIntegral hashLen)
             s
-
-

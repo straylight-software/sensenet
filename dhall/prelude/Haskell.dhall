@@ -10,6 +10,8 @@ let Binary =
       , language_extensions : List Text
       , ghc_options : List Text
       , deps : List T.Dep
+      , extra_libs : List Text
+      , extra_lib_dirs : List Text
       , vis : T.Vis
       }
 
@@ -23,6 +25,8 @@ let binary
         , language_extensions = [] : List Text
         , ghc_options = [ "-O2", "-Wall" ] : List Text
         , deps = [] : List T.Dep
+        , extra_libs = [] : List Text
+        , extra_lib_dirs = [] : List Text
         , vis = T.Vis.Public
         }
 

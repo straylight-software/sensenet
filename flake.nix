@@ -115,7 +115,7 @@
           # DICE FFI library
           dice-ffi = pkgs.callPackage ./nix/packages/dice-ffi.nix { };
 
-          # Build sensenet CLI - use pre-generated nix expression
+          # Build sensenet CLI (with integrated NativeLink client)
           sensenet = pkgs.callPackage ./nix/packages/sensenet.nix {
             inherit (ghc912)
               mkDerivation
@@ -126,10 +126,19 @@
               directory
               filepath
               process
-              shelly
-              temporary
               text
-              unix
+              # NativeLink/gRPC deps
+              aeson
+              conduit
+              crypton
+              grapesy
+              grpc-spec
+              memory
+              microlens
+              network
+              proto-lens
+              proto-lens-runtime
+              vector
               ;
             inherit dice-ffi;
           };

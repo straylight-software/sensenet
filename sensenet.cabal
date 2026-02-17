@@ -14,23 +14,76 @@ build-type:    Simple
 executable sensenet
   main-is:          Main.hs
   other-modules:
+    -- SenseNet core
     SenseNet.Build
     SenseNet.DICE
     SenseNet.DICE.FFI
     SenseNet.Dhall
     SenseNet.Discover
     SenseNet.IR
+    SenseNet.Remote
     SenseNet.Toolchains
+    -- NativeLink client
+    NativeLink
+    NativeLink.Client
+    NativeLink.Execution
+    NativeLink.Proto
+    -- Proto-lens generated (REAPI)
+    Proto.Bytestream
+    Proto.Bytestream_Fields
+    Proto.RemoteExecution
+    Proto.RemoteExecution_Fields
+    Proto.Build.Bazel.Semver.Semver
+    Proto.Build.Bazel.Semver.Semver_Fields
+    Proto.Google.Api.Annotations
+    Proto.Google.Api.Annotations_Fields
+    Proto.Google.Api.Client
+    Proto.Google.Api.Client_Fields
+    Proto.Google.Api.FieldBehavior
+    Proto.Google.Api.FieldBehavior_Fields
+    Proto.Google.Api.Http
+    Proto.Google.Api.Http_Fields
+    Proto.Google.Api.LaunchStage
+    Proto.Google.Api.LaunchStage_Fields
+    Proto.Google.Longrunning.Operations
+    Proto.Google.Longrunning.Operations_Fields
+    Proto.Google.Protobuf.Any
+    Proto.Google.Protobuf.Any_Fields
+    Proto.Google.Protobuf.Descriptor
+    Proto.Google.Protobuf.Descriptor_Fields
+    Proto.Google.Protobuf.Duration
+    Proto.Google.Protobuf.Duration_Fields
+    Proto.Google.Protobuf.Empty
+    Proto.Google.Protobuf.Empty_Fields
+    Proto.Google.Protobuf.Timestamp
+    Proto.Google.Protobuf.Timestamp_Fields
+    Proto.Google.Protobuf.Wrappers
+    Proto.Google.Protobuf.Wrappers_Fields
+    Proto.Google.Rpc.Status
+    Proto.Google.Rpc.Status_Fields
+
   hs-source-dirs:   src/sensenet
-  default-language: GHC2024
+  default-language: GHC2021
   ghc-options:      -Wall -O2
   extra-libraries:  dice_ffi
+
   build-depends:
-    , base          >=4.18 && <5
-    , bytestring    >=0.11
-    , containers    >=0.6
-    , dhall         >=1.42
-    , directory     >=1.3
-    , filepath      >=1.4
-    , process       >=1.6
-    , text          >=2.0
+    , aeson                >=2.0
+    , base                 >=4.18 && <5
+    , bytestring           >=0.11
+    , conduit              >=1.3
+    , containers           >=0.6
+    , crypton              >=0.34
+    , dhall                >=1.42
+    , directory            >=1.3
+    , filepath             >=1.4
+    , grapesy              >=0.1
+    , grpc-spec
+    , memory               >=0.18
+    , microlens            >=0.4
+    , network              >=3.1
+    , process              >=1.6
+    , proto-lens           >=0.7
+    , proto-lens-runtime   >=0.7
+    , text                 >=2.0
+    , vector               >=0.13

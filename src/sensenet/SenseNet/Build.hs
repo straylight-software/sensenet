@@ -1,52 +1,53 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Direct build execution using DICE
 --
 -- No Buck2, no Starlark, no BUCK files. Just:
 --   BUILD.dhall → IR → DICE → execute
 module SenseNet.Build
-  ( build
-  , BuildResult(..)
-  , BuildError(..)
-  ) where
+  ( build,
+    buildWithDeps,
+    BuildResult (..),
+    BuildError (..),
+  )
+where
 
 import Control.Monad (forM, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
+import Data.ByteString qualified as BS
 import Data.List (intercalate, isPrefixOf, stripPrefix)
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Data.Word (Word64)
-import System.Directory (doesFileExist, getFileSize, createDirectoryIfMissing)
-import System.Exit (ExitCode(..))
-import System.FilePath ((</>), takeDirectory)
-import System.Environment (getEnvironment)
-import System.Process (readProcessWithExitCode, createProcess, proc, cwd, std_out, std_err, env, waitForProcess, StdStream(..))
 import GHC.IO.Handle (hGetContents)
-
-import SenseNet.DICE (DICE, DICEError, runDICE, inject, sha256)
-import qualified SenseNet.IR as IR
-import qualified SenseNet.Toolchains as TC
+import SenseNet.DICE (DICE, DICEError, clearTargets, compute, inject, registerTarget, runDICE, sha256)
+import SenseNet.IR qualified as IR
+import SenseNet.Toolchains qualified as TC
+import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize)
+import System.Environment (getEnvironment)
+import System.Exit (ExitCode (..))
+import System.FilePath (takeDirectory, (</>))
+import System.Process (StdStream (..), createProcess, cwd, env, proc, readProcessWithExitCode, std_err, std_out, waitForProcess)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Types
 -- ════════════════════════════════════════════════════════════════════════════
 
 data BuildResult
-  = BuildSuccess [FilePath]  -- Output files
-  | BuildCached [FilePath]   -- Already up to date
+  = BuildSuccess [FilePath] -- Output files
+  | BuildCached [FilePath] -- Already up to date
   deriving (Show, Eq)
 
 data BuildError
   = SourceNotFound FilePath
-  | CompileFailed Text Int Text  -- cmd, exit code, stderr
+  | CompileFailed Text Int Text -- cmd, exit code, stderr
   | LinkFailed Text Int Text
   | DICEFailed DICEError
   | TargetNotFound Text
@@ -57,13 +58,204 @@ data BuildError
 -- Build Entry Point
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Build a target from a package
+-- | Build a target from a package (legacy - no dependency resolution)
 build :: TC.Toolchains -> FilePath -> IR.Package -> Text -> IO (Either BuildError BuildResult)
 build tc projectRoot pkg targetName = do
   -- Find the target
   case findRule targetName pkg.rules of
     Nothing -> pure $ Left $ TargetNotFound targetName
     Just rule -> buildRule tc projectRoot pkg.path rule
+
+-- | Build a target with full dependency resolution via DICE
+--
+-- This is the primary entry point for dependency-aware builds:
+-- 1. Registers all rules in the package with DICE (with their deps)
+-- 2. Requests computation of the target
+-- 3. DICE auto-resolves deps in the correct order
+--
+-- @
+-- buildWithDeps toolchains "." pkg "mybin"
+-- @
+buildWithDeps :: TC.Toolchains -> FilePath -> IR.Package -> Text -> IO (Either BuildError BuildResult)
+buildWithDeps tc projectRoot pkg targetName = do
+  -- Find the target first
+  case findRule targetName pkg.rules of
+    Nothing -> pure $ Left $ TargetNotFound targetName
+    Just _rule -> do
+      -- Build rule map for quick lookup
+      let ruleMap = Map.fromList [(IR.ruleName r, r) | r <- pkg.rules]
+
+      -- Run DICE to register all targets and compute
+      result <- runDICE $ do
+        -- Clear any previous registrations
+        clearTargets
+
+        -- Register all rules with their dependencies
+        liftIO $ TIO.putStrLn $ "Registering " <> T.pack (show $ length pkg.rules) <> " targets..."
+        forM_ pkg.rules $ \rule -> do
+          let name = IR.ruleName rule
+              deps = extractLocalDepNames (IR.ruleDeps rule)
+          liftIO $ TIO.putStrLn $ "  " <> name <> " -> " <> T.pack (show deps)
+          registerTarget name deps (makeCallback tc projectRoot pkg.path ruleMap)
+
+        -- Request computation of the target
+        liftIO $ TIO.putStrLn $ "\nComputing target: " <> targetName
+        compute targetName
+
+      case result of
+        Left err -> pure $ Left $ DICEFailed err
+        Right outputs -> pure $ Right $ BuildSuccess (map T.unpack outputs)
+
+-- | Extract local dependency names from Dep list
+-- Strips the leading ":" from ":foo" style deps
+extractLocalDepNames :: [IR.Dep] -> [Text]
+extractLocalDepNames = concatMap extract
+  where
+    extract (IR.DepLocal name) =
+      -- Strip leading ":" if present
+      [fromMaybe name (T.stripPrefix ":" name)]
+    extract (IR.DepFlake _) = [] -- Flake deps are external, not DICE targets
+
+-- | Create a callback for a rule that builds it when invoked
+-- The callback receives the target name and resolved dep outputs as JSON
+makeCallback ::
+  TC.Toolchains ->
+  FilePath ->
+  FilePath ->
+  Map Text IR.Rule ->
+  Text -> -- Target name
+  Text -> -- Deps JSON: [{"name": "dep1", "outputs": [...]}, ...]
+  IO Text -- Result JSON: {"outputs": [...], "exit_code": N, "log": "..."}
+makeCallback tc projectRoot pkgPath ruleMap targetName depsJson = do
+  TIO.putStrLn $ "  Building: " <> targetName
+  TIO.putStrLn $ "    Deps: " <> depsJson
+
+  case Map.lookup targetName ruleMap of
+    Nothing -> pure $ mkResultJson [] 1 ("Target not found: " <> targetName)
+    Just rule -> do
+      -- Parse dep outputs for use in linking
+      let depOutputs = parseDepOutputs depsJson
+
+      -- Build the rule (passing dep outputs for linking)
+      result <- buildRuleWithDeps tc projectRoot pkgPath rule depOutputs
+      case result of
+        Left err -> pure $ mkResultJson [] 1 (T.pack $ show err)
+        Right (BuildSuccess outputs) -> pure $ mkResultJson outputs 0 ""
+        Right (BuildCached outputs) -> pure $ mkResultJson outputs 0 "cached"
+
+-- | Build a rule with resolved dependency outputs
+buildRuleWithDeps ::
+  TC.Toolchains ->
+  FilePath ->
+  FilePath ->
+  IR.Rule ->
+  [(Text, [FilePath])] -> -- (dep name, output paths)
+  IO (Either BuildError BuildResult)
+buildRuleWithDeps tc projectRoot pkgPath rule depOutputs = case rule of
+  IR.RCxxBinary r -> buildCxxBinaryWithDeps tc projectRoot pkgPath r depOutputs
+  IR.RCxxLibrary r -> buildCxxLibrary tc projectRoot pkgPath r
+  IR.RRustBinary r -> buildRustBinary tc projectRoot pkgPath r
+  IR.RRustLibrary r -> buildRustLibrary tc projectRoot pkgPath r
+  IR.RHaskellBinary r -> buildHaskellBinaryWithDeps tc projectRoot pkgPath r depOutputs
+  IR.RHaskellLibrary r -> buildHaskellLibrary tc projectRoot pkgPath r
+  IR.RLeanBinary r -> buildLeanBinary tc projectRoot pkgPath r
+  IR.RLeanLibrary r -> buildLeanLibrary tc projectRoot pkgPath r
+  IR.RNvBinary r -> buildNvBinary tc projectRoot pkgPath r
+  IR.RNvLibrary r -> buildNvLibrary tc projectRoot pkgPath r
+  IR.RPureScriptApp r -> buildPureScriptApp tc projectRoot pkgPath r
+  IR.RPureScriptBinary r -> buildPureScriptBinary tc projectRoot pkgPath r
+  IR.RGenrule r -> buildGenrule tc projectRoot pkgPath r
+  IR.RNixCxxBinary r -> buildNixCxxBinary tc projectRoot pkgPath r
+  other -> pure $ Left $ UnsupportedRule $ T.pack $ show other
+
+-- | Parse dep outputs JSON: [{"name": "dep1", "outputs": ["path1", ...]}, ...]
+parseDepOutputs :: Text -> [(Text, [FilePath])]
+parseDepOutputs json = case parseDepArray (T.unpack json) of
+  Just deps -> deps
+  Nothing -> []
+
+-- | Simple JSON parser for dep array (avoids aeson dependency in hot path)
+parseDepArray :: String -> Maybe [(Text, [FilePath])]
+parseDepArray s = do
+  -- Very simple parser - find each {"name": "...", "outputs": [...]}
+  let entries = findDepEntries s
+  pure entries
+
+-- | Find all dep entries in the JSON string
+findDepEntries :: String -> [(Text, [FilePath])]
+findDepEntries s = go s []
+  where
+    go [] acc = reverse acc
+    go str acc = case findNextEntry str of
+      Nothing -> reverse acc
+      Just (entry, rest) -> go rest (entry : acc)
+
+    findNextEntry str =
+      case dropWhile (/= '{') str of
+        [] -> Nothing
+        (_ : after) ->
+          let (inside, rest) = span (/= '}') after
+              mName = extractFieldString "name" inside
+              mOutputs = extractFieldArray "outputs" inside
+           in case (mName, mOutputs) of
+                (Just name, Just outputs) -> Just ((T.pack name, outputs), drop 1 rest)
+                _ -> Nothing
+
+    extractFieldString field str =
+      let pattern = "\"" ++ field ++ "\":\""
+       in case findSubstring pattern str of
+            Nothing -> Nothing
+            Just after ->
+              let (value, _) = span (/= '"') after
+               in Just value
+
+    extractFieldArray field str =
+      let pattern = "\"" ++ field ++ "\":["
+       in case findSubstring pattern str of
+            Nothing -> Nothing
+            Just after ->
+              let (arrayContent, _) = span (/= ']') after
+               in Just $ extractStrings arrayContent
+
+    extractStrings s' = go' s' []
+      where
+        go' [] acc = reverse acc
+        go' ('"' : rest) acc =
+          let (val, rest') = span (/= '"') rest
+           in go' (drop 1 rest') (val : acc)
+        go' (_ : rest) acc = go' rest acc
+
+    findSubstring needle haystack =
+      case dropWhile (\h -> not $ needle `isPrefixOf` h) (tails haystack) of
+        [] -> Nothing
+        (match : _) -> Just $ drop (length needle) match
+
+    tails [] = [[]]
+    tails xs@(_ : xs') = xs : tails xs'
+
+-- | Create result JSON
+mkResultJson :: [FilePath] -> Int -> Text -> Text
+mkResultJson outputs exitCode logMsg =
+  "{\"outputs\":["
+    <> outputsJson
+    <> "],\"exit_code\":"
+    <> T.pack (show exitCode)
+    <> ",\"output_hash\":\"\",\"log\":\""
+    <> escapeJsonText logMsg
+    <> "\"}"
+  where
+    outputsJson = T.intercalate "," $ map (\p -> "\"" <> escapeJsonText (T.pack p) <> "\"") outputs
+
+-- | Escape text for JSON string
+escapeJsonText :: Text -> Text
+escapeJsonText = T.concatMap escapeChar
+  where
+    escapeChar '\\' = "\\\\"
+    escapeChar '"' = "\\\""
+    escapeChar '\n' = "\\n"
+    escapeChar '\r' = "\\r"
+    escapeChar '\t' = "\\t"
+    escapeChar c = T.singleton c
 
 findRule :: Text -> [IR.Rule] -> Maybe IR.Rule
 findRule name = foldr (\r acc -> if IR.ruleName r == name then Just r else acc) Nothing
@@ -99,17 +291,17 @@ buildCxxBinary tc projectRoot pkgPath bin = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       outBin = outDir </> T.unpack bin.name
-  
+
   -- Toolchain
   let cxx = T.unpack tc.cxx.cxx.path
       ld = T.unpack tc.cxx.ld.path
       cxxIncludes = map T.unpack tc.cxx.paths.includes
       cxxLibs = map T.unpack tc.cxx.paths.libs
       sysroot = T.unpack tc.cxx.sysroot
-  
+
   -- Ensure output directory exists
   createDirectoryIfMissing True outDir
-  
+
   -- Hash sources and inject into DICE
   diceResult <- runDICE $ do
     forM_ bin.srcs $ \src -> do
@@ -121,9 +313,9 @@ buildCxxBinary tc projectRoot pkgPath bin = do
           hash <- sha256 contents
           size <- liftIO $ fromIntegral <$> getFileSize srcPath
           inject (T.pack srcPath) hash size
-        else pure ()  -- Will fail later
+        else pure () -- Will fail later
     pure ()
-  
+
   case diceResult of
     Left err -> pure $ Left $ DICEFailed err
     Right () -> do
@@ -143,10 +335,10 @@ buildCxxBinary tc projectRoot pkgPath bin = do
               sysrootFlag = if null sysroot then [] else ["--sysroot=" <> sysroot]
               linkFlag = ["-fuse-ld=" <> ld]
               cmd = [cxx, stdFlag] ++ sysrootFlag ++ includeFlags ++ cflags ++ srcs ++ ["-o", outBin] ++ linkFlag ++ libFlags ++ ldflags
-          
+
           TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
           (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
-          
+
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -155,14 +347,14 @@ buildCxxLibrary :: TC.Toolchains -> FilePath -> FilePath -> IR.CxxLibrary -> IO 
 buildCxxLibrary tc projectRoot pkgPath lib = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
-  
+
   -- Toolchain
   let cxx = T.unpack tc.cxx.cxx.path
       cxxIncludes = map T.unpack tc.cxx.paths.includes
       sysroot = T.unpack tc.cxx.sysroot
-  
+
   createDirectoryIfMissing True outDir
-  
+
   -- Compile each source to .o
   results <- forM lib.srcs $ \src -> do
     let srcPath = srcDir </> T.unpack src
@@ -172,7 +364,7 @@ buildCxxLibrary tc projectRoot pkgPath lib = do
         includeFlags = concatMap (\i -> ["-isystem", i]) cxxIncludes
         sysrootFlag = if null sysroot then [] else ["--sysroot=" <> sysroot]
         cmd = [cxx, "-c", stdFlag] ++ sysrootFlag ++ includeFlags ++ cflags ++ [srcPath, "-o", objPath]
-    
+
     exists <- doesFileExist srcPath
     if not exists
       then pure $ Left $ SourceNotFound srcPath
@@ -182,10 +374,68 @@ buildCxxLibrary tc projectRoot pkgPath lib = do
         case exitCode of
           ExitSuccess -> pure $ Right objPath
           ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
-  
+
   case sequence results of
     Left err -> pure $ Left err
     Right objs -> pure $ Right $ BuildSuccess objs
+
+-- | Build C++ binary with resolved dependency outputs
+-- Dep outputs (e.g., .o files from libraries) are linked in
+buildCxxBinaryWithDeps ::
+  TC.Toolchains ->
+  FilePath ->
+  FilePath ->
+  IR.CxxBinary ->
+  [(Text, [FilePath])] -> -- (dep name, output paths)
+  IO (Either BuildError BuildResult)
+buildCxxBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
+  let srcDir = projectRoot </> pkgPath
+      outDir = projectRoot </> "sensenet-out" </> pkgPath
+      outBin = outDir </> T.unpack bin.name
+
+  -- Toolchain
+  let cxx = T.unpack tc.cxx.cxx.path
+      ld = T.unpack tc.cxx.ld.path
+      cxxIncludes = map T.unpack tc.cxx.paths.includes
+      cxxLibs = map T.unpack tc.cxx.paths.libs
+      sysroot = T.unpack tc.cxx.sysroot
+
+  createDirectoryIfMissing True outDir
+
+  -- Check all sources exist
+  missingCheck <- checkSources srcDir bin.srcs
+  case missingCheck of
+    Just missing -> pure $ Left $ SourceNotFound missing
+    Nothing -> do
+      -- Compile and link
+      let srcs = map (\s -> srcDir </> T.unpack s) bin.srcs
+          cflags = map T.unpack bin.cflags
+          ldflags = map T.unpack bin.ldflags
+          stdFlag = cxxStdFlag bin.std
+          includeFlags = concatMap (\i -> ["-isystem", i]) cxxIncludes
+          libFlags = concatMap (\l -> ["-B" <> l, "-L" <> l, "-Wl,-rpath," <> l]) cxxLibs
+          sysrootFlag = if null sysroot then [] else ["--sysroot=" <> sysroot]
+          linkFlag = ["-fuse-ld=" <> ld]
+          -- Add dep outputs (.o files) to link line
+          depObjs = concatMap snd depOutputs
+          cmd =
+            [cxx, stdFlag]
+              ++ sysrootFlag
+              ++ includeFlags
+              ++ cflags
+              ++ srcs
+              ++ depObjs
+              ++ ["-o", outBin]
+              ++ linkFlag
+              ++ libFlags
+              ++ ldflags
+
+      TIO.putStrLn $ "  compile (with deps): " <> T.pack (unwords cmd)
+      (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
+
+      case exitCode of
+        ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
+        ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Nix C++ Build
@@ -196,16 +446,16 @@ buildNixCxxBinary tc projectRoot pkgPath bin = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       outBin = outDir </> T.unpack bin.name
-  
+
   -- Toolchain
   let cxx = T.unpack tc.cxx.cxx.path
       ld = T.unpack tc.cxx.ld.path
       cxxIncludes = map T.unpack tc.cxx.paths.includes
       cxxLibs = map T.unpack tc.cxx.paths.libs
       sysroot = T.unpack tc.cxx.sysroot
-  
+
   createDirectoryIfMissing True outDir
-  
+
   -- Resolve nix dependencies to get include/lib paths
   nixPaths <- resolveNixDeps bin.nixDeps
   case nixPaths of
@@ -225,10 +475,10 @@ buildNixCxxBinary tc projectRoot pkgPath bin = do
               sysrootFlag = if null sysroot then [] else ["--sysroot=" <> sysroot]
               linkFlag = ["-fuse-ld=" <> ld]
               cmd = [cxx, "-std=c++17"] ++ sysrootFlag ++ includeFlags ++ cflags ++ srcs ++ ["-o", outBin] ++ linkFlag ++ libFlags ++ nixLinkFlags ++ ldflags
-          
+
           TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
           (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
-          
+
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -242,34 +492,36 @@ resolveNixDeps deps = do
     let flakeRef = T.unpack dep
         -- Extract package name for -l flag (e.g., "nixpkgs#zlib" -> "z")
         pkgName = extractPkgName dep
-    
+
     -- Try dev output first for headers
     (devExit, devOut, _) <- readProcessWithExitCode "nix" ["eval", "--raw", flakeRef <> ".dev.outPath"] ""
-    devPath <- if devExit == ExitSuccess
-      then pure devOut
-      else do
-        -- Fall back to out output
-        (outExit, outOut, _) <- readProcessWithExitCode "nix" ["eval", "--raw", flakeRef <> ".out.outPath"] ""
-        if outExit == ExitSuccess
-          then pure outOut
-          else do
-            -- Fall back to default output
-            (mainExit, mainOut, _) <- readProcessWithExitCode "nix" ["eval", "--raw", flakeRef <> ".outPath"] ""
-            pure $ if mainExit == ExitSuccess then mainOut else ""
-    
+    devPath <-
+      if devExit == ExitSuccess
+        then pure devOut
+        else do
+          -- Fall back to out output
+          (outExit, outOut, _) <- readProcessWithExitCode "nix" ["eval", "--raw", flakeRef <> ".out.outPath"] ""
+          if outExit == ExitSuccess
+            then pure outOut
+            else do
+              -- Fall back to default output
+              (mainExit, mainOut, _) <- readProcessWithExitCode "nix" ["eval", "--raw", flakeRef <> ".outPath"] ""
+              pure $ if mainExit == ExitSuccess then mainOut else ""
+
     -- Get out output for libs (not default, which may be bin)
     (outExit, outOut, _) <- readProcessWithExitCode "nix" ["eval", "--raw", flakeRef <> ".out.outPath"] ""
-    libPath <- if outExit == ExitSuccess
-      then pure outOut
-      else do
-        -- Fall back to default output
-        (mainExit, mainOut, _) <- readProcessWithExitCode "nix" ["eval", "--raw", flakeRef <> ".outPath"] ""
-        pure $ if mainExit == ExitSuccess then mainOut else ""
-    
+    libPath <-
+      if outExit == ExitSuccess
+        then pure outOut
+        else do
+          -- Fall back to default output
+          (mainExit, mainOut, _) <- readProcessWithExitCode "nix" ["eval", "--raw", flakeRef <> ".outPath"] ""
+          pure $ if mainExit == ExitSuccess then mainOut else ""
+
     if null devPath && null libPath
       then pure $ Left $ "Failed to resolve nix dep: " <> dep
       else pure $ Right (devPath, libPath, pkgName)
-  
+
   case sequence results of
     Left err -> pure $ Left err
     Right paths -> do
@@ -303,16 +555,16 @@ buildGenrule _tc projectRoot pkgPath gen = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       outPath = outDir </> T.unpack gen.out
-  
+
   createDirectoryIfMissing True outDir
-  
+
   -- Substitute $SRCS and $OUT in command
   let srcs = T.intercalate " " $ map (\s -> T.pack $ srcDir </> T.unpack s) gen.srcs
       cmd = T.replace "$SRCS" srcs $ T.replace "$OUT" (T.pack outPath) gen.cmd
-  
+
   TIO.putStrLn $ "  run: " <> cmd
   (exitCode, _, stderr) <- readProcessWithExitCode "sh" ["-c", T.unpack cmd] ""
-  
+
   case exitCode of
     ExitSuccess -> pure $ Right $ BuildSuccess [outPath]
     ExitFailure n -> pure $ Left $ CompileFailed cmd n (T.pack stderr)
@@ -326,13 +578,13 @@ buildRustBinary tc projectRoot pkgPath bin = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       outBin = outDir </> T.unpack bin.name
-  
+
   -- Toolchain
   let rustc = T.unpack tc.rust.rustc.path
       target = T.unpack tc.rust.target
-  
+
   createDirectoryIfMissing True outDir
-  
+
   -- For single-file Rust, compile directly
   -- For multi-file, we'd need proper crate handling
   case bin.srcs of
@@ -340,7 +592,7 @@ buildRustBinary tc projectRoot pkgPath bin = do
       let srcPath = srcDir </> T.unpack src
           edition = rustEditionFlag bin.edition
           cmd = [rustc, "--edition", edition, "--target", target, srcPath, "-o", outBin]
-      
+
       exists <- doesFileExist srcPath
       if not exists
         then pure $ Left $ SourceNotFound srcPath
@@ -350,13 +602,12 @@ buildRustBinary tc projectRoot pkgPath bin = do
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
-    
     srcs -> do
       -- Multi-file: use first as main, compile all
       let mainSrc = srcDir </> T.unpack (head srcs)
           edition = rustEditionFlag bin.edition
           cmd = [rustc, "--edition", edition, "--target", target, mainSrc, "-o", outBin]
-      
+
       TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
       (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
       case exitCode of
@@ -369,20 +620,32 @@ buildRustLibrary tc projectRoot pkgPath lib = do
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       crateName = maybe (T.unpack lib.name) T.unpack lib.crateName
       outLib = outDir </> ("lib" <> crateName <> ".rlib")
-  
+
   -- Toolchain
   let rustc = T.unpack tc.rust.rustc.path
       target = T.unpack tc.rust.target
-  
+
   createDirectoryIfMissing True outDir
-  
+
   case lib.srcs of
     [src] -> do
       let srcPath = srcDir </> T.unpack src
           edition = rustEditionFlag lib.edition
-          cmd = [rustc, "--edition", edition, "--target", target, "--crate-type", "rlib", 
-                 "--crate-name", crateName, srcPath, "-o", outLib]
-      
+          cmd =
+            [ rustc,
+              "--edition",
+              edition,
+              "--target",
+              target,
+              "--crate-type",
+              "rlib",
+              "--crate-name",
+              crateName,
+              srcPath,
+              "-o",
+              outLib
+            ]
+
       exists <- doesFileExist srcPath
       if not exists
         then pure $ Left $ SourceNotFound srcPath
@@ -392,7 +655,6 @@ buildRustLibrary tc projectRoot pkgPath lib = do
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outLib]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
-    
     _ -> pure $ Left $ UnsupportedRule "Multi-file Rust library"
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -404,14 +666,14 @@ buildHaskellBinary tc projectRoot pkgPath bin = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       outBin = outDir </> T.unpack bin.name
-  
+
   -- Toolchain
   let ghc = T.unpack tc.haskell.ghc.path
-      pkgDb = tc.haskell.paths.includes  -- Package DB paths
+      pkgDb = tc.haskell.paths.includes -- Package DB paths
       libPaths = map T.unpack tc.haskell.paths.libs
-  
+
   createDirectoryIfMissing True outDir
-  
+
   -- Use srcs list, not main (main is the module name, not file)
   let srcFiles = map (\s -> srcDir </> T.unpack s) bin.srcs
       pkgFlags = concatMap (\p -> ["-package", T.unpack p]) bin.packages
@@ -420,8 +682,9 @@ buildHaskellBinary tc projectRoot pkgPath bin = do
       mainFlag = ["-main-is", T.unpack bin.main]
       pkgDbFlags = concatMap (\db -> ["-package-db", T.unpack db]) pkgDb
       libFlags = concatMap (\l -> ["-L" <> l]) libPaths
-      cmd = [ghc] ++ pkgDbFlags ++ extFlags ++ pkgFlags ++ ghcOpts ++ mainFlag ++ srcFiles ++ ["-o", outBin] ++ libFlags
-  
+      includeFlags = ["-i" <> srcDir, "-i" <> outDir]
+      cmd = [ghc] ++ pkgDbFlags ++ includeFlags ++ extFlags ++ pkgFlags ++ ghcOpts ++ mainFlag ++ srcFiles ++ ["-o", outBin] ++ libFlags
+
   -- Check first source exists
   case srcFiles of
     [] -> pure $ Left $ SourceNotFound "no sources"
@@ -440,39 +703,128 @@ buildHaskellLibrary :: TC.Toolchains -> FilePath -> FilePath -> IR.HaskellLibrar
 buildHaskellLibrary tc projectRoot pkgPath lib = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
-  
+
   -- Toolchain
   let ghc = T.unpack tc.haskell.ghc.path
       pkgDb = tc.haskell.paths.includes
       libPaths = map T.unpack tc.haskell.paths.libs
-  
+
   createDirectoryIfMissing True outDir
-  
-  -- Compile each source to .o and .hi
-  results <- forM lib.srcs $ \src -> do
-    let srcPath = srcDir </> T.unpack src
-        objPath = outDir </> T.unpack src <> ".o"
-        pkgFlags = concatMap (\p -> ["-package", T.unpack p]) lib.packages
-        extFlags = map (\e -> "-X" <> T.unpack e) lib.languageExtensions
-        ghcOpts = map T.unpack lib.ghcOptions
-        pkgDbFlags = concatMap (\db -> ["-package-db", T.unpack db]) pkgDb
-        libFlags = concatMap (\l -> ["-L" <> l]) libPaths
-        cmd = [ghc, "-c"] ++ pkgDbFlags ++ extFlags ++ pkgFlags ++ ghcOpts ++ 
-              [srcPath, "-o", objPath, "-odir", outDir, "-hidir", outDir] ++ libFlags
-    
-    exists <- doesFileExist srcPath
-    if not exists
-      then pure $ Left $ SourceNotFound srcPath
-      else do
-        TIO.putStrLn $ "  ghc: " <> T.pack (unwords cmd)
-        (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
-        case exitCode of
-          ExitSuccess -> pure $ Right objPath
-          ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
-  
-  case sequence results of
-    Left err -> pure $ Left err
-    Right objs -> pure $ Right $ BuildSuccess objs
+
+  -- Create output subdirectories for nested modules
+  forM_ lib.srcs $ \src -> do
+    let objPath = outDir </> T.unpack src <> ".o"
+    createDirectoryIfMissing True (takeDirectory objPath)
+
+  -- Use --make mode to compile all sources at once (handles dependency order automatically)
+  let srcFiles = map (\s -> srcDir </> T.unpack s) lib.srcs
+      pkgFlags = concatMap (\p -> ["-package", T.unpack p]) lib.packages
+      extFlags = map (\e -> "-X" <> T.unpack e) lib.languageExtensions
+      ghcOpts = map T.unpack lib.ghcOptions
+      pkgDbFlags = concatMap (\db -> ["-package-db", T.unpack db]) pkgDb
+      libFlags = concatMap (\l -> ["-L" <> l]) libPaths
+      includeFlags = ["-i" <> srcDir, "-i" <> outDir]
+      -- Use --make to handle dependency ordering, -no-link to avoid linking
+      cmd =
+        [ghc, "--make", "-no-link"]
+          ++ pkgDbFlags
+          ++ includeFlags
+          ++ extFlags
+          ++ pkgFlags
+          ++ ghcOpts
+          ++ ["-odir", outDir, "-hidir", outDir]
+          ++ libFlags
+          ++ srcFiles
+
+  -- Check first source exists
+  case srcFiles of
+    [] -> pure $ Left $ SourceNotFound "no sources"
+    (firstSrc : _) -> do
+      exists <- doesFileExist firstSrc
+      if not exists
+        then pure $ Left $ SourceNotFound firstSrc
+        else do
+          TIO.putStrLn $ "  ghc (lib): " <> T.pack (unwords cmd)
+          (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
+          case exitCode of
+            ExitSuccess -> do
+              -- Return all .o files as outputs
+              -- GHC --make puts .o at module path (e.g., SenseNet/IR.o not SenseNet/IR.hs.o)
+              let srcToObj s = outDir </> dropHsExt (T.unpack s) <> ".o"
+                  dropHsExt p = if ".hs" `isSuffixOf` p then take (length p - 3) p else p
+                  isSuffixOf suf str = suf == drop (length str - length suf) str
+                  objs = map srcToObj lib.srcs
+              pure $ Right $ BuildSuccess objs
+            ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
+
+-- | Build Haskell binary with resolved dependency outputs
+-- Dep outputs (.o and .hi files) are added to the compilation
+buildHaskellBinaryWithDeps ::
+  TC.Toolchains ->
+  FilePath ->
+  FilePath ->
+  IR.HaskellBinary ->
+  [(Text, [FilePath])] -> -- (dep name, output paths)
+  IO (Either BuildError BuildResult)
+buildHaskellBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
+  let srcDir = projectRoot </> pkgPath
+      outDir = projectRoot </> "sensenet-out" </> pkgPath
+      outBin = outDir </> T.unpack bin.name
+
+  -- Toolchain
+  let ghc = T.unpack tc.haskell.ghc.path
+      pkgDb = tc.haskell.paths.includes
+      libPaths = map T.unpack tc.haskell.paths.libs
+
+  createDirectoryIfMissing True outDir
+
+  -- Use srcs list
+  let srcFiles = map (\s -> srcDir </> T.unpack s) bin.srcs
+      pkgFlags = concatMap (\p -> ["-package", T.unpack p]) bin.packages
+      extFlags = map (\e -> "-X" <> T.unpack e) bin.languageExtensions
+      ghcOpts = map T.unpack bin.ghcOptions
+      mainFlag = ["-main-is", T.unpack bin.main]
+      pkgDbFlags = concatMap (\db -> ["-package-db", T.unpack db]) pkgDb
+      libFlags = concatMap (\l -> ["-L" <> l]) libPaths
+      -- Add dep output .o files to link line
+      depObjs = concatMap snd depOutputs
+      -- Add dep output directories to -i search path (for .hi files)
+      depDirs = nub $ map takeDirectory $ concatMap snd depOutputs
+      -- Include source dir and output dir plus dep dirs for module discovery
+      searchFlags = ["-i" <> srcDir, "-i" <> outDir] ++ map (\d -> "-i" <> d) depDirs
+      cmd =
+        [ghc]
+          ++ pkgDbFlags
+          ++ extFlags
+          ++ pkgFlags
+          ++ ghcOpts
+          ++ searchFlags
+          ++ mainFlag
+          ++ srcFiles
+          ++ depObjs
+          ++ ["-o", outBin]
+          ++ libFlags
+
+  -- Check first source exists
+  case srcFiles of
+    [] -> pure $ Left $ SourceNotFound "no sources"
+    (mainSrc : _) -> do
+      exists <- doesFileExist mainSrc
+      if not exists
+        then pure $ Left $ SourceNotFound mainSrc
+        else do
+          TIO.putStrLn $ "  ghc (with deps): " <> T.pack (unwords cmd)
+          (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
+          case exitCode of
+            ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
+            ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
+  where
+    nub = map head . groupBy (==) . sort
+    sort = foldr insert []
+    insert x [] = [x]
+    insert x (y : ys) = if x <= y then x : y : ys else y : insert x ys
+    groupBy _ [] = []
+    groupBy eq (x : xs) = let (ys, zs) = span (eq x) xs in (x : ys) : groupBy eq zs
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Lean Build
@@ -483,18 +835,18 @@ buildLeanBinary tc projectRoot pkgPath bin = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       outBin = outDir </> T.unpack bin.name
-  
+
   -- Toolchain
   let lean = T.unpack tc.lean.lean.path
-  
+
   createDirectoryIfMissing True outDir
-  
+
   -- Single file Lean compilation
   case bin.srcs of
     [src] -> do
       let srcPath = srcDir </> T.unpack src
           buildCmd = [lean, "-o", outBin, srcPath]
-      
+
       exists <- doesFileExist srcPath
       if not exists
         then pure $ Left $ SourceNotFound srcPath
@@ -504,25 +856,24 @@ buildLeanBinary tc projectRoot pkgPath bin = do
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords buildCmd) n (T.pack stderr)
-    
     _ -> pure $ Left $ UnsupportedRule "Multi-file Lean binary"
 
 buildLeanLibrary :: TC.Toolchains -> FilePath -> FilePath -> IR.LeanLibrary -> IO (Either BuildError BuildResult)
 buildLeanLibrary tc projectRoot pkgPath lib = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
-  
+
   -- Toolchain
   let lean = T.unpack tc.lean.lean.path
-  
+
   createDirectoryIfMissing True outDir
-  
+
   -- Compile each .lean to .olean
   results <- forM lib.srcs $ \src -> do
     let srcPath = srcDir </> T.unpack src
         oleanPath = outDir </> T.unpack src <> ".olean"
         cmd = [lean, "-c", oleanPath, srcPath]
-    
+
     exists <- doesFileExist srcPath
     if not exists
       then pure $ Left $ SourceNotFound srcPath
@@ -532,7 +883,7 @@ buildLeanLibrary tc projectRoot pkgPath lib = do
         case exitCode of
           ExitSuccess -> pure $ Right oleanPath
           ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
-  
+
   case sequence results of
     Left err -> pure $ Left err
     Right oleans -> pure $ Right $ BuildSuccess oleans
@@ -549,9 +900,9 @@ buildNvBinary tc projectRoot pkgPath bin = do
       let srcDir = projectRoot </> pkgPath
           outDir = projectRoot </> "sensenet-out" </> pkgPath
           outBin = outDir </> T.unpack bin.name
-      
+
       createDirectoryIfMissing True outDir
-      
+
       -- Use toolchain paths (nv contains its own cxx toolchain for stdlib)
       let clang = T.unpack nv.clang.path
           cudaPath = T.unpack nv.sdk_path
@@ -561,35 +912,38 @@ buildNvBinary tc projectRoot pkgPath bin = do
           cxxLibs = map T.unpack nv.cxx.paths.libs
           ld = T.unpack nv.cxx.ld.path
           sysroot = T.unpack nv.cxx.sysroot
-      
+
       -- Source files
       let srcs = map (\s -> srcDir </> T.unpack s) bin.srcs
-      
+
       -- Architecture flags (from rule or toolchain defaults)
       let ruleArchs = bin.archs
           tcArchs = nv.archs
           archs = if null ruleArchs then tcArchs else ruleArchs
           archFlags = concatMap (\a -> ["--cuda-gpu-arch=" <> T.unpack a, "--cuda-include-ptx=" <> T.unpack a]) archs
-      
+
       -- Compile flags
-      let cudaFlags = 
-            [ "-x", "cuda"
-            , "--cuda-path=" <> cudaPath
-            , "-std=c++23"
-            , "-Wno-unknown-cuda-version"
-            ] ++ concatMap (\i -> ["-isystem", i]) cudaIncludes
+      let cudaFlags =
+            [ "-x",
+              "cuda",
+              "--cuda-path=" <> cudaPath,
+              "-std=c++23",
+              "-Wno-unknown-cuda-version"
+            ]
+              ++ concatMap (\i -> ["-isystem", i]) cudaIncludes
               ++ concatMap (\i -> ["-isystem", i]) cxxIncludes
               ++ (if null sysroot then [] else ["--sysroot=" <> sysroot])
-      
+
       -- Link flags (-B tells linker where to find crt*.o files)
-      let linkFlags = 
-            [ "-fuse-ld=" <> ld
-            , "-lcudart"
-            ] ++ concatMap (\l -> ["-L" <> l, "-Wl,-rpath," <> l]) cudaLibs
+      let linkFlags =
+            [ "-fuse-ld=" <> ld,
+              "-lcudart"
+            ]
+              ++ concatMap (\l -> ["-L" <> l, "-Wl,-rpath," <> l]) cudaLibs
               ++ concatMap (\l -> ["-B" <> l, "-L" <> l, "-Wl,-rpath," <> l]) cxxLibs
-      
+
       let cmd = [clang] ++ cudaFlags ++ archFlags ++ srcs ++ ["-o", outBin] ++ linkFlags
-      
+
       TIO.putStrLn $ "  clang++ (cuda): " <> T.pack (unwords cmd)
       (exitCode, _, stderr) <- readProcessWithExitCode clang (tail cmd) ""
       case exitCode of
@@ -603,40 +957,42 @@ buildNvLibrary tc projectRoot pkgPath lib = do
     Just nv -> do
       let srcDir = projectRoot </> pkgPath
           outDir = projectRoot </> "sensenet-out" </> pkgPath
-      
+
       createDirectoryIfMissing True outDir
-      
+
       -- Use toolchain paths (nv contains its own cxx toolchain for stdlib)
       let clang = T.unpack nv.clang.path
           cudaPath = T.unpack nv.sdk_path
           cudaIncludes = map T.unpack nv.sdk.includes
           cxxIncludes = map T.unpack nv.cxx.paths.includes
           sysroot = T.unpack nv.cxx.sysroot
-      
+
       -- Architecture flags
       let ruleArchs = lib.archs
           tcArchs = nv.archs
           archs = if null ruleArchs then tcArchs else ruleArchs
           archFlags = concatMap (\a -> ["--cuda-gpu-arch=" <> T.unpack a, "--cuda-include-ptx=" <> T.unpack a]) archs
-      
+
       -- Compile flags
-      let cudaFlags = 
-            [ "-x", "cuda"
-            , "--cuda-path=" <> cudaPath
-            , "-std=c++23"
-            , "-Wno-unknown-cuda-version"
-            , "-fPIC"
-            , "-c"
-            ] ++ concatMap (\i -> ["-isystem", i]) cudaIncludes
+      let cudaFlags =
+            [ "-x",
+              "cuda",
+              "--cuda-path=" <> cudaPath,
+              "-std=c++23",
+              "-Wno-unknown-cuda-version",
+              "-fPIC",
+              "-c"
+            ]
+              ++ concatMap (\i -> ["-isystem", i]) cudaIncludes
               ++ concatMap (\i -> ["-isystem", i]) cxxIncludes
               ++ (if null sysroot then [] else ["--sysroot=" <> sysroot])
-      
+
       -- Compile each source to .o
       results <- forM lib.srcs $ \src -> do
         let srcPath = srcDir </> T.unpack src
             objPath = outDir </> T.unpack src <> ".o"
             cmd = [clang] ++ cudaFlags ++ archFlags ++ [srcPath, "-o", objPath]
-        
+
         exists <- doesFileExist srcPath
         if not exists
           then pure $ Left $ SourceNotFound srcPath
@@ -646,7 +1002,7 @@ buildNvLibrary tc projectRoot pkgPath lib = do
             case exitCode of
               ExitSuccess -> pure $ Right objPath
               ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
-      
+
       case sequence results of
         Left err -> pure $ Left err
         Right objs -> pure $ Right $ BuildSuccess objs
@@ -660,20 +1016,20 @@ buildPureScriptApp tc projectRoot pkgPath app = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       outBundle = outDir </> "app.js"
-  
+
   -- Toolchain - spago needs purs, node, esbuild in PATH
   let spago = T.unpack tc.purescript.spago.path
       purs = takeDirectory $ T.unpack tc.purescript.purs.path
       node = takeDirectory $ T.unpack tc.purescript.node.path
       esbuild = takeDirectory $ T.unpack tc.purescript.esbuild.path
       extraPaths = [purs, node, esbuild]
-  
+
   createDirectoryIfMissing True outDir
-  
+
   -- Use spago to build and bundle (must run from project directory)
   let args = ["bundle", "--outfile", outBundle]
       cmd = spago : args
-  
+
   TIO.putStrLn $ "  spago: " <> T.pack (unwords cmd)
   (exitCode, stderr) <- runProcessWithPath srcDir extraPaths spago args
   case exitCode of
@@ -701,20 +1057,20 @@ buildPureScriptBinary tc projectRoot pkgPath bin = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       outBundle = outDir </> T.unpack bin.name <> ".js"
-  
+
   -- Toolchain - spago needs purs, node, esbuild in PATH
   let spago = T.unpack tc.purescript.spago.path
       purs = takeDirectory $ T.unpack tc.purescript.purs.path
       node = takeDirectory $ T.unpack tc.purescript.node.path
       esbuild = takeDirectory $ T.unpack tc.purescript.esbuild.path
       extraPaths = [purs, node, esbuild]
-  
+
   createDirectoryIfMissing True outDir
-  
+
   -- Use spago to build and bundle for Node (must run from project directory)
   let args = ["bundle", "--platform", "node", "--outfile", outBundle]
       cmd = spago : args
-  
+
   TIO.putStrLn $ "  spago: " <> T.pack (unwords cmd)
   (exitCode, stderr) <- runProcessWithPath srcDir extraPaths spago args
   case exitCode of
@@ -732,7 +1088,7 @@ copyFile src dst = BS.readFile src >>= BS.writeFile dst
 -- | Run a process in a specific directory, returning exit code and stderr
 runProcessInDir :: FilePath -> String -> [String] -> IO (ExitCode, String)
 runProcessInDir dir prog args = do
-  let p = (proc prog args) { cwd = Just dir, std_out = CreatePipe, std_err = CreatePipe }
+  let p = (proc prog args) {cwd = Just dir, std_out = CreatePipe, std_err = CreatePipe}
   (_, _, Just herr, ph) <- createProcess p
   stderr <- hGetContents herr
   exitCode <- waitForProcess ph
@@ -745,7 +1101,7 @@ runProcessWithPath dir extraPaths prog args = do
   let currentPath = fromMaybe "" $ lookup "PATH" currentEnv
       newPath = intercalate ":" extraPaths <> ":" <> currentPath
       newEnv = ("PATH", newPath) : filter ((/= "PATH") . fst) currentEnv
-      p = (proc prog args) { cwd = Just dir, std_out = CreatePipe, std_err = CreatePipe, env = Just newEnv }
+      p = (proc prog args) {cwd = Just dir, std_out = CreatePipe, std_err = CreatePipe, env = Just newEnv}
   (_, _, Just herr, ph) <- createProcess p
   stderr <- hGetContents herr
   exitCode <- waitForProcess ph

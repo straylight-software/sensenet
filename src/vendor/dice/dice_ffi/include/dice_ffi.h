@@ -88,7 +88,7 @@ struct DiceHandle *dice_engine_new(void);
 void dice_engine_free(struct DiceHandle *handle);
 
 /**
- * Register a compute callback for action keys
+ * Register a compute callback for action keys (legacy API)
  *
  * key_type: Name of the key type (e.g., "action")
  * callback: Function to call when computing values
@@ -98,6 +98,36 @@ int32_t dice_register_compute(const char *key_type,
                               uintptr_t key_type_len,
                               ComputeActionFn callback,
                               void *user_data);
+
+/**
+ * Register a target with its dependencies
+ *
+ * This is the primary API for dependency-aware builds. When the target is computed:
+ * 1. DICE computes all dependencies first (via ctx.compute())
+ * 2. Dep outputs are serialized to JSON
+ * 3. Haskell callback receives resolved dep outputs
+ *
+ * Parameters:
+ * - name: Target name (e.g., "mylib")
+ * - name_len: Length of name
+ * - deps_json: JSON array of dep names, e.g., '["dep1", "dep2"]'
+ * - deps_json_len: Length of deps JSON
+ * - callback: Function to call when deps are resolved
+ * - user_data: Opaque pointer passed to callback
+ *
+ * Returns 0 on success, -1 on error
+ */
+int32_t dice_register_target(const char *name,
+                             uintptr_t name_len,
+                             const char *deps_json,
+                             uintptr_t deps_json_len,
+                             ComputeActionFn callback,
+                             void *user_data);
+
+/**
+ * Clear all registered targets (useful for tests/resets)
+ */
+void dice_clear_targets(void);
 
 /**
  * Create a new transaction updater (for injecting values)

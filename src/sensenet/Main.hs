@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | sensenet — Direct builds with Dhall + DICE
 --
@@ -9,30 +9,63 @@
 module Main where
 
 import Control.Monad (forM_)
+import Data.List (partition)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
-import System.Environment (getArgs)
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
+import SenseNet.Build (BuildError (..), BuildResult (..), build, buildWithDeps)
+import SenseNet.DICE qualified as DICE
+import SenseNet.Dhall qualified as Dhall
+import SenseNet.Discover (DhallFile (..), discover)
+import SenseNet.IR (Package (..), Rule, ruleName)
+import SenseNet.Remote qualified as Remote
+import SenseNet.Toolchains qualified as TC
 import System.Directory (getCurrentDirectory)
+import System.Environment (getArgs)
 import System.Exit (exitFailure)
-import System.FilePath ((</>), takeDirectory, makeRelative)
+import System.FilePath (makeRelative, takeDirectory, (</>))
 
-import SenseNet.Build (build, BuildResult(..), BuildError(..))
-import SenseNet.Discover (DhallFile(..), discover)
-import qualified SenseNet.DICE as DICE
-import qualified SenseNet.Dhall as Dhall
-import SenseNet.IR (Package(..), Rule, ruleName)
-import qualified SenseNet.Toolchains as TC
+-- | Command-line options
+data Options = Options
+  { optRemote :: Bool,
+    optRemoteHost :: String,
+    optRemotePort :: Int,
+    optWithDeps :: Bool -- Use DICE-based dependency resolution
+  }
+
+defaultOptions :: Options
+defaultOptions =
+  Options
+    { optRemote = False,
+      optRemoteHost = "localhost",
+      optRemotePort = 50051,
+      optWithDeps = False
+    }
+
+-- | Parse options from args, returning (options, remaining args)
+parseOptions :: [String] -> (Options, [String])
+parseOptions = go defaultOptions
+  where
+    go opts [] = (opts, [])
+    go opts ("--remote" : rest) = go opts {optRemote = True} rest
+    go opts ("--remote-host" : h : rest) = go opts {optRemoteHost = h} rest
+    go opts ("--remote-port" : p : rest) = go opts {optRemotePort = read p} rest
+    go opts ("--deps" : rest) = go opts {optWithDeps = True} rest
+    go opts (x : rest) =
+      let (opts', rest') = go opts rest
+       in (opts', x : rest')
 
 main :: IO ()
 main = do
   args <- getArgs
-  case args of
+  let (opts, args') = parseOptions args
+  case args' of
     [] -> usage
-    ("build" : rest) -> cmdBuild (map T.pack rest)
+    ("build" : rest) -> cmdBuild opts (map T.pack rest)
     ("targets" : rest) -> cmdTargets (map T.pack rest)
-    ("query" : rest) -> cmdTargets (map T.pack rest)  -- alias
+    ("query" : rest) -> cmdTargets (map T.pack rest) -- alias
     ("graph" : _) -> cmdGraph
+    ("test-remote" : _) -> cmdTestRemote opts
     ("--version" : _) -> version
     ("-V" : _) -> version
     ("--help" : _) -> usage
@@ -48,41 +81,63 @@ version = do
   putStrLn "Direct builds with Dhall + DICE — no Buck2"
 
 usage :: IO ()
-usage = putStrLn $ unlines
-  [ "sensenet — Direct builds with Dhall + DICE"
-  , ""
-  , "Usage: sensenet <command> [options]"
-  , ""
-  , "Commands:"
-  , "  build [target]     Build target(s)"
-  , "  targets [pattern]  List available targets"
-  , "  query [pattern]    Alias for targets"
-  , "  graph              Show build graph"
-  , ""
-  , "Options:"
-  , "  --version, -V      Show version"
-  , "  --help, -h         Show this help"
-  , ""
-  , "Examples:"
-  , "  sensenet build                       # build all"
-  , "  sensenet build //src/examples/cxx:hello-cxx"
-  , "  sensenet targets                     # list all targets"
-  , ""
-  , "Output goes to sensenet-out/"
-  ]
+usage =
+  putStrLn $
+    unlines
+      [ "sensenet — Direct builds with Dhall + DICE",
+        "",
+        "Usage: sensenet <command> [options]",
+        "",
+        "Commands:",
+        "  build [target]     Build target(s)",
+        "  targets [pattern]  List available targets",
+        "  query [pattern]    Alias for targets",
+        "  graph              Show build graph",
+        "  test-remote        Test connection to remote executor",
+        "",
+        "Options:",
+        "  --deps             Use DICE-based dependency resolution (experimental)",
+        "  --remote           Execute builds remotely via NativeLink",
+        "  --remote-host H    Remote executor host (default: localhost)",
+        "  --remote-port P    Remote executor port (default: 50051)",
+        "  --version, -V      Show version",
+        "  --help, -h         Show this help",
+        "",
+        "Examples:",
+        "  sensenet build                       # build all locally",
+        "  sensenet build //src/examples/cxx:hello-cxx",
+        "  sensenet build --deps //pkg:target   # build with dependency resolution",
+        "  sensenet build --remote //pkg:target # build remotely",
+        "  sensenet targets                     # list all targets",
+        "",
+        "Output goes to sensenet-out/"
+      ]
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Commands
 -- ════════════════════════════════════════════════════════════════════════════
 
-cmdBuild :: [Text] -> IO ()
-cmdBuild args = do
+cmdBuild :: Options -> [Text] -> IO ()
+cmdBuild opts args = do
   projectRoot <- getCurrentDirectory
-  
+
   -- Load toolchains
   let tcPath = TC.defaultToolchainsPath projectRoot
   tc <- TC.loadToolchains tcPath
-  
+
+  -- Remote config if --remote flag set
+  let remoteCfg =
+        if opts.optRemote
+          then
+            Just
+              Remote.RemoteConfig
+                { Remote.host = opts.optRemoteHost,
+                  Remote.port = opts.optRemotePort,
+                  Remote.useTLS = False,
+                  Remote.instanceName = "main"
+                }
+          else Nothing
+
   case args of
     [] -> do
       -- Build all targets
@@ -91,8 +146,7 @@ cmdBuild args = do
       forM_ files $ \file -> do
         pkg <- Dhall.parsePackageFile projectRoot (dhallPath file)
         forM_ pkg.rules $ \rule -> do
-          buildTarget tc projectRoot pkg (ruleName rule)
-    
+          buildTarget opts remoteCfg tc projectRoot pkg (ruleName rule)
     (target : _) -> do
       -- Parse target like //src/examples/cxx:hello-cxx
       case parseTarget target of
@@ -101,29 +155,74 @@ cmdBuild args = do
           TIO.putStrLn "Expected format: //path/to/pkg:target"
           exitFailure
         Just (pkgPath, targetName) -> do
-          let dhallPath = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
-          pkg <- Dhall.parsePackageFile projectRoot dhallPath
-          buildTarget tc projectRoot pkg targetName
+          let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
+          pkg <- Dhall.parsePackageFile projectRoot dhallPath'
+          buildTarget opts remoteCfg tc projectRoot pkg targetName
 
-buildTarget :: TC.Toolchains -> FilePath -> Package -> Text -> IO ()
-buildTarget tc projectRoot pkg targetName = do
-  TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
-  result <- build tc projectRoot pkg targetName
+buildTarget :: Options -> Maybe Remote.RemoteConfig -> TC.Toolchains -> FilePath -> Package -> Text -> IO ()
+buildTarget opts remoteCfg tc projectRoot pkg targetName = do
+  case remoteCfg of
+    Just cfg -> do
+      TIO.putStrLn $ "Building (remote) " <> T.pack pkg.path <> ":" <> targetName
+      result <- Remote.remoteBuild cfg tc projectRoot pkg targetName
+      case result of
+        Left err -> do
+          TIO.putStrLn $ "  x " <> err
+          exitFailure
+        Right outputs -> do
+          TIO.putStrLn $ "  v Built: " <> T.intercalate ", " (map T.pack outputs)
+    Nothing -> do
+      if opts.optWithDeps
+        then do
+          -- Use DICE-based dependency resolution
+          TIO.putStrLn $ "Building (with deps) " <> T.pack pkg.path <> ":" <> targetName
+          result <- buildWithDeps tc projectRoot pkg targetName
+          case result of
+            Left err -> do
+              TIO.putStrLn $ "  x " <> showError err
+              exitFailure
+            Right (BuildSuccess outputs) -> do
+              TIO.putStrLn $ "  v Built: " <> T.intercalate ", " (map T.pack outputs)
+            Right (BuildCached outputs) -> do
+              TIO.putStrLn $ "  v Cached: " <> T.intercalate ", " (map T.pack outputs)
+        else do
+          -- Legacy build (no dep resolution)
+          TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
+          result <- build tc projectRoot pkg targetName
+          case result of
+            Left err -> do
+              TIO.putStrLn $ "  x " <> showError err
+              exitFailure
+            Right (BuildSuccess outputs) -> do
+              TIO.putStrLn $ "  v Built: " <> T.intercalate ", " (map T.pack outputs)
+            Right (BuildCached outputs) -> do
+              TIO.putStrLn $ "  v Cached: " <> T.intercalate ", " (map T.pack outputs)
+
+cmdTestRemote :: Options -> IO ()
+cmdTestRemote opts = do
+  let cfg =
+        Remote.RemoteConfig
+          { Remote.host = opts.optRemoteHost,
+            Remote.port = opts.optRemotePort,
+            Remote.useTLS = False,
+            Remote.instanceName = "main"
+          }
+  TIO.putStrLn $ "Testing connection to " <> T.pack opts.optRemoteHost <> ":" <> T.pack (show opts.optRemotePort)
+  result <- Remote.testConnection cfg
   case result of
     Left err -> do
-      TIO.putStrLn $ "  ✗ " <> showError err
+      TIO.putStrLn $ "  x Connection failed: " <> err
       exitFailure
-    Right (BuildSuccess outputs) -> do
-      TIO.putStrLn $ "  ✓ Built: " <> T.intercalate ", " (map T.pack outputs)
-    Right (BuildCached outputs) -> do
-      TIO.putStrLn $ "  ✓ Cached: " <> T.intercalate ", " (map T.pack outputs)
+    Right caps -> do
+      TIO.putStrLn "  v Connected!"
+      TIO.putStrLn $ "  Capabilities: " <> caps
 
 showError :: BuildError -> Text
 showError = \case
   SourceNotFound path -> "Source not found: " <> T.pack path
-  CompileFailed cmd code stderr -> 
+  CompileFailed cmd code stderr ->
     "Compile failed (exit " <> T.pack (show code) <> "): " <> stderr
-  LinkFailed cmd code stderr -> 
+  LinkFailed cmd code stderr ->
     "Link failed (exit " <> T.pack (show code) <> "): " <> stderr
   DICEFailed err -> "DICE error: " <> T.pack (show err)
   TargetNotFound name -> "Target not found: " <> name
@@ -134,7 +233,7 @@ parseTarget :: Text -> Maybe (Text, Text)
 parseTarget t = do
   rest <- T.stripPrefix "//" t
   case T.breakOn ":" rest of
-    (_, "") -> Nothing  -- No colon found
+    (_, "") -> Nothing -- No colon found
     (pkgPath, colonTarget) -> Just (pkgPath, T.drop 1 colonTarget)
 
 cmdTargets :: [Text] -> IO ()
