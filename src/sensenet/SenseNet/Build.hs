@@ -1116,27 +1116,37 @@ buildLeanBinary tc projectRoot pkgPath bin = do
   let srcDir = projectRoot </> pkgPath
       outDir = projectRoot </> "sensenet-out" </> pkgPath
       outBin = outDir </> T.unpack bin.name
+      outC = outDir </> T.unpack bin.name <> ".c"
 
   -- Toolchain
   let lean = T.unpack tc.lean.lean.path
+      leanc = T.unpack tc.lean.leanc.path
 
   createDirectoryIfMissing True outDir
 
-  -- Single file Lean compilation
+  -- Single file Lean compilation: lean -c -> leanc
   case bin.srcs of
     [src] -> do
       let srcPath = srcDir </> T.unpack src
-          buildCmd = [lean, "-o", outBin, srcPath]
 
       exists <- doesFileExist srcPath
       if not exists
         then pure $ Left $ SourceNotFound srcPath
         else do
-          TIO.putStrLn $ "  lean: " <> T.pack (unwords buildCmd)
-          (exitCode, _, stderr) <- readProcessWithExitCode lean (tail buildCmd) ""
-          case exitCode of
-            ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
-            ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords buildCmd) n (T.pack stderr)
+          -- Step 1: Generate C code
+          let genCCmd = [lean, "-c", outC, srcPath]
+          TIO.putStrLn $ "  lean -c: " <> T.pack (unwords genCCmd)
+          (exitCode1, _, stderr1) <- readProcessWithExitCode lean (tail genCCmd) ""
+          case exitCode1 of
+            ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords genCCmd) n (T.pack stderr1)
+            ExitSuccess -> do
+              -- Step 2: Compile C to executable with leanc
+              let compileCmd = [leanc, "-o", outBin, outC]
+              TIO.putStrLn $ "  leanc: " <> T.pack (unwords compileCmd)
+              (exitCode2, _, stderr2) <- readProcessWithExitCode leanc (tail compileCmd) ""
+              case exitCode2 of
+                ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
+                ExitFailure n -> pure $ Left $ LinkFailed (T.pack $ unwords compileCmd) n (T.pack stderr2)
     _ -> pure $ Left $ UnsupportedRule "Multi-file Lean binary"
 
 buildLeanLibrary :: TC.Toolchains -> FilePath -> FilePath -> IR.LeanLibrary -> IO (Either BuildError BuildResult)
