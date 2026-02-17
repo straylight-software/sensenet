@@ -25,6 +25,7 @@ module SenseNet.IR
     CxxLibrary (..),
     RustBinary (..),
     RustLibrary (..),
+    StanConfig (..),
     HaskellBinary (..),
     HaskellLibrary (..),
     HaskellFFIBinary (..),
@@ -146,6 +147,12 @@ data RustLibrary = RustLibrary
 -- Haskell Rules
 -- ════════════════════════════════════════════════════════════════════════════
 
+data StanConfig = StanConfig
+  { configFile :: Maybe Text,
+    severity :: Maybe Text
+  }
+  deriving (Show, Eq)
+
 data HaskellBinary = HaskellBinary
   { name :: Text,
     srcs :: [Text],
@@ -156,7 +163,8 @@ data HaskellBinary = HaskellBinary
     deps :: [Dep],
     extraLibs :: [Text],
     extraLibDirs :: [Text],
-    vis :: Vis
+    vis :: Vis,
+    stan :: Maybe StanConfig
   }
   deriving (Show, Eq)
 
@@ -167,7 +175,8 @@ data HaskellLibrary = HaskellLibrary
     languageExtensions :: [Text],
     ghcOptions :: [Text],
     deps :: [Dep],
-    vis :: Vis
+    vis :: Vis,
+    stan :: Maybe StanConfig
   }
   deriving (Show, Eq)
 

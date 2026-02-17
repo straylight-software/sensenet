@@ -549,7 +549,7 @@ buildCxxBinary tc projectRoot pkgPath bin = do
               cmd = [cxx, stdFlag] ++ sysrootFlag ++ includeFlags ++ cflags ++ srcs ++ ["-o", outBin] ++ linkFlag ++ libFlags ++ ldflags
 
           TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
-          (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
+          (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (drop 1 cmd) ""
 
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -582,7 +582,7 @@ buildCxxLibrary tc projectRoot pkgPath lib = do
       then pure $ Left $ SourceNotFound srcPath
       else do
         TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
-        (exitCode, _, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
+        (exitCode, _, stderr) <- readProcessWithExitCode cxx (drop 1 cmd) ""
         case exitCode of
           ExitSuccess -> pure $ Right objPath
           ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -643,7 +643,7 @@ buildCxxBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
               ++ ldflags
 
       TIO.putStrLn $ "  compile (with deps): " <> T.pack (unwords cmd)
-      (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
+      (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (drop 1 cmd) ""
 
       case exitCode of
         ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -689,7 +689,7 @@ buildNixCxxBinary tc projectRoot pkgPath bin = do
               cmd = [cxx, "-std=c++17"] ++ sysrootFlag ++ includeFlags ++ cflags ++ srcs ++ ["-o", outBin] ++ linkFlag ++ libFlags ++ nixLinkFlags ++ ldflags
 
           TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
-          (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
+          (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (drop 1 cmd) ""
 
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -810,18 +810,18 @@ buildRustBinary tc projectRoot pkgPath bin = do
         then pure $ Left $ SourceNotFound srcPath
         else do
           TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
-          (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
+          (exitCode, _, stderr) <- readProcessWithExitCode rustc (drop 1 cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
     srcs -> do
       -- Multi-file: use first as main, compile all
-      let mainSrc = srcDir </> T.unpack (head srcs)
+      let mainSrc = srcDir </> T.unpack (case srcs of (x : _) -> x; [] -> "")
           edition = rustEditionFlag bin.edition
           cmd = [rustc, "--edition", edition, "--target", target, mainSrc, "-o", outBin]
 
       TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
-      (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
+      (exitCode, _, stderr) <- readProcessWithExitCode rustc (drop 1 cmd) ""
       case exitCode of
         ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
         ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -863,7 +863,7 @@ buildRustLibrary tc projectRoot pkgPath lib = do
         then pure $ Left $ SourceNotFound srcPath
         else do
           TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
-          (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
+          (exitCode, _, stderr) <- readProcessWithExitCode rustc (drop 1 cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outLib]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -911,13 +911,13 @@ buildRustBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
         then pure $ Left $ SourceNotFound srcPath
         else do
           TIO.putStrLn $ "  rustc (with deps): " <> T.pack (unwords cmd)
-          (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
+          (exitCode, _, stderr) <- readProcessWithExitCode rustc (drop 1 cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
     srcs -> do
       -- Multi-file: use first as main
-      let mainSrc = srcDir </> T.unpack (head srcs)
+      let mainSrc = srcDir </> T.unpack (case srcs of (x : _) -> x; [] -> "")
           edition = rustEditionFlag bin.edition
           cmd =
             [rustc, "--edition", edition, "--target", target]
@@ -926,7 +926,7 @@ buildRustBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
               ++ [mainSrc, "-o", outBin]
 
       TIO.putStrLn $ "  rustc (with deps): " <> T.pack (unwords cmd)
-      (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
+      (exitCode, _, stderr) <- readProcessWithExitCode rustc (drop 1 cmd) ""
       case exitCode of
         ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
         ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -975,7 +975,7 @@ buildHaskellBinary tc projectRoot pkgPath bin = do
         then pure $ Left $ SourceNotFound mainSrc
         else do
           TIO.putStrLn $ "  ghc: " <> T.pack (unwords cmd)
-          (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
+          (exitCode, _, stderr) <- readProcessWithExitCode ghc (drop 1 cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -1026,7 +1026,7 @@ buildHaskellLibrary tc projectRoot pkgPath lib = do
         then pure $ Left $ SourceNotFound firstSrc
         else do
           TIO.putStrLn $ "  ghc (lib): " <> T.pack (unwords cmd)
-          (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
+          (exitCode, _, stderr) <- readProcessWithExitCode ghc (drop 1 cmd) ""
           case exitCode of
             ExitSuccess -> do
               -- Return all .o files as outputs
@@ -1095,12 +1095,12 @@ buildHaskellBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
         then pure $ Left $ SourceNotFound mainSrc
         else do
           TIO.putStrLn $ "  ghc (with deps): " <> T.pack (unwords cmd)
-          (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
+          (exitCode, _, stderr) <- readProcessWithExitCode ghc (drop 1 cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
   where
-    nub = map head . groupBy (==) . sort
+    nub = map (\(x : _) -> x) . groupBy (==) . sort
     sort = foldr insert []
     insert x [] = [x]
     insert x (y : ys) = if x <= y then x : y : ys else y : insert x ys
@@ -1136,14 +1136,14 @@ buildLeanBinary tc projectRoot pkgPath bin = do
           -- Step 1: Generate C code
           let genCCmd = [lean, "-c", outC, srcPath]
           TIO.putStrLn $ "  lean -c: " <> T.pack (unwords genCCmd)
-          (exitCode1, _, stderr1) <- readProcessWithExitCode lean (tail genCCmd) ""
+          (exitCode1, _, stderr1) <- readProcessWithExitCode lean (drop 1 genCCmd) ""
           case exitCode1 of
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords genCCmd) n (T.pack stderr1)
             ExitSuccess -> do
               -- Step 2: Compile C to executable with leanc
               let compileCmd = [leanc, "-o", outBin, outC]
               TIO.putStrLn $ "  leanc: " <> T.pack (unwords compileCmd)
-              (exitCode2, _, stderr2) <- readProcessWithExitCode leanc (tail compileCmd) ""
+              (exitCode2, _, stderr2) <- readProcessWithExitCode leanc (drop 1 compileCmd) ""
               case exitCode2 of
                 ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
                 ExitFailure n -> pure $ Left $ LinkFailed (T.pack $ unwords compileCmd) n (T.pack stderr2)
@@ -1170,7 +1170,7 @@ buildLeanLibrary tc projectRoot pkgPath lib = do
       then pure $ Left $ SourceNotFound srcPath
       else do
         TIO.putStrLn $ "  lean: " <> T.pack (unwords cmd)
-        (exitCode, _, stderr) <- readProcessWithExitCode lean (tail cmd) ""
+        (exitCode, _, stderr) <- readProcessWithExitCode lean (drop 1 cmd) ""
         case exitCode of
           ExitSuccess -> pure $ Right oleanPath
           ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -1236,7 +1236,7 @@ buildNvBinary tc projectRoot pkgPath bin = do
       let cmd = [clang] ++ cudaFlags ++ archFlags ++ srcs ++ ["-o", outBin] ++ linkFlags
 
       TIO.putStrLn $ "  clang++ (cuda): " <> T.pack (unwords cmd)
-      (exitCode, _, stderr) <- readProcessWithExitCode clang (tail cmd) ""
+      (exitCode, _, stderr) <- readProcessWithExitCode clang (drop 1 cmd) ""
       case exitCode of
         ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
         ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -1289,7 +1289,7 @@ buildNvLibrary tc projectRoot pkgPath lib = do
           then pure $ Left $ SourceNotFound srcPath
           else do
             TIO.putStrLn $ "  clang++ (cuda): " <> T.pack (unwords cmd)
-            (exitCode, _, stderr) <- readProcessWithExitCode clang (tail cmd) ""
+            (exitCode, _, stderr) <- readProcessWithExitCode clang (drop 1 cmd) ""
             case exitCode of
               ExitSuccess -> pure $ Right objPath
               ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
@@ -1375,15 +1375,6 @@ buildPureScriptBinary tc projectRoot pkgPath bin = do
 -- | Copy a file
 copyFile :: FilePath -> FilePath -> IO ()
 copyFile src dst = BS.readFile src >>= BS.writeFile dst
-
--- | Run a process in a specific directory, returning exit code and stderr
-runProcessInDir :: FilePath -> String -> [String] -> IO (ExitCode, String)
-runProcessInDir dir prog args = do
-  let p = (proc prog args) {cwd = Just dir, std_out = CreatePipe, std_err = CreatePipe}
-  (_, _, Just herr, ph) <- createProcess p
-  stderr <- hGetContents herr
-  exitCode <- waitForProcess ph
-  pure (exitCode, stderr)
 
 -- | Run a process with modified PATH, returning exit code and stderr
 runProcessWithPath :: FilePath -> [FilePath] -> String -> [String] -> IO (ExitCode, String)

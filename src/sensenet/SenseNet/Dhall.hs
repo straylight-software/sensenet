@@ -144,6 +144,14 @@ data DhallRustLibrary = DhallRustLibrary
 
 instance FromDhall DhallRustLibrary
 
+data DhallStanConfig = DhallStanConfig
+  { config_file :: Maybe Text,
+    severity :: Maybe Text
+  }
+  deriving (Show, Generic)
+
+instance FromDhall DhallStanConfig
+
 data DhallHaskellBinary = DhallHaskellBinary
   { name :: Text,
     srcs :: [Text],
@@ -154,7 +162,8 @@ data DhallHaskellBinary = DhallHaskellBinary
     deps :: [DhallDep],
     extra_libs :: [Text],
     extra_lib_dirs :: [Text],
-    vis :: DhallVis
+    vis :: DhallVis,
+    stan :: Maybe DhallStanConfig
   }
   deriving (Show, Generic)
 
@@ -167,7 +176,8 @@ data DhallHaskellLibrary = DhallHaskellLibrary
     language_extensions :: [Text],
     ghc_options :: [Text],
     deps :: [DhallDep],
-    vis :: DhallVis
+    vis :: DhallVis,
+    stan :: Maybe DhallStanConfig
   }
   deriving (Show, Generic)
 
@@ -360,6 +370,13 @@ toIRVis = \case
   Private -> IR.Private
   Public -> IR.Public
 
+toIRStanConfig :: DhallStanConfig -> IR.StanConfig
+toIRStanConfig s =
+  IR.StanConfig
+    { IR.configFile = s.config_file,
+      IR.severity = s.severity
+    }
+
 toIRCxxStd :: DhallCxxStd -> IR.CxxStd
 toIRCxxStd = \case
   Cxx11 -> IR.Cxx11
@@ -438,7 +455,8 @@ toIRRule = \case
           IR.deps = map toIRDep r.deps,
           IR.extraLibs = r.extra_libs,
           IR.extraLibDirs = r.extra_lib_dirs,
-          IR.vis = toIRVis r.vis
+          IR.vis = toIRVis r.vis,
+          IR.stan = fmap toIRStanConfig r.stan
         }
   HaskellLibrary r ->
     IR.RHaskellLibrary
@@ -449,7 +467,8 @@ toIRRule = \case
           IR.languageExtensions = r.language_extensions,
           IR.ghcOptions = r.ghc_options,
           IR.deps = map toIRDep r.deps,
-          IR.vis = toIRVis r.vis
+          IR.vis = toIRVis r.vis,
+          IR.stan = fmap toIRStanConfig r.stan
         }
   HaskellFFIBinary r ->
     IR.RHaskellFFIBinary

@@ -6,36 +6,36 @@ let TC = ../dhall/Toolchains.dhall
 -- C++ toolchain (LLVM 22 with GCC stdlib)
 let cxxToolchain : TC.Cxx =
   { image = None Text
-  , cc = TC.tool "/nix/store/d1cj9grs3fl8f5mid7nbvl4l6la638bd-llvm-git-22.0.0-straylight/bin/clang"
-  , cxx = TC.tool "/nix/store/d1cj9grs3fl8f5mid7nbvl4l6la638bd-llvm-git-22.0.0-straylight/bin/clang++"
-  , ar = TC.tool "/nix/store/d1cj9grs3fl8f5mid7nbvl4l6la638bd-llvm-git-22.0.0-straylight/bin/llvm-ar"
-  , ld = TC.tool "/nix/store/d1cj9grs3fl8f5mid7nbvl4l6la638bd-llvm-git-22.0.0-straylight/bin/ld.lld"
+  , cc = TC.tool "/nix/store/rwv3n4h5wrin94j6mzdhjlbs06br9a8x-llvm-git-22.0.0-straylight/bin/clang"
+  , cxx = TC.tool "/nix/store/rwv3n4h5wrin94j6mzdhjlbs06br9a8x-llvm-git-22.0.0-straylight/bin/clang++"
+  , ar = TC.tool "/nix/store/rwv3n4h5wrin94j6mzdhjlbs06br9a8x-llvm-git-22.0.0-straylight/bin/llvm-ar"
+  , ld = TC.tool "/nix/store/rwv3n4h5wrin94j6mzdhjlbs06br9a8x-llvm-git-22.0.0-straylight/bin/ld.lld"
   , paths = TC.paths
-      [ "/nix/store/d1cj9grs3fl8f5mid7nbvl4l6la638bd-llvm-git-22.0.0-straylight/lib/clang/22/include"
-      , "/nix/store/sbfrl6127w424l34lsq0lzryibq1226j-gcc-15.2.0/include/c++/15.2.0"
-      , "/nix/store/sbfrl6127w424l34lsq0lzryibq1226j-gcc-15.2.0/include/c++/15.2.0/aarch64-unknown-linux-gnu"
-      , "/nix/store/w5qwv2s934nra3g415gf9n313ml78yhy-glibc-2.40-66-dev/include"
+      [ "/nix/store/rwv3n4h5wrin94j6mzdhjlbs06br9a8x-llvm-git-22.0.0-straylight/lib/clang/22/include"
+      , "/nix/store/qarrb8yfby1yyypm32vabzgxgq3w41ma-gcc-15.2.0/include/c++/15.2.0"
+      , "/nix/store/qarrb8yfby1yyypm32vabzgxgq3w41ma-gcc-15.2.0/include/c++/15.2.0/x86_64-unknown-linux-gnu"
+      , "/nix/store/dj43clc5ff7jjnfmhbaj6q4q0h8kpfpm-glibc-2.40-66-dev/include"
       ]
-      [ "/nix/store/sbfrl6127w424l34lsq0lzryibq1226j-gcc-15.2.0/lib/gcc/aarch64-unknown-linux-gnu/15.2.0"
-      , "/nix/store/h4qhxh7vwmxgy6w05g0xsf6r1bfi9vga-gcc-15.2.0-lib/lib"
-      , "/nix/store/wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66/lib"
+      [ "/nix/store/qarrb8yfby1yyypm32vabzgxgq3w41ma-gcc-15.2.0/lib/gcc/x86_64-unknown-linux-gnu/15.2.0"
+      , "/nix/store/xc0ga87wdclrx54qjaryahkkmkmqi9qz-gcc-15.2.0-lib/lib"
+      , "/nix/store/j193mfi0f921y0kfs8vjc1znnr45ispv-glibc-2.40-66/lib"
       ]
   , sysroot = ""
-  , target = "aarch64-unknown-linux-gnu"
+  , target = "x86_64-unknown-linux-gnu"
   }
 
 -- NVIDIA toolchain
 let nvToolchain : TC.Nv =
   { image = None Text
-  , clang = TC.tool "/nix/store/d1cj9grs3fl8f5mid7nbvl4l6la638bd-llvm-git-22.0.0-straylight/bin/clang++"
-  , ptxas = TC.tool "/nix/store/c5zcj2chs89cqmrnb5ybv1j8hfb4dnkm-nvidia-sdk-13.1/bin/ptxas"
-  , fatbinary = TC.tool "/nix/store/c5zcj2chs89cqmrnb5ybv1j8hfb4dnkm-nvidia-sdk-13.1/bin/fatbinary"
-  , sdk_path = "/nix/store/c5zcj2chs89cqmrnb5ybv1j8hfb4dnkm-nvidia-sdk-13.1"
+  , clang = TC.tool "/nix/store/rwv3n4h5wrin94j6mzdhjlbs06br9a8x-llvm-git-22.0.0-straylight/bin/clang++"
+  , ptxas = TC.tool "/nix/store/71bcxdmr93ylizg47gnfvk8wdaqds7hd-nvidia-sdk-13.1/bin/ptxas"
+  , fatbinary = TC.tool "/nix/store/71bcxdmr93ylizg47gnfvk8wdaqds7hd-nvidia-sdk-13.1/bin/fatbinary"
+  , sdk_path = "/nix/store/71bcxdmr93ylizg47gnfvk8wdaqds7hd-nvidia-sdk-13.1"
   , sdk = TC.paths
-      [ "/nix/store/c5zcj2chs89cqmrnb5ybv1j8hfb4dnkm-nvidia-sdk-13.1/include"
-      , "/nix/store/23lirszlj8cbfv17x91dn6qq2v0g2bpn-mdspan-0.6.0/include"
+      [ "/nix/store/71bcxdmr93ylizg47gnfvk8wdaqds7hd-nvidia-sdk-13.1/include"
+      , "/nix/store/bz81az68irsl2sixakq0p1aa7rw4jlih-mdspan-0.6.0/include"
       ]
-      [ "/nix/store/c5zcj2chs89cqmrnb5ybv1j8hfb4dnkm-nvidia-sdk-13.1/lib64" ]
+      [ "/nix/store/71bcxdmr93ylizg47gnfvk8wdaqds7hd-nvidia-sdk-13.1/lib64" ]
   , archs = [ "sm_90", "sm_100", "sm_120" ]
   , cxx = cxxToolchain
   }
@@ -43,39 +43,39 @@ let nvToolchain : TC.Nv =
 -- Rust toolchain
 let rustToolchain : TC.Rust =
   { image = None Text
-  , rustc = TC.tool "/nix/store/pil8v5ilxakq2w58pqkyz2qzdhrffqi4-rustc-wrapper-1.91.1/bin/rustc"
-  , cargo = TC.tool "/nix/store/fkzkn31qravdf6gn93f1gbi7rwvyk344-cargo-1.91.1/bin/cargo"
+  , rustc = TC.tool "/nix/store/lvdr3nws8gs2qcgm3rnwvjprcx55kx7l-rustc-wrapper-1.91.1/bin/rustc"
+  , cargo = TC.tool "/nix/store/9db7xb1axdgqp4lakdxbp27yh7kfvm0b-cargo-1.91.1/bin/cargo"
   , edition = "2021"
-  , target = "aarch64-unknown-linux-gnu"
+  , target = "x86_64-unknown-linux-gnu"
   }
 
 -- Haskell toolchain
 let haskellToolchain : TC.Haskell =
   { image = None Text
-  , ghc = TC.tool "/nix/store/ki8hgnrg2yvbnqgbpp39gy3hmdfilx39-ghc-9.12.2-with-packages/bin/ghc"
-  , ghc_pkg = TC.tool "/nix/store/ki8hgnrg2yvbnqgbpp39gy3hmdfilx39-ghc-9.12.2-with-packages/bin/ghc-pkg"
+  , ghc = TC.tool "/nix/store/dq5xs27h4q02468kbngiszpcgs1q0vay-ghc-9.12.2-with-packages/bin/ghc"
+  , ghc_pkg = TC.tool "/nix/store/dq5xs27h4q02468kbngiszpcgs1q0vay-ghc-9.12.2-with-packages/bin/ghc-pkg"
   , paths = TC.paths
-      [ "/nix/store/ki8hgnrg2yvbnqgbpp39gy3hmdfilx39-ghc-9.12.2-with-packages/lib/ghc-9.12.2/lib/package.conf.d" ]
-      [ "/nix/store/ki8hgnrg2yvbnqgbpp39gy3hmdfilx39-ghc-9.12.2-with-packages/lib/ghc-9.12.2/lib" ]
+      [ "/nix/store/dq5xs27h4q02468kbngiszpcgs1q0vay-ghc-9.12.2-with-packages/lib/ghc-9.12.2/lib/package.conf.d" ]
+      [ "/nix/store/dq5xs27h4q02468kbngiszpcgs1q0vay-ghc-9.12.2-with-packages/lib/ghc-9.12.2/lib" ]
   }
 
 -- Lean toolchain
 let leanToolchain : TC.Lean =
   { image = None Text
-  , lean = TC.tool "/nix/store/cjspsfvavacj7dbv03jsj3589jdjm6ls-lean4-4.26.0/bin/lean"
-  , leanc = TC.tool "/nix/store/cjspsfvavacj7dbv03jsj3589jdjm6ls-lean4-4.26.0/bin/leanc"
+  , lean = TC.tool "/nix/store/hgrr6brn6gxwrzz2z8yca82r0mhhm08r-lean4-4.26.0/bin/lean"
+  , leanc = TC.tool "/nix/store/hgrr6brn6gxwrzz2z8yca82r0mhhm08r-lean4-4.26.0/bin/leanc"
   , paths = TC.paths
-      [ "/nix/store/cjspsfvavacj7dbv03jsj3589jdjm6ls-lean4-4.26.0/include" ]
-      [ "/nix/store/cjspsfvavacj7dbv03jsj3589jdjm6ls-lean4-4.26.0/lib/lean/library" ]
+      [ "/nix/store/hgrr6brn6gxwrzz2z8yca82r0mhhm08r-lean4-4.26.0/include" ]
+      [ "/nix/store/hgrr6brn6gxwrzz2z8yca82r0mhhm08r-lean4-4.26.0/lib/lean/library" ]
   }
 
 -- PureScript toolchain
 let purescriptToolchain : TC.PureScript =
   { image = None Text
-  , purs = TC.tool "/nix/store/3c15fpdj52nln6vhq70hnrvvmjyf4jb2-purs-0.15.15/bin/purs"
-  , spago = TC.tool "/nix/store/9z4jb8rwl37cyxdhnk9cfq7anw1rjj30-spago-1.0.3/bin/spago"
-  , node = TC.tool "/nix/store/dvcc9hh5ia62x2r44zcgsz5gic5yzi3j-nodejs-24.12.0/bin/node"
-  , esbuild = TC.tool "/nix/store/fp1dh7j5qjici1v3x11x9m1ks73x2fak-esbuild-0.25.5/bin/esbuild"
+  , purs = TC.tool "/nix/store/501niw8ss2ndcs3ij3gz7wiqfsc72w7r-purs-0.15.15/bin/purs"
+  , spago = TC.tool "/nix/store/r8h89s810fgpcf331jijhxs0vjh3h3h9-spago-1.0.3/bin/spago"
+  , node = TC.tool "/nix/store/cikdc61gfwvdma6y0p9b5d5d448aqcv6-nodejs-24.12.0/bin/node"
+  , esbuild = TC.tool "/nix/store/2mq1i9wsyfl25ni0ai9s97268mri01vd-esbuild-0.25.5/bin/esbuild"
   }
 
 in  { cxx = cxxToolchain
