@@ -18,7 +18,7 @@ import Control.Monad (forM, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
-import Data.List (intercalate, isPrefixOf, stripPrefix)
+import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -154,7 +154,7 @@ buildRuleWithDeps ::
 buildRuleWithDeps tc projectRoot pkgPath rule depOutputs = case rule of
   IR.RCxxBinary r -> buildCxxBinaryWithDeps tc projectRoot pkgPath r depOutputs
   IR.RCxxLibrary r -> buildCxxLibrary tc projectRoot pkgPath r
-  IR.RRustBinary r -> buildRustBinary tc projectRoot pkgPath r
+  IR.RRustBinary r -> buildRustBinaryWithDeps tc projectRoot pkgPath r depOutputs
   IR.RRustLibrary r -> buildRustLibrary tc projectRoot pkgPath r
   IR.RHaskellBinary r -> buildHaskellBinaryWithDeps tc projectRoot pkgPath r depOutputs
   IR.RHaskellLibrary r -> buildHaskellLibrary tc projectRoot pkgPath r
@@ -656,6 +656,75 @@ buildRustLibrary tc projectRoot pkgPath lib = do
             ExitSuccess -> pure $ Right $ BuildSuccess [outLib]
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
     _ -> pure $ Left $ UnsupportedRule "Multi-file Rust library"
+
+-- | Build a Rust binary with resolved dependency outputs
+buildRustBinaryWithDeps ::
+  TC.Toolchains ->
+  FilePath ->
+  FilePath ->
+  IR.RustBinary ->
+  [(Text, [FilePath])] -> -- (dep name, output paths)
+  IO (Either BuildError BuildResult)
+buildRustBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
+  let srcDir = projectRoot </> pkgPath
+      outDir = projectRoot </> "sensenet-out" </> pkgPath
+      outBin = outDir </> T.unpack bin.name
+
+  -- Toolchain
+  let rustc = T.unpack tc.rust.rustc.path
+      target = T.unpack tc.rust.target
+
+  createDirectoryIfMissing True outDir
+
+  -- Extract .rlib files from deps and generate --extern flags
+  let rlibFiles = concatMap snd depOutputs
+      -- Get unique directories for -L flags
+      libDirs = nub $ map takeDirectory rlibFiles
+      libDirFlags = concatMap (\d -> ["-L", d]) libDirs
+      -- Generate --extern cratename=path.rlib for each dep
+      externFlags = concatMap mkExternFlag depOutputs
+
+  case bin.srcs of
+    [src] -> do
+      let srcPath = srcDir </> T.unpack src
+          edition = rustEditionFlag bin.edition
+          cmd =
+            [rustc, "--edition", edition, "--target", target]
+              ++ externFlags
+              ++ libDirFlags
+              ++ [srcPath, "-o", outBin]
+
+      exists <- doesFileExist srcPath
+      if not exists
+        then pure $ Left $ SourceNotFound srcPath
+        else do
+          TIO.putStrLn $ "  rustc (with deps): " <> T.pack (unwords cmd)
+          (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
+          case exitCode of
+            ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
+            ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
+    srcs -> do
+      -- Multi-file: use first as main
+      let mainSrc = srcDir </> T.unpack (head srcs)
+          edition = rustEditionFlag bin.edition
+          cmd =
+            [rustc, "--edition", edition, "--target", target]
+              ++ externFlags
+              ++ libDirFlags
+              ++ [mainSrc, "-o", outBin]
+
+      TIO.putStrLn $ "  rustc (with deps): " <> T.pack (unwords cmd)
+      (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
+      case exitCode of
+        ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
+        ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
+  where
+    -- Convert dep name + rlib path to --extern flag
+    -- e.g., ("mathlib", [".../libmathlib.rlib"]) -> ["--extern", "mathlib=.../libmathlib.rlib"]
+    mkExternFlag :: (Text, [FilePath]) -> [String]
+    mkExternFlag (depName, paths) = case paths of
+      [rlib] -> ["--extern", T.unpack depName <> "=" <> rlib]
+      _ -> [] -- Skip if not exactly one .rlib
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Haskell Build
