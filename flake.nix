@@ -115,6 +115,9 @@
           # DICE FFI library
           dice-ffi = pkgs.callPackage ./nix/packages/dice-ffi.nix { };
 
+          # SuperConsole FFI library
+          superconsole-ffi = pkgs.callPackage ./nix/packages/superconsole-ffi.nix { };
+
           # Build sensenet CLI (with integrated NativeLink client)
           sensenet = pkgs.callPackage ./nix/packages/sensenet.nix {
             inherit (ghc912)
@@ -140,13 +143,14 @@
               proto-lens-runtime
               vector
               ;
-            inherit dice-ffi;
+            inherit dice-ffi superconsole-ffi;
           };
         in
         {
           packages.sense-lint = pkgs.callPackage ./nix/packages/sense-lint.nix { };
           packages.sensenet = sensenet;
           packages.dice-ffi = dice-ffi;
+          packages.superconsole-ffi = superconsole-ffi;
 
           # Declare examples as a Sensenet project
           sensenet.projects.examples = {

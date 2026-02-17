@@ -20,10 +20,11 @@ import SenseNet.Discover (DhallFile (..), discover)
 import SenseNet.IR (Package (..), Rule, ruleName)
 import SenseNet.Remote qualified as Remote
 import SenseNet.Toolchains qualified as TC
-import System.Directory (getCurrentDirectory)
+import System.Directory (doesDirectoryExist, getCurrentDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.FilePath (makeRelative, takeDirectory, (</>))
+import System.Process (callProcess)
 
 -- | Command-line options
 data Options = Options
@@ -62,6 +63,8 @@ main = do
   case args' of
     [] -> usage
     ("build" : rest) -> cmdBuild opts (map T.pack rest)
+    ("run" : rest) -> cmdRun opts (map T.pack rest)
+    ("clean" : _) -> cmdClean
     ("targets" : rest) -> cmdTargets (map T.pack rest)
     ("query" : rest) -> cmdTargets (map T.pack rest) -- alias
     ("graph" : _) -> cmdGraph
@@ -90,6 +93,8 @@ usage =
         "",
         "Commands:",
         "  build [target]     Build target(s)",
+        "  run <target> [--]  Build and run a target",
+        "  clean              Remove build outputs (sensenet-out/)",
         "  targets [pattern]  List available targets",
         "  query [pattern]    Alias for targets",
         "  graph              Show build graph",
@@ -108,6 +113,8 @@ usage =
         "  sensenet build //src/examples/cxx:hello-cxx",
         "  sensenet build --deps //pkg:target   # build with dependency resolution",
         "  sensenet build --remote //pkg:target # build remotely",
+        "  sensenet run //src/examples/rust:math_demo",
+        "  sensenet clean                       # remove sensenet-out/",
         "  sensenet targets                     # list all targets",
         "",
         "Output goes to sensenet-out/"
@@ -254,3 +261,66 @@ cmdGraph = do
     TIO.putStrLn $ "# " <> T.pack pkg.path
     forM_ pkg.rules $ \rule -> do
       TIO.putStrLn $ "  " <> ruleName rule
+
+cmdClean :: IO ()
+cmdClean = do
+  projectRoot <- getCurrentDirectory
+  let outDir = projectRoot </> "sensenet-out"
+  exists <- doesDirectoryExist outDir
+  if exists
+    then do
+      TIO.putStrLn $ "Removing " <> T.pack outDir
+      removeDirectoryRecursive outDir
+      TIO.putStrLn "  v Clean complete"
+    else do
+      TIO.putStrLn "Nothing to clean (sensenet-out/ does not exist)"
+
+cmdRun :: Options -> [Text] -> IO ()
+cmdRun opts args = do
+  case args of
+    [] -> do
+      TIO.putStrLn "Usage: sensenet run //path/to/pkg:target [-- args...]"
+      exitFailure
+    (target : rest) -> do
+      projectRoot <- getCurrentDirectory
+
+      -- Parse target
+      case parseTarget target of
+        Nothing -> do
+          TIO.putStrLn $ "Invalid target: " <> target
+          TIO.putStrLn "Expected format: //path/to/pkg:target"
+          exitFailure
+        Just (pkgPath, targetName) -> do
+          -- Load toolchains
+          let tcPath = TC.defaultToolchainsPath projectRoot
+          tc <- TC.loadToolchains tcPath
+
+          -- Build the target first (always with deps for run)
+          let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
+          pkg <- Dhall.parsePackageFile projectRoot dhallPath'
+
+          TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
+          result <- buildWithDeps tc projectRoot pkg targetName
+
+          case result of
+            Left err -> do
+              TIO.putStrLn $ "  x " <> showError err
+              exitFailure
+            Right (BuildSuccess outputs) -> runOutput projectRoot outputs rest
+            Right (BuildCached outputs) -> runOutput projectRoot outputs rest
+
+-- | Run the first output binary with optional arguments
+runOutput :: FilePath -> [FilePath] -> [Text] -> IO ()
+runOutput projectRoot outputs args = do
+  case outputs of
+    [] -> do
+      TIO.putStrLn "  x No outputs to run"
+      exitFailure
+    (output : _) -> do
+      let execPath = projectRoot </> output
+      TIO.putStrLn $ "  v Built: " <> T.pack output
+      TIO.putStrLn $ "Running: " <> T.pack execPath
+      TIO.putStrLn ""
+      -- Filter out "--" if present at the start of args
+      let execArgs = map T.unpack $ filter (/= "--") args
+      callProcess execPath execArgs

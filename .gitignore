@@ -40,3 +40,13 @@ platforms/BUCK
 .haskell-sources/
 *.gen
 src/dice-ffi/target/
+
+# sensenet build output
+sensenet-out/
+
+# Rust cargo target directories (vendored crates)
+src/vendor/*/target/
+
+# PureScript spago cache
+.spago/
+**/.spago/

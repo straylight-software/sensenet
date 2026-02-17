@@ -26,6 +26,7 @@
   vector,
   # FFI
   dice-ffi,
+  superconsole-ffi,
 }:
 mkDerivation {
   pname = "sensenet";
@@ -56,7 +57,10 @@ mkDerivation {
     proto-lens-runtime
     vector
   ];
-  executableSystemDepends = [ dice-ffi ];
+  executableSystemDepends = [
+    dice-ffi
+    superconsole-ffi
+  ];
   description = "SENSE // NET — Typed builds with Dhall + DICE";
   license = lib.licenses.mit;
   mainProgram = "sensenet";

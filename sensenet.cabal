@@ -16,6 +16,8 @@ executable sensenet
   other-modules:
     -- SenseNet core
     SenseNet.Build
+    SenseNet.Console
+    SenseNet.Console.FFI
     SenseNet.DICE
     SenseNet.DICE.FFI
     SenseNet.Dhall
@@ -65,7 +67,7 @@ executable sensenet
   hs-source-dirs:   src/sensenet
   default-language: GHC2021
   ghc-options:      -Wall -O2
-  extra-libraries:  dice_ffi
+  extra-libraries:  dice_ffi superconsole_ffi
 
   build-depends:
     , aeson                >=2.0
