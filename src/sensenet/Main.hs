@@ -42,7 +42,7 @@ defaultOptions =
       optRemoteHost = "localhost",
       optRemotePort = 50051,
       optWithDeps = True, -- DICE-based dependency resolution is now the default
-      optTUI = False
+      optTUI = True -- Superconsole TUI is now the default (falls back gracefully)
     }
 
 -- | Parse options from args, returning (options, remaining args)
@@ -56,6 +56,7 @@ parseOptions = go defaultOptions
     go opts ("--deps" : rest) = go opts {optWithDeps = True} rest
     go opts ("--no-deps" : rest) = go opts {optWithDeps = False} rest
     go opts ("--tui" : rest) = go opts {optTUI = True, optWithDeps = True} rest
+    go opts ("--no-tui" : rest) = go opts {optTUI = False} rest
     go opts (x : rest) =
       let (opts', rest') = go opts rest
        in (opts', x : rest')
@@ -105,7 +106,7 @@ usage =
         "  test-remote        Test connection to remote executor",
         "",
         "Options:",
-        "  --tui              Use superconsole TUI for build progress",
+        "  --no-tui           Disable superconsole TUI (use plain text output)",
         "  --no-deps          Disable dependency resolution (legacy mode)",
         "  --remote           Execute builds remotely via NativeLink",
         "  --remote-host H    Remote executor host (default: localhost)",
@@ -116,7 +117,7 @@ usage =
         "Examples:",
         "  sensenet build                       # build all locally",
         "  sensenet build //src/examples/cxx:hello-cxx",
-        "  sensenet build --tui //pkg:target    # build with TUI progress display",
+        "  sensenet build --no-tui //pkg:target  # build with plain text output",
         "  sensenet build --no-deps //pkg:target # legacy build without dep resolution",
         "  sensenet build --remote //pkg:target # build remotely",
         "  sensenet run //src/examples/rust:math_demo",
