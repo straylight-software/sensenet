@@ -159,17 +159,19 @@ cmdBuild opts args = do
         pkg <- Dhall.parsePackageFile projectRoot (dhallPath file)
         forM_ pkg.rules $ \rule -> do
           buildTarget opts remoteCfg tc projectRoot pkg (ruleName rule)
-    (target : _) -> do
-      -- Parse target like //src/examples/cxx:hello-cxx
-      case parseTarget target of
-        Nothing -> do
-          TIO.putStrLn $ "Invalid target: " <> target
-          TIO.putStrLn "Expected format: //path/to/pkg:target"
-          exitFailure
-        Just (pkgPath, targetName) -> do
-          let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
-          pkg <- Dhall.parsePackageFile projectRoot dhallPath'
-          buildTarget opts remoteCfg tc projectRoot pkg targetName
+    targets -> do
+      -- Build each specified target
+      forM_ targets $ \target -> do
+        -- Parse target like //src/examples/cxx:hello-cxx
+        case parseTarget target of
+          Nothing -> do
+            TIO.putStrLn $ "Invalid target: " <> target
+            TIO.putStrLn "Expected format: //path/to/pkg:target"
+            exitFailure
+          Just (pkgPath, targetName) -> do
+            let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
+            pkg <- Dhall.parsePackageFile projectRoot dhallPath'
+            buildTarget opts remoteCfg tc projectRoot pkg targetName
 
 buildTarget :: Options -> Maybe Remote.RemoteConfig -> TC.Toolchains -> FilePath -> Package -> Text -> IO ()
 buildTarget opts remoteCfg tc projectRoot pkg targetName = do
