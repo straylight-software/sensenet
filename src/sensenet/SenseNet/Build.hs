@@ -140,10 +140,11 @@ buildWithConsole :: TC.Toolchains -> FilePath -> IR.Package -> Text -> IO (Eithe
 buildWithConsole tc projectRoot pkg targetName = do
   -- Check if console is available
   isCompatible <- Console.compatible
+  -- Debug: show compatibility check result
+  -- TIO.putStrLn $ "[debug] Console.compatible = " <> T.pack (show isCompatible)
   if not isCompatible
     then do
-      -- Fall back to non-console build
-      TIO.putStrLn "(Console not available, using text output)"
+      -- Fall back to non-console build (stderr not a tty)
       buildWithDeps tc projectRoot pkg targetName
     else do
       -- Run with console
