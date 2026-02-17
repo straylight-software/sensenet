@@ -32,6 +32,8 @@ use std::ptr;
 use std::slice;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use futures::FutureExt;
+
 use allocative::Allocative;
 use async_trait::async_trait;
 use dice::{
@@ -206,14 +208,27 @@ impl Key for TargetKey {
     };
 
     if let Some(info) = target_info {
-      // This target has registered deps - compute them first
-      let mut dep_results: Vec<(String, Vec<String>)> = Vec::new();
+      // This target has registered deps - compute them in PARALLEL using DICE's compute_join
+      let dep_names: Vec<String> = info.deps.clone();
 
-      for dep_name in &info.deps {
-        let dep_key = TargetKey(dep_name.clone());
-        match ctx.compute(&dep_key).await {
+      // Use DICE's compute_join for proper parallel computation
+      let dep_results_raw: Vec<(String, Result<Arc<TargetResult>, _>)> = ctx
+        .compute_join(dep_names, |dice_ctx, dep_name| {
+          async move {
+            let dep_key = TargetKey(dep_name.clone());
+            let result = dice_ctx.compute(&dep_key).await;
+            (dep_name, result)
+          }
+          .boxed()
+        })
+        .await;
+
+      // Collect results, failing fast on any error
+      let mut dep_results: Vec<(String, Vec<String>)> = Vec::new();
+      for (dep_name, result) in dep_results_raw {
+        match result {
           Ok(dep_result) => {
-            dep_results.push((dep_name.clone(), dep_result.outputs.clone()));
+            dep_results.push((dep_name, dep_result.outputs.clone()));
           }
           Err(e) => {
             // Dep computation failed
