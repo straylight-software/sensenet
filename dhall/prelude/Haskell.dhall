@@ -58,6 +58,7 @@ let FFIBinary =
       , cxx_srcs : List Text
       , cxx_headers : List Text
       , packages : List Text
+      , deps : List T.Dep
       , language_extensions : List Text
       , ghc_options : List Text
       , extra_libs : List Text
@@ -75,6 +76,7 @@ let ffiBinary
         { name, hs_srcs, cxx_srcs
         , cxx_headers = [] : List Text
         , packages = [ "base" ] : List Text
+        , deps = [] : List T.Dep
         , language_extensions = [] : List Text
         , ghc_options = [ "-O2" ] : List Text
         , extra_libs = [] : List Text

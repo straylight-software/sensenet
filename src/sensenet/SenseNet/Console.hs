@@ -63,17 +63,13 @@ module SenseNet.Console
   )
 where
 
-import Control.Exception (bracket)
 import Data.ByteString (ByteString)
-import Data.ByteString qualified as BS
 import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 import Data.IORef
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Data.Word (Word32, Word64)
-import Foreign.C.Types (CInt (..), CSize (..))
-import Foreign.Marshal.Alloc (allocaBytes)
-import Foreign.Marshal.Array (pokeArray)
+import Foreign.C.Types (CInt (..))
 import Foreign.Ptr (nullPtr)
 import SenseNet.Console.FFI qualified as FFI
 

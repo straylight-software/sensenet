@@ -1,24 +1,26 @@
-{- |
-Module      : SenseNet.Discover
-Description : Discover Dhall files in a project
-
-Walks the project tree, consulting SCM ignore files,
-to find all Dhall build definitions.
--}
+-- |
+-- Module      : SenseNet.Discover
+-- Description : Discover Dhall files in a project
+--
+-- Walks the project tree, consulting SCM ignore files,
+-- to find all Dhall build definitions.
 module SenseNet.Discover
-  ( DhallFile(..)
-  , discover
-  ) where
+  ( DhallFile (..),
+    discover,
+  )
+where
 
 import Control.Monad (filterM, forM)
 import Data.List (isPrefixOf)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
-import System.FilePath ((</>), takeFileName, makeRelative)
+import System.FilePath (makeRelative, takeFileName, (</>))
 
 -- | A discovered Dhall file
 data DhallFile = DhallFile
-  { dhallPath :: FilePath    -- ^ Absolute path to the .dhall file
-  , dhallRelPath :: FilePath -- ^ Path relative to project root
+  { -- | Absolute path to the .dhall file
+    dhallPath :: FilePath,
+    -- | Path relative to project root
+    dhallRelPath :: FilePath
   }
   deriving (Show, Eq)
 
@@ -32,54 +34,51 @@ discover root = do
     go ignores dir = do
       entries <- listDirectory dir
       let paths = map (dir </>) entries
-      
+
       -- Find BUILD.dhall files only
       dhallFiles <- filterM doesFileExist $ filter isBuildDhall paths
       let here = map (\fp -> DhallFile fp (makeRelative root fp)) dhallFiles
-      
+
       -- Recurse into subdirectories
       subdirs <- filterM doesDirectoryExist paths
       let validDirs = filter (not . isIgnored ignores root) subdirs
-      
+
       children <- concat <$> forM validDirs (go ignores)
       pure (here ++ children)
-    
+
     isBuildDhall p = takeFileName p == "BUILD.dhall"
-    
-    isSuffixOf suffix str = suffix == drop (length str - length suffix) str
 
 -- | Check if a path should be ignored
 isIgnored :: [String] -> FilePath -> FilePath -> Bool
 isIgnored patterns root path =
   let name = takeFileName path
       rel = makeRelative root path
-  in 
-     -- Always skip these
-     any (`elem` ("._" :: String)) (take 1 name)
-     || name `elem` builtinIgnores
-     -- Check gitignore patterns
-     || any (`matches` rel) patterns
+   in -- Always skip these
+      any (`elem` ("._" :: String)) (take 1 name)
+        || name `elem` builtinIgnores
+        -- Check gitignore patterns
+        || any (`matches` rel) patterns
   where
-    builtinIgnores = 
-      [ "buck-out"
-      , "node_modules" 
-      , ".git"
-      , ".direnv"
-      , "result"
-      , "dist-newstyle"
-      , "toolchains"    -- sensenet toolchains come from Nix, not discovered
-      , "prelude"       -- buck2 prelude comes from Nix
-      , "nix"           -- nix build artifacts
+    builtinIgnores =
+      [ "buck-out",
+        "node_modules",
+        ".git",
+        ".direnv",
+        "result",
+        "dist-newstyle",
+        "toolchains", -- sensenet toolchains come from Nix, not discovered
+        "prelude", -- buck2 prelude comes from Nix
+        "nix" -- nix build artifacts
       ]
-    
+
     -- Simple pattern matching (TODO: full gitignore glob support)
     matches pat p
       | "/" `isPrefixOf` pat = takeFileName p == drop 1 pat
       | otherwise = pat `isPrefixOf` p || ("/" ++ pat) `isInfixOf` p
-    
+
     isInfixOf needle haystack = any (isPrefixOf needle) (tails haystack)
     tails [] = [[]]
-    tails xs@(_:xs') = xs : tails xs'
+    tails xs@(_ : xs') = xs : tails xs'
 
 -- | Load ignore patterns from .gitignore and .sensenetignore
 loadIgnorePatterns :: FilePath -> IO [String]

@@ -10,6 +10,7 @@ let sensenet-core =
         , "SenseNet/Discover.hs"
         , "SenseNet/Toolchains.hs"
         , "SenseNet/Config.hs"
+        , "SenseNet/Emit.hs"
         ])
         with packages =
           [ "base"
@@ -108,7 +109,7 @@ let dice =
           , "text"
           ]
 
--- Build engine
+-- Build engine (temporarily relaxed warnings for Buck2 bootstrap)
 let build =
       (A.haskellLibrary "build"
         [ "SenseNet/Build.hs"
@@ -123,6 +124,14 @@ let build =
           , "process"
           , "proto-lens"
           , "text"
+          ]
+        with ghc_options =
+          [ "-O2"
+          , "-Wno-error=unused-imports"
+          , "-Wno-error=x-partial"
+          , "-Wno-error=unused-matches"
+          , "-Wno-error=unused-top-binds"
+          , "-Wno-error=name-shadowing"
           ]
         with deps =
           [ A.local ":sensenet-core"
@@ -144,6 +153,7 @@ let console =
           ]
 
 -- The sensenet CLI (links against dice_ffi and superconsole_ffi)
+-- Temporarily relaxed warnings for Buck2 bootstrap
 let sensenet =
       (A.haskellFFIBinary "sensenet" [ "Main.hs" ] ([] : List Text))
         with packages =
@@ -151,10 +161,25 @@ let sensenet =
           , "base"
           , "bytestring"
           , "containers"
+          , "dhall"
           , "directory"
           , "filepath"
           , "process"
           , "text"
+          ]
+        with deps =
+          [ A.local ":sensenet-core"
+          , A.local ":build"
+          , A.local ":dice"
+          , A.local ":console"
+          ]
+        with ghc_options =
+          [ "-O2"
+          , "-Wno-error=unused-imports"
+          , "-Wno-error=x-partial"
+          , "-Wno-error=unused-matches"
+          , "-Wno-error=unused-top-binds"
+          , "-Wno-error=name-shadowing"
           ]
         with extra_libs = [ "dice_ffi", "superconsole_ffi" ]
         with extra_lib_dirs =

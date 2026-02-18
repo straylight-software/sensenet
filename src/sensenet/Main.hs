@@ -316,30 +316,33 @@ cmdClean = do
 cmdEmit :: [Text] -> IO ()
 cmdEmit args = do
   projectRoot <- getCurrentDirectory
-  case args of
-    [] -> do
-      -- Emit all packages
-      files <- discover projectRoot
-      pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
-      forM_ (sortOn (.path) pkgs) $ \pkg -> do
+  let (flags, targets) = partition (\a -> T.isPrefixOf "--" a || T.isPrefixOf "-" a) args
+      writeMode = "--write" `elem` flags || "-w" `elem` flags
+
+  -- Discover all packages or use specified targets
+  files <- discover projectRoot
+  pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
+
+  let targetPkgs = case targets of
+        [] -> pkgs
+        ts -> filter (\pkg -> any (matchesTarget pkg) ts) pkgs
+
+  forM_ (sortOn (.path) targetPkgs) $ \pkg -> do
+    let buckContent = Emit.emitBuck pkg
+        buckPath = projectRoot </> pkg.path </> "BUCK"
+    if writeMode
+      then do
+        TIO.writeFile buckPath buckContent
+        TIO.putStrLn $ "Wrote " <> T.pack buckPath
+      else do
         TIO.putStrLn $ "# " <> T.pack pkg.path <> "/BUCK"
-        TIO.putStrLn $ Emit.emitBuck pkg
+        TIO.putStrLn buckContent
         TIO.putStrLn ""
-    targets -> do
-      -- Emit specific package(s)
-      forM_ targets $ \target -> do
-        case parseTarget target of
-          Nothing -> do
-            -- Treat as package path
-            let dhallPath' = projectRoot </> T.unpack target </> "BUILD.dhall"
-            pkg <- Dhall.parsePackageFile projectRoot dhallPath'
-            TIO.putStrLn $ "# " <> target <> "/BUCK"
-            TIO.putStrLn $ Emit.emitBuck pkg
-          Just (pkgPath, _) -> do
-            let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
-            pkg <- Dhall.parsePackageFile projectRoot dhallPath'
-            TIO.putStrLn $ "# " <> pkgPath <> "/BUCK"
-            TIO.putStrLn $ Emit.emitBuck pkg
+  where
+    matchesTarget pkg target =
+      T.pack pkg.path == target
+        || T.pack pkg.path == T.dropWhile (== '/') target
+        || T.pack ("//" <> pkg.path) == target
 
 cmdRun :: Options -> [Text] -> IO ()
 cmdRun opts args = do

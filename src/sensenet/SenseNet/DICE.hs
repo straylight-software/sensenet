@@ -77,11 +77,10 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Word (Word64, Word8)
-import Foreign.C.String (peekCString, peekCStringLen)
-import Foreign.C.Types (CSize (..))
+import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca, mallocBytes)
 import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Ptr (castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, poke)
 import SenseNet.DICE.FFI qualified as FFI
 
@@ -147,12 +146,12 @@ data DICEEnv = DICEEnv
   }
 
 -- | Throw a DICE error
-throwDICE :: DICEError -> DICE a
-throwDICE err = DICE $ \_ -> pure (Left err)
+_throwDICE :: DICEError -> DICE a
+_throwDICE err = DICE $ \_ -> pure (Left err)
 
 -- | Catch IO exceptions and convert to DICE errors
-tryIO :: IO a -> (SomeException -> DICEError) -> DICE a
-tryIO io mkErr = DICE $ \_ -> do
+_tryIO :: IO a -> (SomeException -> DICEError) -> DICE a
+_tryIO io mkErr = DICE $ \_ -> do
   result <- try io
   case result of
     Left exc -> pure (Left (mkErr exc))

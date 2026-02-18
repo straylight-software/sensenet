@@ -110,18 +110,14 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     hi_dir = ctx.actions.declare_output("hi", dir = True)
     stub_dir = ctx.actions.declare_output("stubs", dir = True)
     
-    # Collect dependency hi directories for -i flag
-    dep_hi_dirs = []
-    dep_objects = []
+    # Collect dependency sources for source-based compilation
+    # (GHC needs source files, not just .hi files, for module resolution)
+    dep_sources = []
     for dep in ctx.attrs.deps:
         if HaskellLibraryInfo in dep:
             lib_info = dep[HaskellLibraryInfo]
-            if lib_info.hi_dir:
-                dep_hi_dirs.append(lib_info.hi_dir)
-            if lib_info.objects:
-                dep_objects.extend(lib_info.objects)
-            elif lib_info.object_dir:
-                dep_objects.append(lib_info.object_dir)
+            if lib_info.modules:
+                dep_sources.extend(lib_info.modules)
     
     # Build GHC command
     cmd = cmd_args([ghc])
@@ -155,12 +151,9 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     for pkg in ctx.attrs.packages:
         cmd.add("-package", pkg)
     
-    # Include paths for dependencies
-    for hi_d in dep_hi_dirs:
-        cmd.add(cmd_args("-i", hi_d, delimiter = ""))
-    
-    # Sources
+    # Sources (our sources + dep sources for module resolution)
     cmd.add(ctx.attrs.srcs)
+    cmd.add(dep_sources)
     
     ctx.actions.run(cmd, category = "haskell_compile", identifier = ctx.attrs.name)
     
@@ -171,6 +164,9 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         cmd_args("ar rcs", lib.as_output(), cmd_args(obj_dir, format = "$(find {} -name '*.o')"), delimiter = " "),
     )
     ctx.actions.run(ar_cmd, category = "haskell_archive", identifier = ctx.attrs.name)
+    
+    # Collect all modules (our sources + transitive dep sources)
+    all_modules = list(ctx.attrs.srcs) + dep_sources
     
     return [
         DefaultInfo(
@@ -189,7 +185,7 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             stub_dir = stub_dir,
             hie_dir = hie_dir,
             objects = [],
-            modules = ctx.attrs.srcs,
+            modules = all_modules,  # Transitive sources for dependents
         ),
     ]
 
@@ -437,6 +433,25 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     
     out = ctx.actions.declare_output(ctx.attrs.name)
     
+    # Collect dependency info from Haskell library deps
+    dep_hi_dirs = []
+    dep_libs = []
+    dep_sources_dict = {}  # Use dict for deduplication (Starlark has no sets)
+    for dep in ctx.attrs.deps:
+        if HaskellLibraryInfo in dep:
+            lib_info = dep[HaskellLibraryInfo]
+            if lib_info.hi_dir:
+                dep_hi_dirs.append(lib_info.hi_dir)
+            if lib_info.objects:
+                dep_libs.extend(lib_info.objects)
+            elif lib_info.object_dir:
+                dep_libs.append(lib_info.object_dir)
+            # Also collect source modules for source-based compilation (deduplicated)
+            if lib_info.modules:
+                for mod in lib_info.modules:
+                    dep_sources_dict[mod.short_path] = mod
+    dep_sources = dep_sources_dict.values()
+    
     # Step 1: Compile C++ sources
     cxx_compile_flags = ["-std=c++17", "-O2", "-fPIC", "-c"]
     
@@ -525,9 +540,19 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     for pkg in ctx.attrs.packages:
         ghc_cmd.add("-package", pkg)
     
+    # Include paths for dependencies
+    for hi_d in dep_hi_dirs:
+        ghc_cmd.add(cmd_args("-i", hi_d, delimiter = ""))
+    
     ghc_cmd.add(ctx.attrs.compiler_flags)
+    
+    # Sources (our sources + source-based deps)
     ghc_cmd.add(ctx.attrs.hs_srcs)
+    ghc_cmd.add(dep_sources)
     ghc_cmd.add(cxx_objects)
+    
+    # Link against compiled deps
+    ghc_cmd.add(dep_libs)
     
     ctx.actions.run(ghc_cmd, category = "ghc_link", identifier = ctx.attrs.name)
     

@@ -24,7 +24,6 @@ module SenseNet.Dhall
 where
 
 import Data.Text (Text)
-import Data.Text qualified as T
 import Dhall (FromDhall, auto, inputFile)
 import GHC.Generics (Generic)
 import SenseNet.IR qualified as IR
@@ -179,6 +178,7 @@ data DhallHaskellFFIBinary = DhallHaskellFFIBinary
     cxx_srcs :: [Text],
     cxx_headers :: [Text],
     packages :: [Text],
+    deps :: [DhallDep],
     language_extensions :: [Text],
     ghc_options :: [Text],
     extra_libs :: [Text],
@@ -459,6 +459,7 @@ toIRRule = \case
           IR.cxxSrcs = r.cxx_srcs,
           IR.cxxHeaders = r.cxx_headers,
           IR.packages = r.packages,
+          IR.deps = map toIRDep r.deps,
           IR.languageExtensions = r.language_extensions,
           IR.ghcOptions = r.ghc_options,
           IR.extraLibs = r.extra_libs,

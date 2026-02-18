@@ -177,6 +177,7 @@ data HaskellFFIBinary = HaskellFFIBinary
     cxxSrcs :: [Text],
     cxxHeaders :: [Text],
     packages :: [Text],
+    deps :: [Dep],
     languageExtensions :: [Text],
     ghcOptions :: [Text],
     extraLibs :: [Text],
@@ -400,7 +401,7 @@ ruleDeps = \case
   RRustLibrary r -> r.deps
   RHaskellBinary r -> r.deps
   RHaskellLibrary r -> r.deps
-  RHaskellFFIBinary _ -> [] -- FFI binary has no Dep field
+  RHaskellFFIBinary r -> r.deps
   RLeanBinary _ -> []
   RLeanLibrary _ -> []
   RNvBinary _ -> []

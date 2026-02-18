@@ -253,6 +253,7 @@ emitHaskellFFIBinary r =
     ]
       ++ (if null r.cxxHeaders then [] else ["    cxx_headers = " <> list r.cxxHeaders <> ","])
       ++ (if null r.packages then [] else ["    packages = " <> list r.packages <> ","])
+      ++ (if null r.deps then [] else ["    deps = " <> list (localDeps r.deps) <> ","])
       ++ (if null r.languageExtensions then [] else ["    language_extensions = " <> list r.languageExtensions <> ","])
       ++ (if null r.ghcOptions then [] else ["    ghc_options = " <> list r.ghcOptions <> ","])
       ++ (if null r.extraLibs then [] else ["    extra_libs = " <> list r.extraLibs <> ","])
