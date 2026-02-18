@@ -122,6 +122,7 @@
           sensenet = pkgs.callPackage ./nix/packages/sensenet.nix {
             inherit (ghc912)
               mkDerivation
+              async
               base
               bytestring
               containers

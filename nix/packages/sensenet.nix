@@ -4,6 +4,7 @@
   mkDerivation,
   lib,
   # Core deps
+  async,
   base,
   bytestring,
   containers,
@@ -36,6 +37,7 @@ mkDerivation {
   isExecutable = true;
   executableHaskellDepends = [
     # Core
+    async
     base
     bytestring
     containers
@@ -60,6 +62,13 @@ mkDerivation {
   executableSystemDepends = [
     dice-ffi
     superconsole-ffi
+  ];
+  # Parallel GHC compilation + threaded runtime
+  configureFlags = [
+    "--ghc-options=-j"
+    "--ghc-options=-threaded"
+    "--ghc-options=-rtsopts"
+    "--ghc-options=-with-rtsopts=-N"
   ];
   description = "SENSE // NET — Typed builds with Dhall + DICE";
   license = lib.licenses.mit;

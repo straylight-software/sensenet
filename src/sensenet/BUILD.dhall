@@ -95,7 +95,7 @@ let nativelink =
           ]
         with deps = [ A.local ":proto" ]
 
--- DICE FFI bindings (requires libdice_ffi from Nix)
+-- DICE FFI bindings (requires libdice_ffi)
 let dice =
       (A.haskellLibrary "dice"
         [ "SenseNet/DICE.hs"
@@ -105,18 +105,6 @@ let dice =
           [ "base"
           , "bytestring"
           , "containers"
-          , "text"
-          ]
-
--- Console FFI bindings (requires libsuperconsole_ffi from Nix)
-let console =
-      (A.haskellLibrary "console"
-        [ "SenseNet/Console.hs"
-        , "SenseNet/Console/FFI.hs"
-        ])
-        with packages =
-          [ "base"
-          , "bytestring"
           , "text"
           ]
 
@@ -143,9 +131,21 @@ let build =
           , A.local ":console"
           ]
 
--- The sensenet CLI
+-- Console FFI bindings (requires libsuperconsole_ffi)
+let console =
+      (A.haskellLibrary "console"
+        [ "SenseNet/Console.hs"
+        , "SenseNet/Console/FFI.hs"
+        ])
+        with packages =
+          [ "base"
+          , "bytestring"
+          , "text"
+          ]
+
+-- The sensenet CLI (links against dice_ffi and superconsole_ffi)
 let sensenet =
-      (A.haskellBinary "sensenet" [ "Main.hs" ])
+      (A.haskellFFIBinary "sensenet" [ "Main.hs" ] ([] : List Text))
         with packages =
           [ "async"
           , "base"
@@ -156,19 +156,14 @@ let sensenet =
           , "process"
           , "text"
           ]
-        with deps =
-          [ A.local ":sensenet-core"
-          , A.local ":build"
-          , A.local ":nativelink"
-          , A.local ":dice"
-          , A.local ":console"
+        with extra_libs = [ "dice_ffi", "superconsole_ffi" ]
+        with extra_lib_dirs =
+          [ "/nix/store/5y0fp06cg9nfi7srriwmhpi973r17w2g-dice-ffi-0.1.0/lib"
+          , "/nix/store/wp4lb87sym278f3bnijwjjqkp8q4wiy2-superconsole-ffi-0.1.0/lib"
           ]
-        with ghc_options =
-          [ "-O2"
-          , "-Wall"
-          , "-threaded"
-          , "-rtsopts"
-          , "-with-rtsopts=-N"
+        with include_dirs =
+          [ "/nix/store/5y0fp06cg9nfi7srriwmhpi973r17w2g-dice-ffi-0.1.0/include"
+          , "/nix/store/wp4lb87sym278f3bnijwjjqkp8q4wiy2-superconsole-ffi-0.1.0/include"
           ]
 
 in  { targets =
@@ -178,6 +173,6 @@ in  { targets =
         , A.rule.haskellLibrary dice
         , A.rule.haskellLibrary console
         , A.rule.haskellLibrary build
-        , A.rule.haskellBinary sensenet
+        , A.rule.haskellFFIBinary sensenet
         ]
     }

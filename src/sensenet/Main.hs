@@ -8,8 +8,9 @@
 -- Just: BUILD.dhall → IR → DICE → execute
 module Main where
 
+import Control.Concurrent.Async (forConcurrently, mapConcurrently)
 import Control.Monad (forM_)
-import Data.List (partition)
+import Data.List (partition, sortOn)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -17,6 +18,7 @@ import SenseNet.Build (BuildError (..), BuildResult (..), build, buildWithConsol
 import SenseNet.DICE qualified as DICE
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover)
+import SenseNet.Emit qualified as Emit
 import SenseNet.IR (Package (..), Rule, ruleName)
 import SenseNet.Remote qualified as Remote
 import SenseNet.Toolchains qualified as TC
@@ -73,6 +75,7 @@ main = do
     ("targets" : rest) -> cmdTargets (map T.pack rest)
     ("query" : rest) -> cmdTargets (map T.pack rest) -- alias
     ("graph" : _) -> cmdGraph
+    ("emit" : rest) -> cmdEmit (map T.pack rest)
     ("test-remote" : _) -> cmdTestRemote opts
     ("--version" : _) -> version
     ("-V" : _) -> version
@@ -103,6 +106,7 @@ usage =
         "  targets [pattern]  List available targets",
         "  query [pattern]    Alias for targets",
         "  graph              Show build graph",
+        "  emit [pkg]         Emit BUCK file for Buck2 fiction",
         "  test-remote        Test connection to remote executor",
         "",
         "Options:",
@@ -157,23 +161,25 @@ cmdBuild opts args = do
       -- Build all targets
       files <- discover projectRoot
       TIO.putStrLn $ "Found " <> T.pack (show $ length files) <> " BUILD.dhall files"
-      forM_ files $ \file -> do
-        pkg <- Dhall.parsePackageFile projectRoot (dhallPath file)
+      -- Parse all BUILD.dhall files in parallel
+      pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
+      forM_ pkgs $ \pkg -> do
         forM_ pkg.rules $ \rule -> do
           buildTarget opts remoteCfg tc projectRoot pkg (ruleName rule)
     targets -> do
-      -- Build each specified target
-      forM_ targets $ \target -> do
-        -- Parse target like //src/examples/cxx:hello-cxx
-        case parseTarget target of
-          Nothing -> do
-            TIO.putStrLn $ "Invalid target: " <> target
-            TIO.putStrLn "Expected format: //path/to/pkg:target"
-            exitFailure
-          Just (pkgPath, targetName) -> do
-            let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
-            pkg <- Dhall.parsePackageFile projectRoot dhallPath'
-            buildTarget opts remoteCfg tc projectRoot pkg targetName
+      -- Build each specified target - parse in parallel
+      let parseOne target = case parseTarget target of
+            Nothing -> do
+              TIO.putStrLn $ "Invalid target: " <> target
+              TIO.putStrLn "Expected format: //path/to/pkg:target"
+              exitFailure
+            Just (pkgPath, targetName) -> do
+              let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
+              pkg <- Dhall.parsePackageFile projectRoot dhallPath'
+              pure (pkg, targetName)
+      parsed <- mapConcurrently parseOne targets
+      forM_ parsed $ \(pkg, targetName) -> do
+        buildTarget opts remoteCfg tc projectRoot pkg targetName
 
 buildTarget :: Options -> Maybe Remote.RemoteConfig -> TC.Toolchains -> FilePath -> Package -> Text -> IO ()
 buildTarget opts remoteCfg tc projectRoot pkg targetName = do
@@ -269,17 +275,26 @@ cmdTargets :: [Text] -> IO ()
 cmdTargets _ = do
   projectRoot <- getCurrentDirectory
   files <- discover projectRoot
-  forM_ files $ \file -> do
-    pkg <- Dhall.parsePackageFile projectRoot (dhallPath file)
-    forM_ pkg.rules $ \rule -> do
-      TIO.putStrLn $ "//" <> T.pack pkg.path <> ":" <> ruleName rule
+  -- Parse all BUILD.dhall files in parallel
+  pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
+  -- Print targets in sorted order for deterministic output
+  let targets =
+        sortOn
+          id
+          [ "//" <> T.pack pkg.path <> ":" <> ruleName rule
+          | pkg <- pkgs,
+            rule <- pkg.rules
+          ]
+  mapM_ TIO.putStrLn targets
 
 cmdGraph :: IO ()
 cmdGraph = do
   projectRoot <- getCurrentDirectory
   files <- discover projectRoot
-  forM_ files $ \file -> do
-    pkg <- Dhall.parsePackageFile projectRoot (dhallPath file)
+  -- Parse all BUILD.dhall files in parallel
+  pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
+  -- Print in sorted order for deterministic output
+  forM_ (sortOn (.path) pkgs) $ \pkg -> do
     TIO.putStrLn $ "# " <> T.pack pkg.path
     forM_ pkg.rules $ \rule -> do
       TIO.putStrLn $ "  " <> ruleName rule
@@ -296,6 +311,35 @@ cmdClean = do
       TIO.putStrLn "  v Clean complete"
     else do
       TIO.putStrLn "Nothing to clean (sensenet-out/ does not exist)"
+
+-- | Emit BUCK file for a package (the "Buck2 fiction")
+cmdEmit :: [Text] -> IO ()
+cmdEmit args = do
+  projectRoot <- getCurrentDirectory
+  case args of
+    [] -> do
+      -- Emit all packages
+      files <- discover projectRoot
+      pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
+      forM_ (sortOn (.path) pkgs) $ \pkg -> do
+        TIO.putStrLn $ "# " <> T.pack pkg.path <> "/BUCK"
+        TIO.putStrLn $ Emit.emitBuck pkg
+        TIO.putStrLn ""
+    targets -> do
+      -- Emit specific package(s)
+      forM_ targets $ \target -> do
+        case parseTarget target of
+          Nothing -> do
+            -- Treat as package path
+            let dhallPath' = projectRoot </> T.unpack target </> "BUILD.dhall"
+            pkg <- Dhall.parsePackageFile projectRoot dhallPath'
+            TIO.putStrLn $ "# " <> target <> "/BUCK"
+            TIO.putStrLn $ Emit.emitBuck pkg
+          Just (pkgPath, _) -> do
+            let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
+            pkg <- Dhall.parsePackageFile projectRoot dhallPath'
+            TIO.putStrLn $ "# " <> pkgPath <> "/BUCK"
+            TIO.putStrLn $ Emit.emitBuck pkg
 
 cmdRun :: Options -> [Text] -> IO ()
 cmdRun opts args = do

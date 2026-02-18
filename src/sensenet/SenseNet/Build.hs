@@ -371,6 +371,7 @@ buildRuleWithDeps tc projectRoot pkgPath rule depOutputs = case rule of
   IR.RRustLibrary r -> buildRustLibrary tc projectRoot pkgPath r
   IR.RHaskellBinary r -> buildHaskellBinaryWithDeps tc projectRoot pkgPath r depOutputs
   IR.RHaskellLibrary r -> buildHaskellLibrary tc projectRoot pkgPath r
+  IR.RHaskellFFIBinary r -> buildHaskellFFIBinary tc projectRoot pkgPath r
   IR.RLeanBinary r -> buildLeanBinary tc projectRoot pkgPath r
   IR.RLeanLibrary r -> buildLeanLibrary tc projectRoot pkgPath r
   IR.RNvBinary r -> buildNvBinary tc projectRoot pkgPath r
@@ -485,6 +486,7 @@ buildRule tc projectRoot pkgPath = \case
   IR.RRustLibrary r -> buildRustLibrary tc projectRoot pkgPath r
   IR.RHaskellBinary r -> buildHaskellBinary tc projectRoot pkgPath r
   IR.RHaskellLibrary r -> buildHaskellLibrary tc projectRoot pkgPath r
+  IR.RHaskellFFIBinary r -> buildHaskellFFIBinary tc projectRoot pkgPath r
   IR.RLeanBinary r -> buildLeanBinary tc projectRoot pkgPath r
   IR.RLeanLibrary r -> buildLeanLibrary tc projectRoot pkgPath r
   IR.RNvBinary r -> buildNvBinary tc projectRoot pkgPath r
@@ -1107,6 +1109,79 @@ buildHaskellBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
     insert x (y : ys) = if x <= y then x : y : ys else y : insert x ys
     groupBy _ [] = []
     groupBy eq (x : xs) = let (ys, zs) = span (eq x) xs in (x : ys) : groupBy eq zs
+
+-- | Build a Haskell binary that links against C/Rust FFI libraries
+-- This is for binaries like sensenet itself that need dice_ffi, superconsole_ffi
+buildHaskellFFIBinary :: TC.Toolchains -> FilePath -> FilePath -> IR.HaskellFFIBinary -> IO (Either BuildError BuildResult)
+buildHaskellFFIBinary tc projectRoot pkgPath bin = do
+  let srcDir = projectRoot </> pkgPath
+      outDir = projectRoot </> "sensenet-out" </> pkgPath
+      outBin = outDir </> T.unpack bin.name
+
+  -- Toolchain
+  let ghc = T.unpack tc.haskell.ghc.path
+      pkgDb = tc.haskell.paths.includes
+      libPaths = map T.unpack tc.haskell.paths.libs
+
+  createDirectoryIfMissing True outDir
+
+  -- Source files
+  let hsSrcFiles = map (\s -> srcDir </> T.unpack s) bin.hsSrcs
+      pkgFlags = concatMap (\p -> ["-package", T.unpack p]) bin.packages
+      extFlags = map (\e -> "-X" <> T.unpack e) bin.languageExtensions
+      ghcOpts = map T.unpack bin.ghcOptions
+      pkgDbFlags = concatMap (\db -> ["-package-db", T.unpack db]) pkgDb
+
+      -- Standard lib paths from toolchain
+      libFlags = concatMap (\l -> ["-L" <> l]) libPaths
+
+      -- Extra lib dirs for FFI libs (e.g., dice_ffi, superconsole_ffi)
+      extraLibDirFlags = concatMap (\l -> ["-L" <> T.unpack l]) bin.extraLibDirs
+
+      -- Extra libs to link (e.g., -ldice_ffi -lsuperconsole_ffi)
+      extraLibFlags = concatMap (\l -> ["-l" <> T.unpack l]) bin.extraLibs
+
+      -- Extra linker flags
+      linkerFlags = map T.unpack bin.linkerFlags
+
+      -- Include dirs for C headers
+      includeFlags = concatMap (\i -> ["-I" <> T.unpack i]) bin.includeDirs
+
+      -- Search paths
+      searchFlags = ["-i" <> srcDir, "-i" <> outDir]
+
+      -- Threaded runtime for FFI
+      rtFlags = ["-threaded", "-rtsopts", "-with-rtsopts=-N"]
+
+      cmd =
+        [ghc]
+          ++ pkgDbFlags
+          ++ searchFlags
+          ++ extFlags
+          ++ pkgFlags
+          ++ ghcOpts
+          ++ rtFlags
+          ++ includeFlags
+          ++ hsSrcFiles
+          ++ ["-o", outBin]
+          ++ libFlags
+          ++ extraLibDirFlags
+          ++ extraLibFlags
+          ++ linkerFlags
+
+  -- Check first source exists
+  case hsSrcFiles of
+    [] -> pure $ Left $ SourceNotFound "no sources"
+    (mainSrc : _) -> do
+      exists <- doesFileExist mainSrc
+      if not exists
+        then pure $ Left $ SourceNotFound mainSrc
+        else do
+          TIO.putStrLn $ "  ghc (ffi): " <> T.pack (unwords cmd)
+          (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
+          case exitCode of
+            ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
+            ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Lean Build

@@ -1,228 +1,191 @@
 # SENSE // NET Implementation Plan
 
-## Current Phase: Internal Representation + Buck2 Fiction
+## Current State: Direct DICE Integration
 
-sensenet reads the filesystem, constructs a typed internal representation, then generates
-exactly what Buck2 needs to see. The generated artifacts are ephemeral — they exist only
-to extract DICE + TUI behavior from Buck2.
-
-### Principles
-
-1. **sensenet is the source of truth** — BUILD.dhall files define targets, sensenet.dhall
-   configures the project, the Dhall prelude defines rules and toolchains
-2. **Buck2 sees a fiction** — .buckconfig, BUCK, .bzl are generated into tmpdir, bind-mounted
-   over the project, and discarded after build
-3. **No Starlark in repo** — users never write or edit .bzl files; they exist only as
-   generated compilation targets
-4. **Dhall evaluation moves into Haskell** — replace shelling out to `dhall` CLI with the
-   dhall Haskell library for parsing and evaluation
-5. **CLI exposes internals** — debugging commands like `sensenet emit-buck`, `sensenet emit-bzl`,
-   `sensenet graph` let users inspect what sensenet constructs
-
-### Implementation Steps
-
-#### Step 1: Internal Representation (SenseNet.IR)
-
-Define Haskell types mirroring the Dhall schema. These are the typed internal representation
-that sensenet constructs from BUILD.dhall files.
-
-```haskell
--- SenseNet/IR.hs
-module SenseNet.IR where
-
--- Target triple (typed, not strings)
-data Arch = X86_64 | Aarch64 | Wasm32 | Riscv64
-data OS = Linux | Darwin | Wasi | None
-data ABI = Gnu | Musl | Eabi | Unknown
-data Triple = Triple { arch :: Arch, os :: OS, abi :: ABI }
-
--- Toolchain
-data CompilerKind = Clang Text | GCC Text | Rustc Text | GHC Text | Lean Text
-data Linker = LLD | Gold | BFD | Mold | System
-data Toolchain = Toolchain
-  { compiler :: CompilerKind
-  , host :: Triple
-  , target :: Triple
-  , flags :: [Flag]
-  , linker :: Maybe Linker
-  , sysroot :: Maybe Artifact
-  }
-
--- Dependency reference
-data Dep
-  = DepLocal Text           -- ":foo" or "//pkg:foo"
-  | DepFlake Text           -- "nixpkgs#openssl.dev"
-  | DepExternal Hash Text   -- content-addressed
-
--- Rules
-data CxxStd = Cxx11 | Cxx14 | Cxx17 | Cxx20 | Cxx23
-data Visibility = Public | Private | Package | Targets [Text]
-
-data Rule
-  = CxxBinary { name :: Text, srcs :: [FilePath], deps :: [Dep], std :: CxxStd, ... }
-  | CxxLibrary { ... }
-  | RustBinary { ... }
-  | RustLibrary { ... }
-  | HaskellBinary { ... }
-  | HaskellLibrary { ... }
-  | LeanBinary { ... }
-  | LeanLibrary { ... }
-  | PureScriptApp { ... }
-  | Genrule { ... }
-
--- A package is a directory with a BUILD.dhall
-data Package = Package
-  { path :: FilePath       -- relative path from project root
-  , rules :: [Rule]
-  }
-
--- The complete build graph
-data BuildGraph = BuildGraph
-  { packages :: [Package]
-  , toolchains :: [Toolchain]
-  }
-```
-
-#### Step 2: Dhall Parsing (SenseNet.Dhall)
-
-Use the dhall Haskell library to parse and evaluate BUILD.dhall files into the IR.
-
-```haskell
--- SenseNet/Dhall.hs
-module SenseNet.Dhall where
-
-import Dhall
-import SenseNet.IR
-
--- Parse a BUILD.dhall into a Package
-parsePackage :: FilePath -> IO Package
-
--- Parse sensenet.dhall into project config
-parseConfig :: FilePath -> IO ProjectConfig
-
--- Parse toolchains/BUILD.dhall into toolchain definitions
-parseToolchains :: FilePath -> IO [Toolchain]
-```
-
-#### Step 3: Starlark Emission (SenseNet.Emit)
-
-Generate Buck2 artifacts from the IR. This replaces shelling out to dhall and the
-to-starlark.dhall pattern.
-
-```haskell
--- SenseNet/Emit.hs
-module SenseNet.Emit where
-
-import SenseNet.IR
-
--- Emit a BUCK file for a package
-emitBuck :: Package -> Text
-
--- Emit a .bzl file for a toolchain
-emitToolchainBzl :: Toolchain -> Text
-
--- Emit .buckconfig
-emitBuckconfig :: ProjectConfig -> Text
-
--- Emit the complete Buck2 fiction to a directory
-emitAll :: BuildGraph -> FilePath -> IO ()
-```
-
-#### Step 4: nix-analyze Integration (SenseNet.Nix)
-
-Resolve `nixpkgs#foo.dev` references to concrete Nix store paths and compiler flags.
-This may absorb the standalone nix-analyze tool.
-
-```haskell
--- SenseNet/Nix.hs
-module SenseNet.Nix where
-
--- Resolve a flake reference to store path + flags
-data NixResolution = NixResolution
-  { storePath :: FilePath
-  , includeFlags :: [Text]
-  , linkFlags :: [Text]
-  , defines :: [(Text, Maybe Text)]
-  }
-
-resolveFlake :: Text -> IO NixResolution
-
--- Batch resolution (single nix invocation)
-resolveFlakes :: [Text] -> IO (Map Text NixResolution)
-```
-
-#### Step 5: CLI Commands (Main.hs)
-
-Expose the internals via CLI for debugging.
+sensenet now drives DICE directly via FFI, bypassing Buck2 entirely. The original
+"Buck2 fiction" approach (generating BUCK files, bind-mounting, running Buck2) has
+been superseded.
 
 ```
-sensenet build <target>       -- build via Buck2 (current behavior)
-sensenet graph                -- dump the build graph as JSON/Dhall
-sensenet emit-buck <package>  -- print generated BUCK for a package
-sensenet emit-bzl <toolchain> -- print generated .bzl for a toolchain
-sensenet emit-config          -- print generated .buckconfig
-sensenet resolve <flake-ref>  -- resolve a Nix flake reference
-sensenet targets              -- list all targets (current behavior)
-sensenet lint                 -- typecheck all BUILD.dhall files
+BUILD.dhall → Dhall parser → IR → DICE → execute
 ```
 
-#### Step 6: Namespace Execution (SenseNet.Namespace)
+No Starlark generation. No Buck2 subprocess. Just typed Dhall to typed Haskell to
+incremental builds.
 
-Current implementation is mostly correct. Refinements:
+## What's Working
 
-- Ensure target directories exist before bind mount (rm symlink, mkdir if needed)
-- Support --dry-run to show what would be mounted
-- Better error messages when Buck2 fails
+### Core Pipeline ✓
 
-### File Structure After Implementation
+- **Dhall parsing** — BUILD.dhall files parse into typed `IR.Package` via the
+  dhall Haskell library (`SenseNet.Dhall`)
+- **Internal representation** — Full typed build graph with all rule types
+  (`SenseNet.IR`)
+- **Toolchain loading** — `.sensenet/toolchains.dhall` provides compiler paths
+  (`SenseNet.Toolchains`)
+- **File discovery** — Walks project tree respecting .gitignore
+  (`SenseNet.Discover`)
+
+### Build Execution ✓
+
+- **Direct compilation** — Invokes clang++, rustc, ghc, lean, purs directly
+  (`SenseNet.Build`)
+- **Nix dependency resolution** — `DepFlake "nixpkgs#foo"` resolves to store
+  paths with correct -I/-L flags
+- **DICE integration** — Incremental builds via FFI to vendored DICE engine
+  (`SenseNet.DICE`, `SenseNet.DICE.FFI`)
+- **Superconsole TUI** — Buck2-style progress display via FFI
+  (`SenseNet.Console`, `SenseNet.Console.FFI`)
+
+### Remote Execution (Partial) ✓
+
+- **NativeLink client** — gRPC client for REAPI v2 (`NativeLink.*`)
+- **CAS operations** — Upload/download to content-addressable storage
+- **Remote builds** — Working for CxxBinary and Genrule
+
+### Supported Languages ✓
+
+| Language   | Local Build | Remote Build |
+|------------|-------------|--------------|
+| C/C++      | ✓           | ✓            |
+| Rust       | ✓           | —            |
+| Haskell    | ✓           | —            |
+| Lean 4     | ✓           | —            |
+| CUDA       | ✓           | —            |
+| PureScript | ✓           | —            |
+| Genrule    | ✓           | ✓            |
+
+## Remaining Work
+
+### P0: Critical Path to v1.0
+
+1. **Self-hosting** 🎯
+   - sensenet should build sensenet — this is the unlock
+   - Every improvement compounds once we're self-hosting
+   - Need BUILD.dhall for:
+     - Haskell modules (SenseNet.*, NativeLink.*, Proto.*)
+     - Rust FFI crates (dice_ffi, superconsole_ffi)
+   - Bootstrap via nix/cabal, then self-host
+   - Milestone: `sensenet build //src/sensenet:sensenet` produces working binary
+
+2. **Startup performance** ⚡ (good enough for now)
+   - `sensenet query` was ~1.6s, now ~0.9s (44% faster)
+   - Fixes applied:
+     - [x] `-threaded -rtsopts "-with-rtsopts=-N"` for parallel runtime
+     - [x] `mapConcurrently` for parallel Dhall parsing
+   - Future (when we need <200ms):
+     - [ ] Cache normalized Dhall (hash inputs → cached IR)
+     - [ ] Dhall semantic cache (`dhall freeze` prelude)
+     - [ ] Target manifest for instant queries
+
+3. **Remote execution for all languages**
+   - Extend `SenseNet.Remote` to support Rust, Haskell, Lean, PureScript
+   - Main challenge: capturing correct environment/toolchain for remote workers
+
+4. **Action caching**
+   - Local action cache (content-addressed by inputs)
+   - Remote action cache via NativeLink
+   - Currently DICE handles in-session caching; need persistent cache
+
+5. **Parallel builds**
+   - DICE supports parallelism; need to wire it through to Build.hs
+   - Currently builds are sequential within a target
+
+### P1: Quality of Life
+
+6. **Better error messages**
+   - Dhall parse errors should point to BUILD.dhall location
+   - Build failures should show command + output clearly
+   - Nix resolution failures need clearer diagnostics
+
+7. **Query improvements**
+   - `sensenet query deps(//foo:bar)` — show dependencies
+   - `sensenet query rdeps(//..., //lib:core)` — reverse dependencies
+   - Currently just lists all targets
+
+8. **Watch mode**
+   - `sensenet build --watch //foo:bar`
+   - Re-run build on source file changes
+   - Leverage DICE invalidation
+
+### P2: Ecosystem
+
+9. **Package manager integration**
+   - `cratesIo` rule for Rust crates (exists but incomplete)
+   - `hackage` rule for Haskell packages
+   - Better `nixpkgs#` resolution caching
+
+10. **IDE integration**
+    - LSP-style diagnostics
+    - compile_commands.json generation for C++
+
+### P3: Advanced
+
+11. **Distributed builds**
+    - Multiple NativeLink workers
+    - Geographic distribution
+    - Build farm integration
+
+12. **Artifact deduplication**
+    - Share artifacts across projects
+    - Remote cache population from CI
+
+## File Structure
 
 ```
 src/sensenet/
-├── Main.hs                 -- CLI entrypoint
+├── Main.hs                    # CLI entrypoint
 ├── SenseNet/
-│   ├── Config.hs           -- Project configuration (exists)
-│   ├── Discover.hs         -- File discovery (exists)
-│   ├── IR.hs               -- Internal representation (new)
-│   ├── Dhall.hs            -- Dhall parsing (new)
-│   ├── Emit.hs             -- Starlark emission (new)
-│   ├── Emit/
-│   │   ├── Buck.hs         -- BUCK file emission
-│   │   ├── Bzl.hs          -- .bzl file emission
-│   │   └── Buckconfig.hs   -- .buckconfig emission
-│   ├── Nix.hs              -- Nix resolution (new)
-│   ├── Namespace.hs        -- Linux namespace (exists)
-│   ├── Generate.hs         -- Orchestration (refactor)
-│   └── Target.hs           -- Legacy, merge into IR.hs
+│   ├── IR.hs                  # Internal representation ✓
+│   ├── Dhall.hs               # Dhall parsing ✓
+│   ├── Build.hs               # Build execution ✓
+│   ├── DICE.hs                # DICE interface ✓
+│   ├── DICE/
+│   │   └── FFI.hs             # DICE FFI bindings ✓
+│   ├── Console.hs             # Superconsole interface ✓
+│   ├── Console/
+│   │   └── FFI.hs             # Superconsole FFI ✓
+│   ├── Remote.hs              # NativeLink client ✓
+│   ├── Toolchains.hs          # Toolchain config ✓
+│   ├── Discover.hs            # File discovery ✓
+│   ├── Emit.hs                # BUCK generation (legacy)
+│   ├── Cache.hs               # Action cache (TODO)
+│   └── Query.hs               # Query interface (TODO)
+├── NativeLink/
+│   ├── Client.hs              # CAS client ✓
+│   ├── Execution.hs           # Remote execution ✓
+│   └── Proto.hs               # Proto-lens types ✓
 ```
 
-### Dependencies to Add
+## Deleted / Superseded
 
-```cabal
-build-depends:
-  , dhall         >= 1.42    -- Dhall parsing
-  , aeson         >= 2.0     -- JSON for graph output
-  , prettyprinter >= 1.7     -- Starlark pretty printing
-```
+The following were part of the "Buck2 fiction" approach and are no longer needed:
 
-### Testing Strategy
+- `SenseNet.Namespace` — Linux namespace setup for bind mounts (never implemented)
+- `SenseNet.Generate` — Orchestrating BUCK generation (absorbed into Build.hs)
+- Most of `SenseNet.Emit` — Still exists but unused in primary flow
 
-1. **Keep existing .bzl files as reference** — the current toolchains/ directory works;
-   compare generated output against it until identical
-2. **Golden tests** — emit BUCK for each src/examples/\*/BUILD.dhall, compare to expected
-3. **Round-trip test** — parse BUILD.dhall -> IR -> emit BUCK -> Buck2 parse succeeds
-4. **Integration test** — `sensenet build //src/examples/cxx:hello` produces working binary
+## Testing Strategy
 
-### Definition of Done
+1. **Unit tests** — IR construction, Dhall parsing, flag generation
+2. **Integration tests** — Build each `src/examples/*/` project
+3. **Golden tests** — Compare build output against expected
+4. **Round-trip tests** — Parse → IR → (optionally emit) → build succeeds
 
-- [ ] `sensenet emit-buck //src/examples/cxx` outputs valid BUCK matching current behavior
-- [ ] `sensenet emit-bzl cxx` outputs valid .bzl matching toolchains/cxx.bzl
-- [ ] `sensenet build //src/examples/cxx:hello` works end-to-end
-- [ ] All .bzl and BUCK files deleted from repo (generated at runtime)
-- [ ] No shelling out to `dhall` CLI (all evaluation in Haskell)
+## Open Questions
 
-### Open Questions
+1. **Should SenseNet.Emit be removed?**
+   - Pro: Dead code, confusing
+   - Con: Might want Buck2 compatibility mode later
 
-1. **SCM integration** — should sensenet consult git for file lists? Pros: hermetic, no
-   accidental untracked files. Cons: slower, complexity.
-2. **nix-analyze fate** — fold entirely into sensenet, or keep as separate tool?
-3. **Caching Dhall evaluation** — cache normalized Dhall to avoid re-evaluation?
+2. **Nix evaluation caching?**
+   - Currently shells out to `nix build` each time
+   - Could cache flake resolution in a sqlite db
+
+3. **Dhall evaluation caching?**
+   - Dhall is pure and normalizable
+   - Could cache normalized output keyed by file hash
+
+4. **Worker protocol?**
+   - NativeLink is one option
+   - Could also do simple SSH + rsync for small teams

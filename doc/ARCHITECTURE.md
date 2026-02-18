@@ -4,396 +4,413 @@ A build system for the age of acceleration.
 
 ## Overview
 
-SENSENET is a next-generation build system that combines:
+SENSENET is a build system that combines:
 
 - **Dhall** for typed, total configuration
-- **DICE** for incremental computation
+- **DICE** for incremental computation (extracted from Buck2)
 - **Nix** for hermetic toolchains
 - **NativeLink** for remote execution
 
 No Starlark. No BXL. No runtime type errors. Just types, all the way down.
 
+The key insight: Buck2's value is DICE, not Starlark. SENSENET extracts DICE via FFI
+and drives it directly from Haskell, bypassing Buck2 entirely.
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        SENSE // NET                                  │
-├─────────────────────────────────────────────────────────────────────┤
+│                          USER SPACE                                  │
 │                                                                      │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                    HASKELL FRONTEND                          │   │
-│  │                                                              │   │
-│  │  BUILD.dhall ──▶ Dhall eval ──▶ Target Graph ──▶ Scheduler   │   │
-│  │                                                              │   │
-│  │  • Dhall parsing & typechecking (dhall library)              │   │
-│  │  • Target graph construction                                 │   │
-│  │  • Dependency resolution                                     │   │
-│  │  • Nix toolchain integration                                 │   │
-│  │  • CLI & query interface                                     │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                              │                                       │
-│                              │ FFI (C ABI)                          │
-│                              ▼                                       │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                      RUST BACKEND                            │   │
-│  │                                                              │   │
-│  │  • DICE - incremental computation engine                     │   │
-│  │  • Superconsole - terminal UI                                │   │
-│  │  • RE client - NativeLink protocol                           │   │
-│  │  • CAS - content-addressed storage (BLAKE3)                  │   │
-│  │  • Action cache - local & remote                             │   │
-│  │  • Materializer - deferred artifact materialization          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
+│  BUILD.dhall          sensenet CLI         .sensenet/toolchains.dhall│
+│  (target defs)        (build/run/query)    (compiler paths)         │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      HASKELL FRONTEND                                │
+│                                                                      │
+│  ┌────────────┐    ┌────────────┐    ┌─────────────────────────┐   │
+│  │SenseNet.   │───▶│ SenseNet.  │───▶│     SenseNet.Build      │   │
+│  │Dhall       │    │ IR         │    │  (rule-specific builders)│   │
+│  │(parse)     │    │(typed graph)│    │                         │   │
+│  └────────────┘    └────────────┘    └────────────┬────────────┘   │
+│                                                   │                 │
+│                                      ┌────────────┴────────────┐   │
+│                                      ▼                         ▼   │
+│                           ┌──────────────────┐    ┌──────────────┐ │
+│                           │  SenseNet.DICE   │    │SenseNet.     │ │
+│                           │  (incremental)   │    │Remote        │ │
+│                           └────────┬─────────┘    │(NativeLink)  │ │
+│                                    │              └──────┬───────┘ │
+│  ┌─────────────────┐               │                     │         │
+│  │ SenseNet.Console│◀──────────────┤                     │         │
+│  │ (superconsole)  │               │                     │         │
+│  └────────┬────────┘               │                     │         │
+└───────────┼────────────────────────┼─────────────────────┼─────────┘
+            │ FFI                    │ FFI                 │ gRPC
+            ▼                        ▼                     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        RUST / NATIVE                                 │
+│                                                                      │
+│  ┌───────────────────┐    ┌───────────────────┐                     │
+│  │  superconsole_ffi │    │     dice_ffi      │                     │
+│  │  (terminal TUI)   │    │  (DICE engine)    │                     │
+│  └───────────────────┘    └───────────────────┘                     │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
+            │                        │
+            ▼                        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                          NIX TOOLCHAINS                              │
+│                                                                      │
+│  clang++ (LLVM 22) │ rustc │ ghc 9.12 │ lean │ purs │ esbuild       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Data Flow
+
+```
+BUILD.dhall → Dhall.parsePackageFile → IR.Package → Build.buildTarget
+                                                          │
+                                    ┌─────────────────────┴──────────────────┐
+                                    ▼                                        ▼
+                              [local build]                           [remote build]
+                                    │                                        │
+                            DICE.registerTarget                    Remote.buildRemote
+                            DICE.compute                                     │
+                                    │                              ┌─────────┴─────────┐
+                                    ▼                              ▼                   ▼
+                           toolchain invocation              upload to CAS      execute via RE
+                           (clang++, rustc, ghc...)                │                   │
+                                    │                              └─────────┬─────────┘
+                                    ▼                                        ▼
+                              sensenet-out/                          download outputs
 ```
 
 ## Components
 
-### Haskell Frontend
+### SenseNet.IR — Internal Representation
 
-The frontend handles everything before execution:
+The typed build graph. All BUILD.dhall files parse into these types.
 
 ```haskell
--- Target definition (derived from Dhall types)
-data Target = Target
-  { name       :: Text
-  , srcs       :: [FilePath]
-  , deps       :: [Dep]
-  , toolchain  :: Toolchain
-  , rule       :: Rule
-  }
-
 -- Dependency reference
 data Dep
-  = Local Text              -- ":foo" or "//pkg:foo"
-  | Flake Text              -- "nixpkgs#openssl"
-  | External Hash Text      -- content-addressed
+  = DepLocal Text      -- ":foo" or "//pkg:foo"
+  | DepFlake Text      -- "nixpkgs#openssl.dev"
 
--- Rule defines how to build
+-- Rules (one per supported target type)
 data Rule
-  = CxxBinary CxxConfig
-  | CxxLibrary CxxConfig
-  | RustBinary RustConfig
-  | RustLibrary RustConfig
-  | HaskellBinary HaskellConfig
-  | HaskellLibrary HaskellConfig
-  | LeanBinary LeanConfig
-  | PureScriptApp PureScriptConfig
-  | Genrule GenruleConfig
+  = RuleCxxBinary CxxBinary
+  | RuleCxxLibrary CxxLibrary
+  | RuleRustBinary RustBinary
+  | RuleRustLibrary RustLibrary
+  | RuleHaskellBinary HaskellBinary
+  | RuleHaskellLibrary HaskellLibrary
+  | RuleHaskellFFIBinary HaskellFFIBinary
+  | RuleLeanBinary LeanBinary
+  | RuleLeanLibrary LeanLibrary
+  | RuleNvBinary NvBinary
+  | RuleNvLibrary NvLibrary
+  | RulePureScriptApp PureScriptApp
+  | RulePureScriptBinary PureScriptBinary
+  | RulePureScriptLibrary PureScriptLibrary
+  | RuleGenrule Genrule
+  | RuleNixCxxBinary NixCxxBinary
+  | RuleCratesIo CratesIo
+  | RuleHttpArchive HttpArchive
+
+-- A package is a directory with a BUILD.dhall
+data Package = Package
+  { path  :: FilePath
+  , rules :: [Rule]
+  }
 ```
 
-The frontend:
+### SenseNet.Dhall — Dhall Parser
 
-1. Finds all `BUILD.dhall` files
-2. Evaluates them to typed Haskell values
-3. Constructs the target graph
-4. Resolves Nix flake references to store paths
-5. Schedules actions for execution
-6. Calls into Rust backend via FFI
-
-### Rust Backend
-
-The backend handles execution and caching:
-
-```rust
-// Core DICE computation
-pub trait DiceCompute {
-    fn compute(&self, key: &ActionKey) -> Result<ActionResult>;
-    fn invalidate(&self, keys: &[ActionKey]);
-}
-
-// Action execution
-pub struct Action {
-    pub inputs: Vec<Artifact>,
-    pub outputs: Vec<OutputPath>,
-    pub command: Command,
-    pub env: HashMap<String, String>,
-}
-
-// Remote execution
-pub trait RemoteExecutor {
-    fn execute(&self, action: &Action) -> Result<ActionResult>;
-    fn cache_lookup(&self, digest: &Digest) -> Option<ActionResult>;
-    fn cache_store(&self, digest: &Digest, result: &ActionResult);
-}
-```
-
-Extracted/adapted from Buck2:
-
-- `dice/` - incremental computation
-- `execute/` - action execution
-- `re_client/` - remote execution protocol
-- `cas/` - content-addressed storage
-- `materializer/` - deferred materialization
-
-Added as dependency:
-
-- `superconsole` - terminal UI (separate crate)
-
-### FFI Boundary
-
-C ABI interface between Haskell and Rust:
-
-```c
-// dice_c.h
-
-typedef struct SenseContext* sense_ctx_t;
-typedef struct ActionDigest { uint8_t bytes[32]; } action_digest_t;
-
-// Lifecycle
-sense_ctx_t sense_init(const char* config_json);
-void sense_shutdown(sense_ctx_t ctx);
-
-// DICE operations
-int32_t sense_compute(
-    sense_ctx_t ctx,
-    const char* action_json,
-    size_t action_len,
-    char** result_json,
-    size_t* result_len
-);
-void sense_invalidate(sense_ctx_t ctx, const action_digest_t* keys, size_t count);
-
-// Console
-void sense_console_start(sense_ctx_t ctx);
-void sense_console_render(sense_ctx_t ctx, const char* state_json, size_t len);
-void sense_console_finish(sense_ctx_t ctx);
-
-// Cache
-int32_t sense_cache_lookup(sense_ctx_t ctx, action_digest_t digest, char** result, size_t* len);
-void sense_cache_store(sense_ctx_t ctx, action_digest_t digest, const char* result, size_t len);
-
-// Free allocated memory
-void sense_free_string(char* ptr);
-```
-
-### Build Configuration
-
-All configuration in Dhall:
-
-```dhall
--- BUILD.dhall
-let S = ../sensenet/package.dhall
-
-let hello = S.cxxBinary {
-  name = "hello",
-  srcs = ["main.cpp"],
-  deps = [S.flake "nixpkgs#fmt"],
-  std = S.Cxx23,
-  flags = ["-O2", "-Wall"]
-}
-
-in { targets = [hello] }
-```
-
-Types enforce correctness:
-
-```dhall
--- sensenet/Cxx.dhall
-let CxxStd = < Cxx11 | Cxx14 | Cxx17 | Cxx20 | Cxx23 >
-
-let CxxBinary = {
-  name : Text,
-  srcs : List Text,
-  deps : List Dep,
-  std : CxxStd,
-  flags : List Text
-}
-```
-
-### Toolchain Resolution
-
-Nix provides hermetic toolchains:
+Parses BUILD.dhall files into the IR using the `dhall` Haskell library.
 
 ```haskell
--- Resolve flake reference to Nix store path
-resolveFlake :: Text -> IO StorePath
-resolveFlake ref = do
-  -- nix build --no-link --print-out-paths nixpkgs#fmt
-  path <- readProcess "nix" ["build", "--no-link", "--print-out-paths", ref]
-  pure (StorePath path)
-
--- Extract compiler flags from Nix derivation
-getCompilerFlags :: StorePath -> IO CompilerFlags
-getCompilerFlags path = do
-  -- Query pkg-config or nix-support
-  includes <- glob (path </> "include")
-  libs <- glob (path </> "lib")
-  pure CompilerFlags { includeFlags = ["-I" <> i | i <- includes], ... }
+parsePackageFile :: FilePath -> FilePath -> IO Package
+-- Takes project root and BUILD.dhall path, returns typed Package
 ```
 
-## Bootstrap
+Key detail: defines intermediate `DhallRule`, `DhallCxxBinary`, etc. types with
+`FromDhall` instances, then converts to IR types. This isolates Dhall's type
+system from the rest of the codebase.
 
-Single cabal build to bootstrap:
+### SenseNet.Build — Build Execution
 
-```bash
-# Bootstrap SENSENET
-nix develop
-cabal build sensenet
+Orchestrates builds. Three modes:
 
-# Now self-hosting
-./sensenet build //...
+1. **`build`** — Simple sequential builds (legacy)
+2. **`buildWithDeps`** — DICE-based incremental builds
+3. **`buildWithConsole`** — DICE + superconsole TUI (default)
+
+Implements a builder for each rule type:
+
+```haskell
+buildCxxBinary      :: Toolchains -> CxxBinary -> IO BuildResult
+buildRustBinary     :: Toolchains -> RustBinary -> IO BuildResult
+buildHaskellBinary  :: Toolchains -> HaskellBinary -> IO BuildResult
+buildLeanBinary     :: Toolchains -> LeanBinary -> IO BuildResult
+buildNvBinary       :: Toolchains -> NvBinary -> IO BuildResult
+buildPureScriptApp  :: Toolchains -> PureScriptApp -> IO BuildResult
+buildGenrule        :: Toolchains -> Genrule -> IO BuildResult
 ```
 
-The bootstrap builds:
+Each builder:
+1. Resolves Nix dependencies (`DepFlake` → store paths)
+2. Constructs compiler flags (includes, libs, defines)
+3. Invokes the toolchain (clang++, rustc, ghc, etc.)
+4. Writes output to `sensenet-out/`
 
-1. Haskell frontend (dhall + FFI bindings)
-2. Rust backend (DICE + superconsole + RE)
-3. Links them together
+### SenseNet.DICE — Incremental Computation
 
-After bootstrap, SENSENET builds itself.
+Haskell interface to Buck2's DICE engine via FFI.
 
-## Queries
+```haskell
+-- The DICE monad
+newtype DICE a = DICE (ReaderT DICEEnv IO a)
 
-Queries are just Dhall evaluation + jq:
-
-```bash
-# List all targets
-sense query 'targets(//...)'
-
-# Dependencies of a target
-sense query 'deps(//src:hello)'
-
-# Reverse dependencies
-sense query 'rdeps(//..., //lib:core)'
-
-# Filtered by rule type
-sense query 'kind(cxx_binary, //...)'
+-- Core operations
+inject   :: Text -> Text -> Word64 -> DICE ()  -- Register source file
+compute  :: Text -> DICE ByteString             -- Request computation
+registerTarget :: Text -> [Text] -> (Text -> IO ByteString) -> DICE ()
 ```
 
-Internally:
+DICE provides:
+- Automatic invalidation when inputs change
+- Cached computation results
+- Dependency tracking
 
-```bash
-dhall-to-json <<< './BUILD.dhall' | jq '.targets[] | select(.rule == "cxx_binary")'
+### SenseNet.DICE.FFI — Low-level FFI
+
+C ABI bindings to the Rust DICE library:
+
+```haskell
+foreign import ccall "dice_runtime_new"     dice_runtime_new     :: IO (Ptr DICERuntime)
+foreign import ccall "dice_engine_new"      dice_engine_new      :: Ptr DICERuntime -> IO (Ptr DICEEngine)
+foreign import ccall "dice_updater_new"     dice_updater_new     :: Ptr DICEEngine -> IO (Ptr DICEUpdater)
+foreign import ccall "dice_updater_inject"  dice_updater_inject  :: ...
+foreign import ccall "dice_updater_commit"  dice_updater_commit  :: ...
+foreign import ccall "dice_compute"         dice_compute         :: ...
+foreign import ccall "dice_sha256"          dice_sha256          :: ...
 ```
 
-No BXL needed. The target graph is typed data, queryable with standard tools.
+### SenseNet.Console — Terminal UI
 
-## Remote Execution
+Buck2-style build progress display via superconsole FFI.
 
-NativeLink protocol for remote execution:
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  SENSENET   │────▶│  NativeLink │────▶│   Workers   │
-│   client    │     │   server    │     │             │
-└─────────────┘     └─────────────┘     └─────────────┘
-       │                   │
-       │                   ▼
-       │            ┌─────────────┐
-       └───────────▶│     CAS     │
-                    │   (S3/GCS)  │
-                    └─────────────┘
+```haskell
+withBuildConsole :: (Console -> IO a) -> IO a
+updateProgress   :: Console -> Int -> Int -> IO ()  -- completed / total
+addAction        :: Console -> Text -> IO ActionHandle
+completeAction   :: ActionHandle -> IO ()
 ```
 
-Configuration:
+Shows:
+- Progress bar
+- Currently running actions with elapsed time
+- Completed action log
 
-```dhall
--- .sensenet/config.dhall
-let Config = {
-  remote_execution = Some {
-    endpoint = "grpc://nativelink.example.com:8980",
-    cas_endpoint = "grpc://cas.example.com:8980",
-    instance_name = "main"
-  },
-  cache = {
-    local = { path = ".sensenet/cache", max_size_gb = 10 },
-    remote = Some { endpoint = "grpc://cache.example.com:8980" }
+### SenseNet.Remote — Remote Execution
+
+NativeLink client for remote builds (REAPI v2).
+
+```haskell
+buildRemote :: RemoteConfig -> Rule -> IO BuildResult
+```
+
+Flow:
+1. Upload source files to CAS (Content Addressable Storage)
+2. Create action proto with command + inputs
+3. Submit to execution service
+4. Poll for completion
+5. Download outputs from CAS
+
+Currently supports: CxxBinary, Genrule. Other rules return "not yet supported".
+
+### SenseNet.Toolchains — Toolchain Configuration
+
+Parses `.sensenet/toolchains.dhall` for compiler paths.
+
+```haskell
+data Toolchains = Toolchains
+  { cxx       :: Maybe CxxToolchain
+  , rust      :: Maybe RustToolchain
+  , haskell   :: Maybe HaskellToolchain
+  , lean      :: Maybe LeanToolchain
+  , nv        :: Maybe NvToolchain
+  , purescript :: Maybe PureScriptToolchain
   }
-}
-in Config
+
+data CxxToolchain = CxxToolchain
+  { cc      :: FilePath
+  , cxx     :: FilePath
+  , ar      :: FilePath
+  , ld      :: FilePath
+  , sysroot :: Maybe FilePath
+  }
 ```
+
+All paths are Nix store paths, ensuring hermetic builds.
+
+### SenseNet.Emit — Buck2 Generation (Legacy)
+
+Generates BUCK files from IR. Used for the "Buck2 fiction" mode (namespace mounts).
+Still present but no longer the primary execution path.
+
+### SenseNet.Discover — File Discovery
+
+Walks the project tree finding BUILD.dhall files.
+
+```haskell
+discover :: FilePath -> IO [DhallFile]
+```
+
+Respects `.gitignore` and `.sensenetignore`. Skips `buck-out`, `node_modules`,
+`sensenet-out`, etc.
+
+## Supported Languages
+
+| Language   | Rules                                          | Toolchain          |
+|------------|------------------------------------------------|--------------------|
+| C/C++      | `cxxBinary`, `cxxLibrary`, `nixCxxBinary`      | LLVM 22 (clang++)  |
+| Rust       | `rustBinary`, `rustLibrary`, `cratesIo`        | rustc              |
+| Haskell    | `haskellBinary`, `haskellLibrary`, `haskellFFIBinary` | GHC 9.12    |
+| Lean 4     | `leanBinary`, `leanLibrary`                    | lean/leanc         |
+| CUDA       | `nvBinary`, `nvLibrary`                        | clang + ptxas      |
+| PureScript | `purescriptApp`, `purescriptBinary`, `purescriptLibrary` | purs + esbuild |
+| Generic    | `genrule`                                      | sh                 |
 
 ## Directory Structure
 
 ```
 sensenet/
-├── app/
-│   └── Main.hs                 # CLI entrypoint
-├── cbits/
-│   ├── sense_c.h               # C ABI header
-│   └── sense_c.cpp             # Rust FFI shim
-├── crates/
-│   ├── sense-dice/             # DICE (from Buck2)
-│   ├── sense-execute/          # Action execution
-│   ├── sense-re/               # Remote execution client
-│   ├── sense-cas/              # Content-addressed storage
-│   └── sense-ffi/              # C ABI exports
-├── dhall/
-│   ├── package.dhall           # Prelude
-│   ├── Cxx.dhall               # C++ types
-│   ├── Rust.dhall              # Rust types
-│   ├── Haskell.dhall           # Haskell types
-│   └── ...
 ├── src/
-│   └── Sensenet/
-│       ├── Target.hs           # Target types
-│       ├── Graph.hs            # Target graph
-│       ├── Resolve.hs          # Nix resolution
-│       ├── Schedule.hs         # Action scheduling
-│       ├── Dice/
-│       │   └── FFI.hs          # Rust FFI bindings
-│       ├── Console/
-│       │   └── FFI.hs          # Superconsole FFI
-│       └── Query.hs            # Query interface
+│   ├── sensenet/                  # Main Haskell package
+│   │   ├── Main.hs                # CLI entry point
+│   │   ├── SenseNet/
+│   │   │   ├── IR.hs              # Internal representation
+│   │   │   ├── Dhall.hs           # BUILD.dhall parser
+│   │   │   ├── Build.hs           # Build execution
+│   │   │   ├── DICE.hs            # DICE interface
+│   │   │   ├── DICE/
+│   │   │   │   └── FFI.hs         # DICE FFI bindings
+│   │   │   ├── Console.hs         # Superconsole interface
+│   │   │   ├── Console/
+│   │   │   │   └── FFI.hs         # Superconsole FFI
+│   │   │   ├── Remote.hs          # NativeLink client
+│   │   │   ├── Toolchains.hs      # Toolchain config
+│   │   │   ├── Discover.hs        # BUILD.dhall discovery
+│   │   │   └── Emit.hs            # BUCK generation (legacy)
+│   │   └── NativeLink/            # REAPI client
+│   │       ├── Client.hs          # CAS operations
+│   │       ├── Execution.hs       # Remote execution
+│   │       └── Proto.hs           # Proto-lens types
+│   ├── vendor/
+│   │   ├── dice/                  # Vendored from Buck2
+│   │   │   ├── dice/              # Core DICE engine
+│   │   │   ├── dice_ffi/          # C ABI wrapper
+│   │   │   ├── allocative/        # Memory tracking
+│   │   │   └── gazebo/            # Utilities
+│   │   └── superconsole/          # Terminal UI library
+│   └── examples/                  # Example projects
+├── dhall/
+│   └── prelude/                   # Dhall type definitions
+│       ├── package.dhall          # Main export
+│       ├── Types.dhall            # Dep, CxxStd, Vis
+│       ├── Cxx.dhall              # C++ rules
+│       ├── Rust.dhall             # Rust rules
+│       ├── Haskell.dhall          # Haskell rules
+│       └── Rule.dhall             # Union type
+├── toolchains/                    # Starlark (legacy/Buck2 mode)
+├── nix/
+│   ├── modules/flake/             # Flake modules
+│   └── packages/                  # Nix derivations
+├── doc/
+│   ├── ARCHITECTURE.md            # This file
+│   └── PLAN.md                    # Implementation plan
 ├── sensenet.cabal
-├── Cargo.toml                  # Rust workspace
-├── flake.nix
-└── BUILD.dhall                 # Self-hosting
+└── flake.nix
 ```
 
-## Comparison
+## CLI
 
-| Feature          | Buck2          | SENSENET     |
-| ---------------- | -------------- | ------------ |
-| Config language  | Starlark       | Dhall        |
-| Type checking    | Runtime        | Compile time |
-| Rule definitions | .bzl files     | Dhall types  |
-| Queries          | BXL            | dhall + jq   |
-| Toolchains       | Starlark       | Nix          |
-| Bootstrap        | Buck2 or Cargo | Cabal (once) |
-| Incremental      | DICE           | DICE         |
-| Remote exec      | RE API         | NativeLink   |
+```
+sensenet build [target]      Build target(s)
+sensenet run <target>        Build and run a binary
+sensenet clean               Remove sensenet-out/
+sensenet targets             List all targets
+sensenet query               Alias for targets
+sensenet graph               Dump build graph as JSON
+sensenet --version           Show version info
+```
+
+Options:
+```
+--remote              Enable remote execution
+--remote-host <host>  NativeLink host (default: localhost)
+--remote-port <port>  NativeLink port (default: 50051)
+--tui / --no-tui      Enable/disable superconsole (default: enabled)
+--deps / --no-deps    Enable/disable DICE dependency tracking (default: enabled)
+```
+
+## Comparison with Buck2
+
+| Feature          | Buck2          | SENSENET       |
+|------------------|----------------|----------------|
+| Config language  | Starlark       | Dhall          |
+| Type checking    | Runtime        | Compile time   |
+| Rule definitions | .bzl files     | Dhall types    |
+| Queries          | BXL            | dhall + jq     |
+| Toolchains       | Starlark       | Nix            |
+| Incremental      | DICE           | DICE (same!)   |
+| Remote exec      | RE API         | NativeLink     |
+| Bootstrap        | Buck2 or Cargo | Cabal + Nix    |
 
 ## Milestones
 
-### M1: Bootstrap
+### M1: Bootstrap ✓
 
-- [ ] Haskell CLI scaffold
-- [ ] Rust workspace with DICE extraction
-- [ ] FFI bridge (hello world)
-- [ ] Superconsole integration
-- [ ] `sense --version` works
+- [x] Haskell CLI scaffold
+- [x] Rust workspace with DICE extraction
+- [x] FFI bridge working
+- [x] Superconsole integration
+- [x] `sensenet --version` works
 
-### M2: Local Execution
+### M2: Local Execution ✓
 
-- [ ] Dhall target loading
-- [ ] Nix toolchain resolution
-- [ ] Action graph construction
-- [ ] Local action execution
-- [ ] `sense build //examples:hello` works
+- [x] Dhall target loading
+- [x] Nix toolchain resolution
+- [x] Action graph construction
+- [x] Local action execution
+- [x] `sensenet build //examples/cxx:hello` works
 
-### M3: Caching
+### M3: Incremental Builds ✓
 
-- [ ] Content-addressed storage
-- [ ] Local action cache
-- [ ] Deferred materialization
-- [ ] `sense build` is incremental
+- [x] DICE integration via FFI
+- [x] Dependency tracking
+- [x] Incremental rebuilds
+- [x] `sensenet build` is incremental
 
-### M4: Remote Execution
+### M4: Remote Execution (Partial)
 
-- [ ] NativeLink client
-- [ ] Remote cache
-- [ ] Remote execution
-- [ ] `sense build --remote` works
+- [x] NativeLink client
+- [x] CAS upload/download
+- [x] Remote execution for C++
+- [ ] Remote execution for all rule types
+- [x] `sensenet build --remote` works (C++ only)
 
-### M5: Self-Hosting
+### M5: Polish (In Progress)
 
-- [ ] SENSENET builds itself
-- [ ] All toolchains migrated
+- [ ] Full remote execution support
+- [ ] Self-hosting SENSENET build
 - [ ] Documentation complete
-- [ ] v0.1.0 release
+- [ ] v1.0.0 release
 
 ## License
 
