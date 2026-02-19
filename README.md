@@ -56,15 +56,35 @@ Or in your own flake:
 
 ## BUILD.dhall
 
+#### Zero Starlark
+
+Users write typed Dhall configs; BUCK files are generated automatically:
+
 ```dhall
 let A = ../../dhall/prelude/package.dhall
+let S = ../../dhall/prelude/to-starlark.dhall
 
 let server =
       (A.cxxBinary "server" ["main.cpp", "server.cpp"])
         with deps = [A.local ":utils", A.flake "nixpkgs#openssl.dev"]
         with std = A.CxxStd.Cxx23
 
-in { targets = [ A.rule.cxxBinary server ] }
+in  { rules = [ S.cxxBinary server { compiler = [], linker = [] } ]
+    , header = ''load("@toolchains//:cxx.bzl", "cxx_binary")''
+    }
+```
+
+**Two modes:**
+
+1. **Simple mode** (default): BUCK files generated on shell entry, gitignored
+2. **Overlay mode**: BUCK files exist only in memory via Linux namespaces
+
+```bash
+# Overlay mode - BUCK files never touch disk
+sense-overlay buck2 build //...
+
+# Or use sense CLI which regenerates BUCK before each build
+sense build //...
 ```
 
 Supported rules:

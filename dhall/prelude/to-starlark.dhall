@@ -12,7 +12,9 @@ let G = ./Genrule.dhall
 let RC = ./RustCrate.dhall
 let NC = ./NixCxx.dhall
 
-let q = \(t : Text) -> "\"${t}\""
+-- Use Text/show to properly escape strings for Starlark literals
+-- Text/show handles backslashes, quotes, and control characters
+let q = \(t : Text) -> Text/show t
 
 let list = \(xs : List Text) ->
     "[" ++ P.Text.concatSep ", " (P.List.map Text Text q xs) ++ "]"
@@ -55,6 +57,23 @@ let cxxBinary
             compiler_flags = ${list cf},
             linker_flags = ${list lf},
             visibility = ${vis b.vis},
+        )
+        ''
+
+let cxxLibrary
+    : C.Library -> Flags -> Text
+    = \(lib : C.Library) -> \(f : Flags) ->
+        let cf = [cxxStd lib.std] # lib.cflags # f.compiler
+        let hdrs = if P.List.null Text lib.hdrs
+                   then ""
+                   else "    exported_headers = ${list lib.hdrs},\n"
+        in ''
+        cxx_library(
+            name = ${q lib.name},
+            srcs = ${list lib.srcs},
+        ${hdrs}    deps = ${list (locals lib.deps)},
+            compiler_flags = ${list cf},
+            visibility = ${vis lib.vis},
         )
         ''
 
@@ -284,6 +303,7 @@ let purescriptLibrary
 -- ══════════════════════════════════════════════════════════════════════════════
 
 let cxxDeps = \(b : C.Binary) -> P.Text.concatSep "\n" (flakes b.deps)
+let cxxLibraryDeps = \(lib : C.Library) -> P.Text.concatSep "\n" (flakes lib.deps)
 let rustBinaryDeps = \(b : R.Binary) -> P.Text.concatSep "\n" (flakes b.deps)
 let rustLibraryDeps = \(lib : R.Library) -> P.Text.concatSep "\n" (flakes lib.deps)
 
@@ -489,8 +509,8 @@ let nixCxxBinary
 in  { q, list, flakes, locals
     , cxxStd, rustEdition, vis, Flags
     -- C++
-    , cxxBinary
-    , cxxDeps
+    , cxxBinary, cxxLibrary
+    , cxxDeps, cxxLibraryDeps
     -- Rust
     , rustBinary, rustLibrary
     , rustBinaryDeps, rustLibraryDeps
