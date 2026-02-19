@@ -507,7 +507,16 @@ buildMultipleWithBrickTUI tc projectRoot targets = do
       results <- forM targets $ \(pkg, targetName) ->
         buildWithDeps tc projectRoot pkg targetName
       pure $ sequence results
-    else buildMultipleWithBrickTUIInner tc projectRoot targets
+    else do
+      -- Also check for valid terminal dimensions (0x0 means TUI won't render)
+      validTerm <- TUI.hasValidTerminal
+      if not validTerm
+        then do
+          -- Fall back to sequential text mode
+          results <- forM targets $ \(pkg, targetName) ->
+            buildWithDeps tc projectRoot pkg targetName
+          pure $ sequence results
+        else buildMultipleWithBrickTUIInner tc projectRoot targets
 
 -- | Inner function for building multiple targets with TUI
 buildMultipleWithBrickTUIInner ::
@@ -606,14 +615,20 @@ buildMultipleStub tc projectRoot targets = do
   -- Check if stdout is a TTY
   isTTY <- queryTerminal stdOutput
   if not isTTY
-    then do
-      -- Text mode stub
+    then textModeStub
+    else do
+      -- Also check for valid terminal dimensions
+      validTerm <- TUI.hasValidTerminal
+      if not validTerm
+        then textModeStub
+        else buildMultipleStubWithTUI tc projectRoot targets
+  where
+    textModeStub = do
       forM_ targets $ \(pkg, targetName) -> do
         let fqName = "//" <> T.pack pkg.path <> ":" <> targetName
         TIO.putStrLn $ "  [stub] " <> fqName
         threadDelay 100000 -- 100ms
       pure $ Right [BuildSuccess []]
-    else buildMultipleStubWithTUI tc projectRoot targets
 
 buildMultipleStubWithTUI ::
   TC.Toolchains ->

@@ -11,6 +11,7 @@
 -- - Stats header, running actions, overflow indicator
 module SenseNet.TUI
   ( runBuildWithTUI,
+    hasValidTerminal,
     BuildEvent (..),
     ActionInfo (..),
     initialState,
@@ -39,7 +40,9 @@ import Graphics.Vty.CrossPlatform qualified as V
 import Lens.Micro ((^.))
 import Lens.Micro.Mtl (use, (%=), (.=))
 import Lens.Micro.TH (makeLenses)
+import System.Environment (lookupEnv)
 import Text.Printf (printf)
+import Text.Read (readMaybe)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Animation Constants
@@ -411,6 +414,25 @@ addLogEntry success msg duration = do
 -- ════════════════════════════════════════════════════════════════════════════
 -- Main Entry Point
 -- ════════════════════════════════════════════════════════════════════════════
+
+-- | Check if we have a valid terminal for the TUI
+--
+-- Returns False if terminal size is 0x0 (common in script/pty wrappers)
+-- Uses ioctl to check without initializing vty (which would enter alternate screen)
+hasValidTerminal :: IO Bool
+hasValidTerminal = do
+  -- Try to get terminal size via environment variables first
+  -- These are set by most terminals and work even in pty wrappers
+  cols <- lookupEnv "COLUMNS"
+  lines <- lookupEnv "LINES"
+  case (cols >>= readMaybe, lines >>= readMaybe) of
+    (Just c, Just l) -> pure (c > 0 && l > (0 :: Int))
+    _ -> do
+      -- Fall back to checking if TERM is set and not dumb
+      term <- lookupEnv "TERM"
+      case term of
+        Just t | t /= "dumb" && t /= "" -> pure True
+        _ -> pure False
 
 runBuildWithTUI ::
   (BChan BuildEvent -> IO (Either Text [FilePath])) ->
