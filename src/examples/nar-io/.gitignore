@@ -1,0 +1,29 @@
+# Build outputs
+/output/
+/result
+/dist/
+/.spago/
+
+# Dependencies
+/node_modules/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel/
+
+# Generated
+/public/styles.css
+/public/main.js
+
+# Logs
+*.log
+npm-debug.log*

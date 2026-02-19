@@ -1,0 +1,29 @@
+package:
+  name: nar-io
+  dependencies:
+    - aff
+    - arrays
+    - console
+    - effect
+    - foldable-traversable
+    - foreign
+    - foreign-object
+    - halogen
+    - halogen-vdom
+    - maybe
+    - nullable
+    - prelude
+    - radix-halogen
+    - safe-coerce
+    - simple-json
+    - strings
+    - transformers
+    - typelevel-prelude
+    - web-dom
+    - web-html
+    - web-events
+    - web-uievents
+workspace:
+  package_set:
+    registry: 61.2.0
+  extra_packages: {}

@@ -1,0 +1,53 @@
+# nar.io development tasks
+
+# Default: show available commands
+default:
+    @just --list
+
+# Enter development shell
+dev:
+    nix develop
+
+# Install JS dependencies
+install:
+    npm install
+
+# Start Vite dev server with hot reload
+serve:
+    npm run dev
+
+# Build PureScript
+build-purs:
+    spago build
+
+# Build CSS
+build-css:
+    npx tailwindcss -i ./src/styles.css -o ./public/styles.css --minify
+
+# Build everything with Nix
+build:
+    nix build
+
+# Preview built site locally
+preview:
+    nix run
+
+# Watch PureScript files and rebuild
+watch:
+    watchexec -e purs -- spago build
+
+# Format PureScript code
+fmt:
+    purs-tidy format-in-place "src/**/*.purs"
+
+# Clean build artifacts
+clean:
+    rm -rf output/ result/ node_modules/ .spago/
+
+# Deploy to Vercel (production)
+deploy:
+    vercel --prod
+
+# Deploy to Vercel (preview)
+deploy-preview:
+    vercel

@@ -1,0 +1,20 @@
+package:
+  name: radix-halogen
+  dependencies:
+    - aff
+    - arrays
+    - effect
+    - foreign
+    - foreign-object
+    - halogen
+    - maybe
+    - nullable
+    - prelude
+    - safe-coerce
+    - simple-json
+    - transformers
+    - typelevel-prelude
+    - web-dom
+    - web-events
+    - web-html
+    - web-uievents

@@ -87,6 +87,12 @@
         buck2 = import ./nix/lib/buck2.nix { inherit inputs; };
       };
 
+      # Export NixOS modules - required for __noChroot derivations to work
+      flake.nixosModules = {
+        default = inputs.nix-compile.nixosModules.default;
+        sandbox = inputs.nix-compile.nixosModules.default;
+      };
+
       # Lint configs exported by lint.nix module
       # Lint rules exported here (no module for this yet)
       flake.lintRules = ./linter/rules;
