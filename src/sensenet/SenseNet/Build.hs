@@ -1,3 +1,5 @@
+{-# LANGUAGE CApiFFI #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -20,8 +22,10 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (finally)
 import Control.Monad (forM, forM_, forever, when)
 import Control.Monad.IO.Class (liftIO)
+import Data.Aeson (ToJSON (..), encode, object, (.=))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
 import Data.Map.Strict (Map)
@@ -29,8 +33,15 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
+import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Word (Word64)
+import Foreign.C.Types (CInt (..), CLong (..))
+import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Ptr (Ptr)
+import Foreign.Storable (peekByteOff)
+import GHC.Generics (Generic)
 import GHC.IO.Handle (hGetContents)
 import SenseNet.Console qualified as Console
 import SenseNet.DICE (DICE, DICEError, clearTargets, compute, inject, registerTarget, runDICE, sha256)
@@ -40,7 +51,8 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
-import System.Process (StdStream (..), createProcess, cwd, env, proc, readProcessWithExitCode, std_err, std_out, waitForProcess)
+import System.Posix.Process (getProcessID)
+import System.Process (CreateProcess (..), ProcessHandle, StdStream (..), createProcess, cwd, env, proc, readProcessWithExitCode, std_err, std_out, waitForProcess)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Types
@@ -277,22 +289,22 @@ makeConsoleCallback tc projectRoot pkgPath ruleMap console progress stateRef tar
   -- Add action to progress display
   Console.addAction progress actionId targetName 0
 
-  -- Build the target
+  -- Build the target with profiling
   resultJson <- case Map.lookup targetName ruleMap of
-    Nothing -> pure $ mkResultJson [] 1 ("Target not found: " <> targetName)
+    Nothing -> pure $ mkResultJson [] 1 ("Target not found: " <> targetName) emptyProfile
     Just rule -> do
       let depOutputs = parseDepOutputs depsJson
-      result <- buildRuleWithDeps tc projectRoot pkgPath rule depOutputs
+      (result, profile) <- withProfiling $ buildRuleWithDeps tc projectRoot pkgPath rule depOutputs
       case result of
-        Left err -> pure $ mkResultJson [] 1 (T.pack $ show err)
-        Right (BuildSuccess outputs) -> pure $ mkResultJson outputs 0 ""
-        Right (BuildCached outputs) -> pure $ mkResultJson outputs 0 "cached"
+        Left err -> pure $ mkResultJson [] 1 (T.pack $ show err) profile
+        Right (BuildSuccess outputs) -> pure $ mkResultJson outputs 0 "" profile
+        Right (BuildCached outputs) -> pure $ mkResultJson outputs 0 "cached" emptyProfile
 
   -- Record action completion
   Console.removeAction progress actionId
 
   -- Parse result to determine success/cached
-  let isCached = "cached" `T.isInfixOf` resultJson
+  let isCached = "\"log\":\"cached\"" `T.isInfixOf` resultJson
       isSuccess = "\"exit_code\":0" `T.isInfixOf` resultJson
 
   modifyIORef' stateRef $ \s ->
@@ -329,6 +341,72 @@ extractLocalDepNames = concatMap extract
       [fromMaybe name (T.stripPrefix ":" name)]
     extract (IR.DepFlake _) = [] -- Flake deps are external, not DICE targets
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- Memory Profiling via getrusage(2)
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | RUSAGE_CHILDREN = -1 (wait for terminated children)
+foreign import capi "sys/resource.h value RUSAGE_CHILDREN"
+  c_RUSAGE_CHILDREN :: CInt
+
+-- | struct rusage size (conservatively large, actual is ~144 bytes on Linux x86_64)
+rusageSize :: Int
+rusageSize = 256
+
+-- | Offset of ru_maxrss in struct rusage
+-- On Linux x86_64: ru_maxrss is at offset 16 (after ru_utime and ru_stime, each 16 bytes)
+-- This is the 3rd field: struct timeval ru_utime (16), struct timeval ru_stime (16), long ru_maxrss
+ruMaxrssOffset :: Int
+ruMaxrssOffset = 32
+
+-- | FFI import for getrusage(2)
+foreign import capi "sys/resource.h getrusage"
+  c_getrusage :: CInt -> Ptr () -> IO CInt
+
+-- | Get peak memory (ru_maxrss) of all waited-for child processes in kilobytes
+-- Returns 0 on error
+getChildrenMaxRss :: IO Word64
+getChildrenMaxRss = allocaBytes rusageSize $ \ptr -> do
+  rc <- c_getrusage c_RUSAGE_CHILDREN ptr
+  if rc == 0
+    then do
+      -- ru_maxrss is a long, in kilobytes on Linux
+      maxrss <- peekByteOff ptr ruMaxrssOffset :: IO CLong
+      pure $ fromIntegral maxrss
+    else pure 0
+
+-- | Run a build action with profiling (time and memory)
+--
+-- Memory tracking uses getrusage(RUSAGE_CHILDREN) to get the peak RSS of
+-- waited-for child processes. Note that ru_maxrss reports the MAXIMUM RSS
+-- across all children (not cumulative), so this approach works best when:
+--
+-- 1. Running builds sequentially (first profiling build)
+-- 2. Each subsequent action spawns a child with higher memory usage
+--
+-- If a child uses less memory than a previous one, the reported memory will
+-- be the delta from the previous max, which may be 0. This is acceptable for
+-- the "first profiling build" use case where we run sequentially.
+--
+-- For accurate per-action tracking in parallel builds, we would need to use
+-- cgroups or poll /proc/<pid>/status during execution.
+--
+-- Memory is tracked in kilobytes and converted to bytes for the result.
+withProfiling :: IO a -> IO (a, ProfileData)
+withProfiling action = do
+  startTime <- getCurrentTime
+  startMaxRss <- getChildrenMaxRss
+  result <- action
+  endTime <- getCurrentTime
+  endMaxRss <- getChildrenMaxRss
+  let elapsedMs = round (diffUTCTime endTime startTime * 1000) :: Word64
+      -- Delta in KB, convert to bytes
+      -- This captures the peak RSS if the child exceeded the previous max.
+      -- If the child used less memory, delta will be 0 (see note above).
+      peakMemoryKb = if endMaxRss > startMaxRss then endMaxRss - startMaxRss else 0
+      peakMemoryBytes = peakMemoryKb * 1024
+  pure (result, ProfileData elapsedMs peakMemoryBytes)
+
 -- | Create a callback for a rule that builds it when invoked
 -- The callback receives the target name and resolved dep outputs as JSON
 makeCallback ::
@@ -338,23 +416,23 @@ makeCallback ::
   Map Text IR.Rule ->
   Text -> -- Target name
   Text -> -- Deps JSON: [{"name": "dep1", "outputs": [...]}, ...]
-  IO Text -- Result JSON: {"outputs": [...], "exit_code": N, "log": "..."}
+  IO Text -- Result JSON: {"outputs": [...], "exit_code": N, "log": "...", "time_ms": N, "peak_memory_bytes": N}
 makeCallback tc projectRoot pkgPath ruleMap targetName depsJson = do
   TIO.putStrLn $ "  Building: " <> targetName
   TIO.putStrLn $ "    Deps: " <> depsJson
 
   case Map.lookup targetName ruleMap of
-    Nothing -> pure $ mkResultJson [] 1 ("Target not found: " <> targetName)
+    Nothing -> pure $ mkResultJson [] 1 ("Target not found: " <> targetName) emptyProfile
     Just rule -> do
       -- Parse dep outputs for use in linking
       let depOutputs = parseDepOutputs depsJson
 
-      -- Build the rule (passing dep outputs for linking)
-      result <- buildRuleWithDeps tc projectRoot pkgPath rule depOutputs
+      -- Build the rule with profiling
+      (result, profile) <- withProfiling $ buildRuleWithDeps tc projectRoot pkgPath rule depOutputs
       case result of
-        Left err -> pure $ mkResultJson [] 1 (T.pack $ show err)
-        Right (BuildSuccess outputs) -> pure $ mkResultJson outputs 0 ""
-        Right (BuildCached outputs) -> pure $ mkResultJson outputs 0 "cached"
+        Left err -> pure $ mkResultJson [] 1 (T.pack $ show err) profile
+        Right (BuildSuccess outputs) -> pure $ mkResultJson outputs 0 "" profile
+        Right (BuildCached outputs) -> pure $ mkResultJson outputs 0 "cached" emptyProfile
 
 -- | Build a rule with resolved dependency outputs
 buildRuleWithDeps ::
@@ -447,29 +525,56 @@ findDepEntries s = go s []
     tails [] = [[]]
     tails xs@(_ : xs') = xs : tails xs'
 
--- | Create result JSON
-mkResultJson :: [FilePath] -> Int -> Text -> Text
-mkResultJson outputs exitCode logMsg =
-  "{\"outputs\":["
-    <> outputsJson
-    <> "],\"exit_code\":"
-    <> T.pack (show exitCode)
-    <> ",\"output_hash\":\"\",\"log\":\""
-    <> escapeJsonText logMsg
-    <> "\"}"
-  where
-    outputsJson = T.intercalate "," $ map (\p -> "\"" <> escapeJsonText (T.pack p) <> "\"") outputs
+-- | Build profile data for memory-aware scheduling
+-- This is returned from DICE and cached for future scheduling decisions
+data ProfileData = ProfileData
+  { profileTimeMs :: !Word64, -- Wall clock time in milliseconds
+    profilePeakMemoryBytes :: !Word64 -- Peak resident set size in bytes
+  }
+  deriving (Show, Eq, Generic)
 
--- | Escape text for JSON string
-escapeJsonText :: Text -> Text
-escapeJsonText = T.concatMap escapeChar
-  where
-    escapeChar '\\' = "\\\\"
-    escapeChar '"' = "\\\""
-    escapeChar '\n' = "\\n"
-    escapeChar '\r' = "\\r"
-    escapeChar '\t' = "\\t"
-    escapeChar c = T.singleton c
+-- | Empty profile (for cached/skipped builds)
+emptyProfile :: ProfileData
+emptyProfile = ProfileData 0 0
+
+-- | Result JSON structure for DICE callback
+-- Uses explicit field names to match DICE FFI expectations
+data DiceResult = DiceResult
+  { dr_outputs :: [FilePath],
+    dr_exit_code :: Int,
+    dr_output_hash :: Text,
+    dr_log :: Text,
+    dr_time_ms :: Word64,
+    dr_peak_memory_bytes :: Word64
+  }
+  deriving (Show, Eq, Generic)
+
+-- Custom ToJSON to emit the expected field names without "dr_" prefix
+instance ToJSON DiceResult where
+  toJSON r =
+    object
+      [ "outputs" .= dr_outputs r,
+        "exit_code" .= dr_exit_code r,
+        "output_hash" .= dr_output_hash r,
+        "log" .= dr_log r,
+        "time_ms" .= dr_time_ms r,
+        "peak_memory_bytes" .= dr_peak_memory_bytes r
+      ]
+
+-- | Create result JSON with profile data for DICE
+mkResultJson :: [FilePath] -> Int -> Text -> ProfileData -> Text
+mkResultJson outs exitCode logMsg profile =
+  TE.decodeUtf8 $
+    BL.toStrict $
+      encode $
+        DiceResult
+          { dr_outputs = outs,
+            dr_exit_code = exitCode,
+            dr_output_hash = "",
+            dr_log = logMsg,
+            dr_time_ms = profileTimeMs profile,
+            dr_peak_memory_bytes = profilePeakMemoryBytes profile
+          }
 
 findRule :: Text -> [IR.Rule] -> Maybe IR.Rule
 findRule name = foldr (\r acc -> if IR.ruleName r == name then Just r else acc) Nothing

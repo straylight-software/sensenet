@@ -16,6 +16,7 @@ executable sensenet
   other-modules:
     -- SenseNet core
     SenseNet.Build
+    SenseNet.Config
     SenseNet.Console
     SenseNet.Console.FFI
     SenseNet.DICE
@@ -90,4 +91,6 @@ executable sensenet
     , proto-lens           >=0.7
     , proto-lens-runtime   >=0.7
     , text                 >=2.0
+    , time                 >=1.12
+    , unix                 >=2.8
     , vector               >=0.13

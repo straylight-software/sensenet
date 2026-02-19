@@ -104,6 +104,10 @@ pub struct TargetResult {
   pub exit_code: i32,
   /// Stderr/stdout if any
   pub log: String,
+  /// Build profile: wall clock time in milliseconds
+  pub time_ms: u64,
+  /// Build profile: peak resident set size in bytes
+  pub peak_memory_bytes: u64,
 }
 
 impl Dupe for TargetResult {}
@@ -237,6 +241,8 @@ impl Key for TargetKey {
               output_hash: String::new(),
               exit_code: 1,
               log: format!("Dependency '{}' failed: {:?}", dep_name, e),
+              time_ms: 0,
+              peak_memory_bytes: 0,
             });
           }
         }
@@ -286,6 +292,8 @@ impl Key for TargetKey {
       output_hash: String::new(),
       exit_code: 1,
       log: format!("No compute callback registered for target '{}'", self.0),
+      time_ms: 0,
+      peak_memory_bytes: 0,
     })
   }
 
@@ -344,6 +352,8 @@ fn parse_callback_result(result_ptr: *mut c_char, key_name: &str) -> Arc<TargetR
     output_hash: String::new(),
     exit_code: 1,
     log: format!("Callback returned null for target '{}'", key_name),
+    time_ms: 0,
+    peak_memory_bytes: 0,
   })
 }
 
@@ -357,12 +367,16 @@ fn parse_result_json(json: &str, key_name: &str) -> TargetResult {
     extract_json_string(json, "output_hash").unwrap_or_else(|| key_name.to_string());
   let log = extract_json_string(json, "log").unwrap_or_default();
   let outputs = extract_json_string_array(json, "outputs").unwrap_or_default();
+  let time_ms = extract_json_u64(json, "time_ms").unwrap_or(0);
+  let peak_memory_bytes = extract_json_u64(json, "peak_memory_bytes").unwrap_or(0);
 
   TargetResult {
     outputs,
     output_hash,
     exit_code,
     log,
+    time_ms,
+    peak_memory_bytes,
   }
 }
 
@@ -375,6 +389,18 @@ fn extract_json_int(json: &str, key: &str) -> Option<i32> {
 
   // Find end of number
   let end = trimmed.find(|c: char| !c.is_ascii_digit() && c != '-')?;
+  trimmed[..end].parse().ok()
+}
+
+/// Extract a u64 value from JSON
+fn extract_json_u64(json: &str, key: &str) -> Option<u64> {
+  let pattern = format!("\"{}\":", key);
+  let start = json.find(&pattern)?;
+  let after_key = &json[start + pattern.len()..];
+  let trimmed = after_key.trim_start();
+
+  // Find end of number
+  let end = trimmed.find(|c: char| !c.is_ascii_digit())?;
   trimmed[..end].parse().ok()
 }
 
