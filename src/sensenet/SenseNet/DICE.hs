@@ -49,6 +49,8 @@ module SenseNet.DICE
     -- * Core Operations
     inject,
     compute,
+    tryCompute,
+    computeMany,
 
     -- * Target Registration (dependency-aware)
     registerTarget,
@@ -68,6 +70,7 @@ module SenseNet.DICE
 where
 
 import Control.Exception (Exception, SomeException, bracket, try)
+import Control.Monad (forM)
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -246,6 +249,120 @@ compute key = DICE $ \env -> do
               result <- computeAction (envRuntime env) txnPtr key
               FFI.c_transaction_free txnPtr
               pure result
+  where
+    injectAll _ [] = pure (Right ())
+    injectAll updPtr ((p, h, s) : rest) = do
+      let pathBS = TE.encodeUtf8 p
+          hashBS = TE.encodeUtf8 h
+      rc <- BS.useAsCStringLen pathBS $ \(pathPtr, pathLen) ->
+        BS.useAsCStringLen hashBS $ \(hashPtr, hashLen) ->
+          FFI.c_inject_source
+            updPtr
+            pathPtr
+            (fromIntegral pathLen)
+            hashPtr
+            (fromIntegral hashLen)
+            s
+      if rc /= 0
+        then pure (Left (InjectFailed p))
+        else injectAll updPtr rest
+
+    computeAction rtPtr txnPtr k = do
+      let keyBS = TE.encodeUtf8 k
+      resultPtr <- BS.useAsCStringLen keyBS $ \(keyPtr, keyLen) ->
+        FFI.c_compute_action rtPtr txnPtr keyPtr (fromIntegral keyLen)
+      if resultPtr == nullPtr
+        then pure (Left (ComputeFailed k))
+        else do
+          ok <- FFI.c_result_ok resultPtr
+          if ok == 1
+            then do
+              count <- FFI.c_result_output_count resultPtr
+              outputs <- mapM (getOutput resultPtr) [0 .. count - 1]
+              FFI.c_result_free resultPtr
+              pure (Right outputs)
+            else do
+              errText <- getError resultPtr
+              FFI.c_result_free resultPtr
+              pure (Left (ComputeFailed errText))
+
+    getOutput ptr idx = alloca $ \lenPtr -> do
+      outPtr <- FFI.c_result_output_at ptr idx lenPtr
+      if outPtr == nullPtr
+        then pure T.empty
+        else do
+          len <- peek lenPtr
+          bs <- BS.packCStringLen (outPtr, fromIntegral len)
+          pure (TE.decodeUtf8 bs)
+
+    getError ptr = alloca $ \lenPtr -> do
+      errPtr <- FFI.c_result_error ptr lenPtr
+      if errPtr == nullPtr
+        then pure (T.pack "Unknown error")
+        else do
+          len <- peek lenPtr
+          bs <- BS.packCStringLen (errPtr, fromIntegral len)
+          pure (TE.decodeUtf8 bs)
+
+-- | Try to compute a target, returning the result or error without failing the monad.
+--
+-- This is useful for "keep-going" builds where you want to continue
+-- building other independent targets even if one fails.
+--
+-- @
+-- results <- forM targets $ \t -> tryCompute t
+-- let (failures, successes) = partitionEithers results
+-- @
+tryCompute :: Text -> DICE (Either DICEError [Text])
+tryCompute key = DICE $ \env -> do
+  -- Run compute and capture either result
+  result <- unDICE (compute key) env
+  -- Always return Right, wrapping the inner Either
+  pure (Right result)
+
+-- | Compute multiple targets in a single transaction (keep-going semantics).
+--
+-- This is the preferred way to build multiple independent targets:
+-- - Uses a SINGLE shared transaction for all computations
+-- - Continues on failure (returns results for each target)
+-- - Allows DICE to properly memoize and share dependency results
+--
+-- @
+-- results <- computeMany ["//pkg:target1", "//pkg:target2", "//pkg:target3"]
+-- forM_ results $ \(target, result) ->
+--   case result of
+--     Right outputs -> putStrLn $ target ++ " succeeded"
+--     Left err -> putStrLn $ target ++ " failed: " ++ show err
+-- @
+computeMany :: [Text] -> DICE [(Text, Either DICEError [Text])]
+computeMany keys = DICE $ \env -> do
+  -- Get pending sources
+  sources <- readIORef (envSources env)
+
+  -- Create updater
+  updPtr <- FFI.c_updater_new (envEngine env)
+  if updPtr == nullPtr
+    then pure (Left UpdaterCreateFailed)
+    else do
+      -- Inject all sources
+      injectResult <- injectAll updPtr (reverse sources)
+      case injectResult of
+        Left err -> do
+          FFI.c_updater_free updPtr
+          pure (Left err)
+        Right () -> do
+          -- Commit transaction ONCE
+          txnPtr <- FFI.c_commit (envRuntime env) updPtr
+          if txnPtr == nullPtr
+            then pure (Left CommitFailed)
+            else do
+              -- Compute ALL targets with the SAME transaction
+              results <- forM keys $ \key -> do
+                result <- computeAction (envRuntime env) txnPtr key
+                pure (key, result)
+              -- Free transaction ONCE at the end
+              FFI.c_transaction_free txnPtr
+              pure (Right results)
   where
     injectAll _ [] = pure (Right ())
     injectAll updPtr ((p, h, s) : rest) = do

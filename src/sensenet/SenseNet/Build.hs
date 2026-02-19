@@ -12,11 +12,15 @@ module SenseNet.Build
   ( build,
     buildWithDeps,
     buildWithConsole,
+    buildWithBrickTUI,
+    buildMultipleWithBrickTUI,
+    buildMultipleStub,
     BuildResult (..),
     BuildError (..),
   )
 where
 
+import Brick.BChan (BChan, writeBChan)
 import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (finally)
@@ -26,7 +30,7 @@ import Data.Aeson (ToJSON (..), encode, object, (.=))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -46,15 +50,18 @@ import Foreign.Storable (peekByteOff)
 import GHC.Generics (Generic)
 import GHC.IO.Handle (hGetContents)
 import SenseNet.Console qualified as Console
-import SenseNet.DICE (DICE, DICEError, clearTargets, compute, inject, registerTarget, runDICE, sha256)
+import SenseNet.DICE (DICE, DICEError, clearTargets, compute, computeMany, inject, registerTarget, runDICE, sha256, tryCompute)
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.IR qualified as IR
+import SenseNet.TUI qualified as TUI
 import SenseNet.Toolchains qualified as TC
 import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
+import System.Posix.IO (stdOutput)
 import System.Posix.Process (getProcessID)
+import System.Posix.Terminal (queryTerminal)
 import System.Process (CreateProcess (..), ProcessHandle, StdStream (..), createProcess, cwd, env, proc, readProcessWithExitCode, std_err, std_out, waitForProcess)
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -399,6 +406,327 @@ buildWithConsoleInner tc projectRoot pkg targetName console progress = do
             Left err -> pure $ Left $ DICEFailed err
             Right outputs -> pure $ Right $ BuildSuccess (map T.unpack outputs)
 
+-- | Build a target with the Brick TUI (replaces superconsole)
+--
+-- This provides a native Haskell TUI experience using Brick, with:
+-- - Real-time progress bar
+-- - Live list of running actions
+-- - Scrollable log of completed actions
+-- - Keyboard controls (q to quit, arrows to scroll)
+--
+-- Falls back to text output if not running in a TTY.
+buildWithBrickTUI :: TC.Toolchains -> FilePath -> IR.Package -> Text -> IO (Either BuildError BuildResult)
+buildWithBrickTUI tc projectRoot pkg targetName = do
+  -- Check if stdout is a TTY
+  isTTY <- queryTerminal stdOutput
+  if not isTTY
+    then buildWithDeps tc projectRoot pkg targetName -- Fall back to text mode
+    else buildWithBrickTUIInner tc projectRoot pkg targetName
+
+-- | Inner TUI build function (assumes TTY is available)
+buildWithBrickTUIInner :: TC.Toolchains -> FilePath -> IR.Package -> Text -> IO (Either BuildError BuildResult)
+buildWithBrickTUIInner tc projectRoot pkg targetName = do
+  -- Find the target first
+  case findRule targetName pkg.rules of
+    Nothing -> pure $ Left $ TargetNotFound targetName
+    Just _rule -> do
+      -- Initialize build context for lazy loading
+      pkgCache <- newIORef (Map.singleton pkg.path pkg)
+      processedRef <- newIORef Set.empty
+      ruleMapRef <- newIORef Map.empty
+
+      let ctx =
+            BuildContext
+              { bcProjectRoot = projectRoot,
+                bcToolchains = tc,
+                bcPkgCache = pkgCache,
+                bcProcessed = processedRef,
+                bcRuleMap = ruleMapRef
+              }
+
+      -- Discover all transitive dependencies (silent)
+      discoverResult <- discoverAndRegisterDeps ctx pkg targetName
+
+      case discoverResult of
+        Left err -> pure $ Left err
+        Right () -> do
+          -- Get the complete rule map
+          ruleMap <- readIORef ruleMapRef
+          let totalTargets = Map.size ruleMap
+              fqTarget = "//" <> T.pack pkg.path <> ":" <> targetName
+
+          -- Action ID counter for unique IDs
+          actionIdRef <- newIORef (1 :: Word64)
+
+          -- Run with Brick TUI
+          tuiResult <- TUI.runBuildWithTUI $ \chan -> do
+            -- Send build started event
+            writeBChan chan (TUI.EventBuildStarted totalTargets)
+
+            -- Run DICE build
+            result <- runDICE $ do
+              clearTargets
+
+              -- Register all discovered rules with TUI-aware callbacks
+              let allRules = Map.toList ruleMap
+              forM_ allRules $ \(fqName, (rule, rulePkgPath)) -> do
+                let deps = extractDepNames (IR.ruleDeps rule)
+                    qualifiedDeps = map (qualifyDep rulePkgPath) deps
+                registerTarget
+                  fqName
+                  qualifiedDeps
+                  (makeTUICallbackWithContext ctx chan actionIdRef fqName)
+
+              -- Compute the target
+              compute fqTarget
+
+            case result of
+              Left err -> pure $ Left $ T.pack $ show err
+              Right outputs -> pure $ Right $ map T.unpack outputs
+
+          -- Convert TUI result back to BuildResult
+          case tuiResult of
+            Left err -> pure $ Left $ DICEFailed $ error $ T.unpack err -- Should be a DICEError but we just have Text
+            Right outputs -> pure $ Right $ BuildSuccess outputs
+
+-- | Build multiple targets with a single TUI session
+--
+-- This collects all targets from all packages and builds them together,
+-- showing unified progress across all targets.
+buildMultipleWithBrickTUI ::
+  TC.Toolchains ->
+  FilePath ->
+  [(IR.Package, Text)] -> -- List of (package, targetName) pairs
+  IO (Either BuildError [BuildResult])
+buildMultipleWithBrickTUI tc projectRoot targets = do
+  -- Check if stdout is a TTY
+  isTTY <- queryTerminal stdOutput
+  if not isTTY
+    then do
+      -- Fall back to sequential text mode
+      results <- forM targets $ \(pkg, targetName) ->
+        buildWithDeps tc projectRoot pkg targetName
+      pure $ sequence results
+    else buildMultipleWithBrickTUIInner tc projectRoot targets
+
+-- | Inner function for building multiple targets with TUI
+buildMultipleWithBrickTUIInner ::
+  TC.Toolchains ->
+  FilePath ->
+  [(IR.Package, Text)] ->
+  IO (Either BuildError [BuildResult])
+buildMultipleWithBrickTUIInner tc projectRoot targets = do
+  -- Initialize shared build context
+  pkgCache <- newIORef Map.empty
+  processedRef <- newIORef Set.empty
+  ruleMapRef <- newIORef Map.empty
+
+  let ctx =
+        BuildContext
+          { bcProjectRoot = projectRoot,
+            bcToolchains = tc,
+            bcPkgCache = pkgCache,
+            bcProcessed = processedRef,
+            bcRuleMap = ruleMapRef
+          }
+
+  -- Pre-populate package cache and discover all deps for all targets
+  allFqTargets <- forM targets $ \(pkg, targetName) -> do
+    modifyIORef' pkgCache (Map.insert pkg.path pkg)
+    discoverResult <- discoverAndRegisterDeps ctx pkg targetName
+    case discoverResult of
+      Left err -> pure $ Left err
+      Right () -> pure $ Right $ "//" <> T.pack pkg.path <> ":" <> targetName
+
+  -- Check for discovery errors
+  case sequence allFqTargets of
+    Left err -> pure $ Left err
+    Right fqTargets -> do
+      -- Get the complete rule map (all deps from all targets)
+      ruleMap <- readIORef ruleMapRef
+      let totalTargets = Map.size ruleMap
+
+      -- Counters for tracking results
+      actionIdRef <- newIORef (1 :: Word64)
+      successCountRef <- newIORef (0 :: Int)
+
+      -- Run with Brick TUI
+      tuiResult <- TUI.runBuildWithTUI $ \chan -> do
+        -- Send build started event with total count
+        writeBChan chan (TUI.EventBuildStarted totalTargets)
+
+        -- Run DICE build for all targets
+        result <- runDICE $ do
+          clearTargets
+
+          -- Register all discovered rules
+          let allRules = Map.toList ruleMap
+          forM_ allRules $ \(fqName, (rule, rulePkgPath)) -> do
+            let deps = extractDepNames (IR.ruleDeps rule)
+                qualifiedDeps = map (qualifyDep rulePkgPath) deps
+            registerTarget
+              fqName
+              qualifiedDeps
+              (makeTUICallbackWithContext ctx chan actionIdRef fqName)
+
+          -- Compute ALL targets with a SINGLE shared transaction
+          -- computeMany provides keep-going semantics and proper memoization
+          allResults <- computeMany fqTargets
+
+          -- Count successes and collect outputs
+          let successes = length [() | (_, Right _) <- allResults]
+              allOutputs = concat [outs | (_, Right outs) <- allResults]
+          liftIO $ writeIORef successCountRef successes
+          pure allOutputs
+
+        case result of
+          Left err -> pure $ Left $ T.pack $ show err
+          Right outputs -> pure $ Right $ map T.unpack outputs
+
+      -- Get success count
+      successCount <- readIORef successCountRef
+
+      -- Convert TUI result - one BuildResult per successful target
+      case tuiResult of
+        Left err -> pure $ Left $ DICEFailed $ error $ T.unpack err
+        Right outputs ->
+          -- Return successCount number of BuildSuccess results
+          pure $ Right $ replicate successCount (BuildSuccess outputs)
+
+-- | Stub build for TUI development - creates empty outputs instantly
+--
+-- This mode is for iterating on TUI/build logic without waiting for real compilation.
+-- Each target gets a random delay (50-500ms) to simulate realistic timing.
+buildMultipleStub ::
+  TC.Toolchains ->
+  FilePath ->
+  [(IR.Package, Text)] ->
+  IO (Either BuildError [BuildResult])
+buildMultipleStub tc projectRoot targets = do
+  -- Check if stdout is a TTY
+  isTTY <- queryTerminal stdOutput
+  if not isTTY
+    then do
+      -- Text mode stub
+      forM_ targets $ \(pkg, targetName) -> do
+        let fqName = "//" <> T.pack pkg.path <> ":" <> targetName
+        TIO.putStrLn $ "  [stub] " <> fqName
+        threadDelay 100000 -- 100ms
+      pure $ Right [BuildSuccess []]
+    else buildMultipleStubWithTUI tc projectRoot targets
+
+buildMultipleStubWithTUI ::
+  TC.Toolchains ->
+  FilePath ->
+  [(IR.Package, Text)] ->
+  IO (Either BuildError [BuildResult])
+buildMultipleStubWithTUI tc projectRoot targets = do
+  -- Initialize shared build context
+  pkgCache <- newIORef Map.empty
+  processedRef <- newIORef Set.empty
+  ruleMapRef <- newIORef Map.empty
+
+  let ctx =
+        BuildContext
+          { bcProjectRoot = projectRoot,
+            bcToolchains = tc, -- Pass real toolchains (won't be used in stub mode)
+            bcPkgCache = pkgCache,
+            bcProcessed = processedRef,
+            bcRuleMap = ruleMapRef
+          }
+
+  -- Pre-populate package cache and discover all deps for all targets
+  allFqTargets <- forM targets $ \(pkg, targetName) -> do
+    modifyIORef' pkgCache (Map.insert pkg.path pkg)
+    discoverResult <- discoverAndRegisterDeps ctx pkg targetName
+    case discoverResult of
+      Left err -> pure $ Left err
+      Right () -> pure $ Right $ "//" <> T.pack pkg.path <> ":" <> targetName
+
+  -- Check for discovery errors
+  case sequence allFqTargets of
+    Left err -> pure $ Left err
+    Right _fqTargets -> do
+      -- Get the complete rule map (all deps from all targets)
+      ruleMap <- readIORef ruleMapRef
+      let totalTargets = Map.size ruleMap
+          allRules = Map.toList ruleMap
+
+      -- Action ID counter
+      actionIdRef <- newIORef (1 :: Word64)
+
+      -- Run with Brick TUI
+      tuiResult <- TUI.runBuildWithTUI $ \chan -> do
+        -- Send build started event
+        writeBChan chan (TUI.EventBuildStarted totalTargets)
+
+        -- Start all targets "in parallel" (send all start events first)
+        -- Then complete them with staggered delays
+        let rulesWithIds = zip [1 ..] allRules
+
+        -- Send all start events
+        forM_ rulesWithIds $ \(actionId, (fqName, _)) -> do
+          writeBChan chan (TUI.EventActionStarted actionId fqName)
+          threadDelay 50000 -- 50ms stagger between starts
+
+        -- Complete them with varying delays (simulating different build times)
+        forM_ rulesWithIds $ \(actionId, (fqName, _)) -> do
+          -- Delay based on target name hash (200-800ms)
+          let nameHash = sum (map fromEnum (T.unpack fqName)) `mod` 600
+              delay = 200000 + nameHash * 1000
+
+          threadDelay delay
+
+          -- All targets succeed in stub mode
+          let outputs = [projectRoot </> "sensenet-out" </> T.unpack fqName]
+          writeBChan chan (TUI.EventActionCompleted actionId fqName outputs)
+
+        pure $ Right []
+
+      case tuiResult of
+        Left err -> pure $ Left $ DICEFailed $ error $ T.unpack err
+        Right _ -> pure $ Right [BuildSuccess []]
+
+-- | TUI-aware callback for DICE with BuildContext
+makeTUICallbackWithContext ::
+  BuildContext ->
+  BChan TUI.BuildEvent ->
+  IORef Word64 -> -- Action ID counter
+  Text -> -- Fully qualified target name (//pkg:target)
+  Text -> -- Target name (from DICE, same as fqName here)
+  Text -> -- Deps JSON
+  IO Text -- Result JSON
+makeTUICallbackWithContext ctx chan actionIdRef fqName _targetName depsJson = do
+  -- Generate unique action ID
+  actionId <- atomicModifyIORef' actionIdRef (\n -> (n + 1, n))
+
+  -- Send action started event
+  writeBChan chan (TUI.EventActionStarted actionId fqName)
+
+  -- Build the target
+  ruleMap <- readIORef (bcRuleMap ctx)
+  resultJson <- case Map.lookup fqName ruleMap of
+    Nothing -> do
+      writeBChan chan (TUI.EventActionFailed actionId fqName "Target not found")
+      pure $ mkResultJson [] 1 ("Target not found in context: " <> fqName) emptyProfile
+    Just (rule, pkgPath) -> do
+      let depOutputs = parseDepOutputs depsJson
+      (result, profile) <-
+        withProfiling $
+          buildRuleWithDeps (bcToolchains ctx) (bcProjectRoot ctx) pkgPath rule depOutputs
+      case result of
+        Left err -> do
+          writeBChan chan (TUI.EventActionFailed actionId fqName (T.pack $ show err))
+          pure $ mkResultJson [] 1 (T.pack $ show err) profile
+        Right (BuildSuccess outputs) -> do
+          writeBChan chan (TUI.EventActionCompleted actionId fqName outputs)
+          pure $ mkResultJson outputs 0 "" profile
+        Right (BuildCached outputs) -> do
+          writeBChan chan (TUI.EventActionCached actionId fqName outputs)
+          pure $ mkResultJson outputs 0 "cached" emptyProfile
+
+  pure resultJson
+
 -- | Render loop that updates the console display
 renderLoop :: Console.Console -> Console.BuildProgress -> IORef BuildState -> MVar () -> IO ()
 renderLoop console progress stateRef done = go
@@ -698,8 +1026,9 @@ makeCallback ::
   Text -> -- Deps JSON: [{"name": "dep1", "outputs": [...]}, ...]
   IO Text -- Result JSON: {"outputs": [...], "exit_code": N, "log": "...", "time_ms": N, "peak_memory_bytes": N}
 makeCallback tc projectRoot pkgPath ruleMap targetName depsJson = do
-  TIO.putStrLn $ "  Building: " <> targetName
-  TIO.putStrLn $ "    Deps: " <> depsJson
+  -- Debug output disabled to keep TUI clean
+  -- TIO.putStrLn $ "  Building: " <> targetName
+  -- TIO.putStrLn $ "    Deps: " <> depsJson
 
   case Map.lookup targetName ruleMap of
     Nothing -> pure $ mkResultJson [] 1 ("Target not found: " <> targetName) emptyProfile
@@ -936,7 +1265,7 @@ buildCxxBinary tc projectRoot pkgPath bin = do
               linkFlag = ["-fuse-ld=" <> ld]
               cmd = [cxx, stdFlag] ++ sysrootFlag ++ includeFlags ++ cflags ++ srcs ++ ["-o", outBin] ++ linkFlag ++ libFlags ++ ldflags
 
-          TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
+          -- TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
           (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
 
           case exitCode of
@@ -969,7 +1298,7 @@ buildCxxLibrary tc projectRoot pkgPath lib = do
     if not exists
       then pure $ Left $ SourceNotFound srcPath
       else do
-        TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
+        -- TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
         (exitCode, _, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
         case exitCode of
           ExitSuccess -> pure $ Right objPath
@@ -1030,7 +1359,7 @@ buildCxxBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
               ++ libFlags
               ++ ldflags
 
-      TIO.putStrLn $ "  compile (with deps): " <> T.pack (unwords cmd)
+      -- Debug: TIO.putStrLn $ "  compile (with deps): " <> T.pack (unwords cmd)
       (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
 
       case exitCode of
@@ -1076,7 +1405,7 @@ buildNixCxxBinary tc projectRoot pkgPath bin = do
               linkFlag = ["-fuse-ld=" <> ld]
               cmd = [cxx, "-std=c++17"] ++ sysrootFlag ++ includeFlags ++ cflags ++ srcs ++ ["-o", outBin] ++ linkFlag ++ libFlags ++ nixLinkFlags ++ ldflags
 
-          TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
+          -- TIO.putStrLn $ "  compile: " <> T.pack (unwords cmd)
           (exitCode, _stdout, stderr) <- readProcessWithExitCode cxx (tail cmd) ""
 
           case exitCode of
@@ -1162,7 +1491,7 @@ buildGenrule _tc projectRoot pkgPath gen = do
   let srcs = T.intercalate " " $ map (\s -> T.pack $ srcDir </> T.unpack s) gen.srcs
       cmd = T.replace "$SRCS" srcs $ T.replace "$OUT" (T.pack outPath) gen.cmd
 
-  TIO.putStrLn $ "  run: " <> cmd
+  -- TIO.putStrLn $ "  run: " <> cmd
   (exitCode, _, stderr) <- readProcessWithExitCode "sh" ["-c", T.unpack cmd] ""
 
   case exitCode of
@@ -1197,7 +1526,7 @@ buildRustBinary tc projectRoot pkgPath bin = do
       if not exists
         then pure $ Left $ SourceNotFound srcPath
         else do
-          TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
+          -- TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
           (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -1208,7 +1537,7 @@ buildRustBinary tc projectRoot pkgPath bin = do
           edition = rustEditionFlag bin.edition
           cmd = [rustc, "--edition", edition, "--target", target, mainSrc, "-o", outBin]
 
-      TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
+      -- TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
       (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
       case exitCode of
         ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -1250,7 +1579,7 @@ buildRustLibrary tc projectRoot pkgPath lib = do
       if not exists
         then pure $ Left $ SourceNotFound srcPath
         else do
-          TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
+          -- TIO.putStrLn $ "  rustc: " <> T.pack (unwords cmd)
           (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outLib]
@@ -1298,7 +1627,7 @@ buildRustBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
       if not exists
         then pure $ Left $ SourceNotFound srcPath
         else do
-          TIO.putStrLn $ "  rustc (with deps): " <> T.pack (unwords cmd)
+          -- TIO.putStrLn $ "  rustc (with deps): " <> T.pack (unwords cmd)
           (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -1313,7 +1642,7 @@ buildRustBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
               ++ libDirFlags
               ++ [mainSrc, "-o", outBin]
 
-      TIO.putStrLn $ "  rustc (with deps): " <> T.pack (unwords cmd)
+      -- TIO.putStrLn $ "  rustc (with deps): " <> T.pack (unwords cmd)
       (exitCode, _, stderr) <- readProcessWithExitCode rustc (tail cmd) ""
       case exitCode of
         ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -1362,7 +1691,7 @@ buildHaskellBinary tc projectRoot pkgPath bin = do
       if not exists
         then pure $ Left $ SourceNotFound mainSrc
         else do
-          TIO.putStrLn $ "  ghc: " <> T.pack (unwords cmd)
+          -- TIO.putStrLn $ "  ghc: " <> T.pack (unwords cmd)
           (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -1413,7 +1742,7 @@ buildHaskellLibrary tc projectRoot pkgPath lib = do
       if not exists
         then pure $ Left $ SourceNotFound firstSrc
         else do
-          TIO.putStrLn $ "  ghc (lib): " <> T.pack (unwords cmd)
+          -- TIO.putStrLn $ "  ghc (lib): " <> T.pack (unwords cmd)
           (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
           case exitCode of
             ExitSuccess -> do
@@ -1482,7 +1811,7 @@ buildHaskellBinaryWithDeps tc projectRoot pkgPath bin depOutputs = do
       if not exists
         then pure $ Left $ SourceNotFound mainSrc
         else do
-          TIO.putStrLn $ "  ghc (with deps): " <> T.pack (unwords cmd)
+          -- TIO.putStrLn $ "  ghc (with deps): " <> T.pack (unwords cmd)
           (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -1562,7 +1891,7 @@ buildHaskellFFIBinary tc projectRoot pkgPath bin = do
       if not exists
         then pure $ Left $ SourceNotFound mainSrc
         else do
-          TIO.putStrLn $ "  ghc (ffi): " <> T.pack (unwords cmd)
+          -- TIO.putStrLn $ "  ghc (ffi): " <> T.pack (unwords cmd)
           (exitCode, _, stderr) <- readProcessWithExitCode ghc (tail cmd) ""
           case exitCode of
             ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -1596,14 +1925,14 @@ buildLeanBinary tc projectRoot pkgPath bin = do
         else do
           -- Step 1: Generate C code
           let genCCmd = [lean, "-c", outC, srcPath]
-          TIO.putStrLn $ "  lean -c: " <> T.pack (unwords genCCmd)
+          -- TIO.putStrLn $ "  lean -c: " <> T.pack (unwords genCCmd)
           (exitCode1, _, stderr1) <- readProcessWithExitCode lean (tail genCCmd) ""
           case exitCode1 of
             ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords genCCmd) n (T.pack stderr1)
             ExitSuccess -> do
               -- Step 2: Compile C to executable with leanc
               let compileCmd = [leanc, "-o", outBin, outC]
-              TIO.putStrLn $ "  leanc: " <> T.pack (unwords compileCmd)
+              -- TIO.putStrLn $ "  leanc: " <> T.pack (unwords compileCmd)
               (exitCode2, _, stderr2) <- readProcessWithExitCode leanc (tail compileCmd) ""
               case exitCode2 of
                 ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -1630,7 +1959,7 @@ buildLeanLibrary tc projectRoot pkgPath lib = do
     if not exists
       then pure $ Left $ SourceNotFound srcPath
       else do
-        TIO.putStrLn $ "  lean: " <> T.pack (unwords cmd)
+        -- TIO.putStrLn $ "  lean: " <> T.pack (unwords cmd)
         (exitCode, _, stderr) <- readProcessWithExitCode lean (tail cmd) ""
         case exitCode of
           ExitSuccess -> pure $ Right oleanPath
@@ -1696,7 +2025,7 @@ buildNvBinary tc projectRoot pkgPath bin = do
 
       let cmd = [clang] ++ cudaFlags ++ archFlags ++ srcs ++ ["-o", outBin] ++ linkFlags
 
-      TIO.putStrLn $ "  clang++ (cuda): " <> T.pack (unwords cmd)
+      -- TIO.putStrLn $ "  clang++ (cuda): " <> T.pack (unwords cmd)
       (exitCode, _, stderr) <- readProcessWithExitCode clang (tail cmd) ""
       case exitCode of
         ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
@@ -1749,7 +2078,7 @@ buildNvLibrary tc projectRoot pkgPath lib = do
         if not exists
           then pure $ Left $ SourceNotFound srcPath
           else do
-            TIO.putStrLn $ "  clang++ (cuda): " <> T.pack (unwords cmd)
+            -- TIO.putStrLn $ "  clang++ (cuda): " <> T.pack (unwords cmd)
             (exitCode, _, stderr) <- readProcessWithExitCode clang (tail cmd) ""
             case exitCode of
               ExitSuccess -> pure $ Right objPath
@@ -1782,7 +2111,7 @@ buildPureScriptApp tc projectRoot pkgPath app = do
   let args = ["bundle", "--outfile", outBundle]
       cmd = spago : args
 
-  TIO.putStrLn $ "  spago: " <> T.pack (unwords cmd)
+  -- TIO.putStrLn $ "  spago: " <> T.pack (unwords cmd)
   (exitCode, stderr) <- runProcessWithPath srcDir extraPaths spago args
   case exitCode of
     ExitSuccess -> do
@@ -1823,7 +2152,7 @@ buildPureScriptBinary tc projectRoot pkgPath bin = do
   let args = ["bundle", "--platform", "node", "--outfile", outBundle]
       cmd = spago : args
 
-  TIO.putStrLn $ "  spago: " <> T.pack (unwords cmd)
+  -- TIO.putStrLn $ "  spago: " <> T.pack (unwords cmd)
   (exitCode, stderr) <- runProcessWithPath srcDir extraPaths spago args
   case exitCode of
     ExitSuccess -> pure $ Right $ BuildSuccess [outBundle]

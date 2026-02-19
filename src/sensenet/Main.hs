@@ -9,12 +9,13 @@
 module Main where
 
 import Control.Concurrent.Async (forConcurrently, mapConcurrently)
-import Control.Monad (forM_)
+import Control.Exception (SomeException, catch)
+import Control.Monad (forM, forM_, when)
 import Data.List (partition, sortOn)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import SenseNet.Build (BuildError (..), BuildResult (..), build, buildWithConsole, buildWithDeps)
+import SenseNet.Build (BuildError (..), BuildResult (..), build, buildMultipleStub, buildMultipleWithBrickTUI, buildWithBrickTUI, buildWithConsole, buildWithDeps)
 import SenseNet.DICE qualified as DICE
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover)
@@ -34,7 +35,8 @@ data Options = Options
     optRemoteHost :: String,
     optRemotePort :: Int,
     optWithDeps :: Bool, -- Use DICE-based dependency resolution
-    optTUI :: Bool -- Use superconsole TUI
+    optTUI :: Bool, -- Use superconsole TUI
+    optStub :: Bool -- Stub mode: create empty outputs instantly (for TUI development)
   }
 
 defaultOptions :: Options
@@ -44,7 +46,8 @@ defaultOptions =
       optRemoteHost = "localhost",
       optRemotePort = 50051,
       optWithDeps = True, -- DICE-based dependency resolution is now the default
-      optTUI = True -- Superconsole TUI is now the default (falls back gracefully)
+      optTUI = True, -- Superconsole TUI is now the default (falls back gracefully)
+      optStub = False -- Real builds by default
     }
 
 -- | Parse options from args, returning (options, remaining args)
@@ -59,12 +62,31 @@ parseOptions = go defaultOptions
     go opts ("--no-deps" : rest) = go opts {optWithDeps = False} rest
     go opts ("--tui" : rest) = go opts {optTUI = True, optWithDeps = True} rest
     go opts ("--no-tui" : rest) = go opts {optTUI = False} rest
+    go opts ("--stub" : rest) = go opts {optStub = True} rest
     go opts (x : rest) =
       let (opts', rest') = go opts rest
        in (opts', x : rest')
 
 main :: IO ()
-main = do
+main = mainBody `catch` handleException
+  where
+    handleException :: SomeException -> IO ()
+    handleException e = do
+      -- Check if it's a user interrupt (Ctrl+C)
+      let msg = show e
+      if "user interrupt" `isInfixOf` msg || "AsyncCancelled" `isInfixOf` msg
+        then do
+          TIO.putStrLn "\nBuild interrupted."
+        else do
+          TIO.putStrLn $ "\nError: " <> T.pack msg
+      exitFailure
+
+    isInfixOf needle haystack = needle `elem` (map (take (length needle)) $ tails haystack)
+    tails [] = [[]]
+    tails xs@(_ : xs') = xs : tails xs'
+
+mainBody :: IO ()
+mainBody = do
   args <- getArgs
   let (opts, args') = parseOptions args
   case args' of
@@ -77,6 +99,12 @@ main = do
     ("graph" : _) -> cmdGraph
     ("emit" : rest) -> cmdEmit (map T.pack rest)
     ("test-remote" : _) -> cmdTestRemote opts
+    ("--complete" : rest) -> cmdComplete (map T.pack rest)
+    ("--completion-script" : "bash" : _) -> TIO.putStrLn bashCompletionScript
+    ("--completion-script" : "zsh" : _) -> TIO.putStrLn zshCompletionScript
+    ("--completion-script" : _) -> do
+      TIO.putStrLn "Usage: sensenet --completion-script <bash|zsh>"
+      exitFailure
     ("--version" : _) -> version
     ("-V" : _) -> version
     ("--help" : _) -> usage
@@ -100,7 +128,7 @@ usage =
         "Usage: sensenet <command> [options]",
         "",
         "Commands:",
-        "  build [target]     Build target(s)",
+        "  build <target>     Build target(s)",
         "  run <target> [--]  Build and run a target",
         "  clean              Remove build outputs (sensenet-out/)",
         "  targets [pattern]  List available targets",
@@ -109,8 +137,13 @@ usage =
         "  emit [pkg]         Emit BUCK file for Buck2 fiction",
         "  test-remote        Test connection to remote executor",
         "",
+        "Target patterns:",
+        "  //path/to/pkg:target   Single target",
+        "  //...                  All targets in project",
+        "  //path/to/...          All targets under path",
+        "",
         "Options:",
-        "  --no-tui           Disable superconsole TUI (use plain text output)",
+        "  --no-tui           Disable TUI (use plain text output)",
         "  --no-deps          Disable dependency resolution (legacy mode)",
         "  --remote           Execute builds remotely via NativeLink",
         "  --remote-host H    Remote executor host (default: localhost)",
@@ -119,14 +152,18 @@ usage =
         "  --help, -h         Show this help",
         "",
         "Examples:",
-        "  sensenet build                       # build all locally",
         "  sensenet build //src/examples/cxx:hello-cxx",
-        "  sensenet build --no-tui //pkg:target  # build with plain text output",
-        "  sensenet build --no-deps //pkg:target # legacy build without dep resolution",
+        "  sensenet build //...                 # build all targets",
+        "  sensenet build //src/examples/...    # build all examples",
+        "  sensenet build --no-tui //pkg:target # build with plain text output",
         "  sensenet build --remote //pkg:target # build remotely",
         "  sensenet run //src/examples/rust:math_demo",
         "  sensenet clean                       # remove sensenet-out/",
         "  sensenet targets                     # list all targets",
+        "",
+        "Shell completion:",
+        "  eval \"$(sensenet --completion-script bash)\"  # bash",
+        "  eval \"$(sensenet --completion-script zsh)\"   # zsh",
         "",
         "Output goes to sensenet-out/"
       ]
@@ -158,28 +195,78 @@ cmdBuild opts args = do
 
   case args of
     [] -> do
+      -- No args = show usage hint
+      TIO.putStrLn "Usage: sensenet build //path/to/pkg:target"
+      TIO.putStrLn "       sensenet build //...              (build all)"
+      TIO.putStrLn "       sensenet build //path/...         (build all in path)"
+    patterns -> do
+      -- Parse all patterns and expand them
+      allTargets <- fmap concat $ forM patterns $ \pattern -> do
+        case parseTargetPattern pattern of
+          Nothing -> do
+            TIO.putStrLn $ "Invalid target pattern: " <> pattern
+            TIO.putStrLn "Expected: //path/to/pkg:target, //..., or //path/..."
+            exitFailure
+          Just PatternAll -> do
+            -- Build all targets in the project
+            files <- discover projectRoot
+            pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
+            pure [(pkg, ruleName rule) | pkg <- pkgs, rule <- pkg.rules]
+          Just (PatternPath pathPrefix) -> do
+            -- Build all targets under a path prefix
+            files <- discover projectRoot
+            let prefix = T.unpack pathPrefix
+                matchingFiles = filter (\f -> prefix `isPrefixOf` makeRelative projectRoot (dhallPath f)) files
+            pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) matchingFiles
+            pure [(pkg, ruleName rule) | pkg <- pkgs, rule <- pkg.rules]
+          Just (PatternSingle pkgPath targetName) -> do
+            let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
+            pkg <- Dhall.parsePackageFile projectRoot dhallPath'
+            pure [(pkg, targetName)]
+
+      -- Report what we're building
+      let targetCount = length allTargets
+      when (targetCount > 1) $
+        TIO.putStrLn $
+          "Building " <> T.pack (show targetCount) <> " targets..."
+
       -- Build all targets
-      files <- discover projectRoot
-      TIO.putStrLn $ "Found " <> T.pack (show $ length files) <> " BUILD.dhall files"
-      -- Parse all BUILD.dhall files in parallel
-      pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
-      forM_ pkgs $ \pkg -> do
-        forM_ pkg.rules $ \rule -> do
-          buildTarget opts remoteCfg tc projectRoot pkg (ruleName rule)
-    targets -> do
-      -- Build each specified target - parse in parallel
-      let parseOne target = case parseTarget target of
-            Nothing -> do
-              TIO.putStrLn $ "Invalid target: " <> target
-              TIO.putStrLn "Expected format: //path/to/pkg:target"
-              exitFailure
-            Just (pkgPath, targetName) -> do
-              let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
-              pkg <- Dhall.parsePackageFile projectRoot dhallPath'
-              pure (pkg, targetName)
-      parsed <- mapConcurrently parseOne targets
-      forM_ parsed $ \(pkg, targetName) -> do
-        buildTarget opts remoteCfg tc projectRoot pkg targetName
+      case remoteCfg of
+        Just _ -> do
+          -- Remote builds are still sequential
+          forM_ allTargets $ \(pkg, targetName) -> do
+            buildTarget opts remoteCfg tc projectRoot pkg targetName
+        Nothing -> do
+          if opts.optStub && targetCount > 0
+            then do
+              -- Stub mode: instant fake builds for TUI development
+              result <- buildMultipleStub tc projectRoot allTargets
+              case result of
+                Left err -> do
+                  TIO.putStrLn $ "Build failed: " <> showError err
+                  exitFailure
+                Right _ -> do
+                  TIO.putStrLn $ "[stub] Built " <> T.pack (show targetCount) <> " targets"
+            else
+              if opts.optTUI && targetCount > 0
+                then do
+                  -- Use single TUI session for all targets (parallel)
+                  result <- buildMultipleWithBrickTUI tc projectRoot allTargets
+                  case result of
+                    Left err -> do
+                      TIO.putStrLn $ "Build failed: " <> showError err
+                      exitFailure
+                    Right results -> do
+                      -- Count successes
+                      let successes = length [() | BuildSuccess _ <- results]
+                          cached = length [() | BuildCached _ <- results]
+                      TIO.putStrLn $ "Built " <> T.pack (show successes) <> " targets, " <> T.pack (show cached) <> " cached"
+                else do
+                  -- Non-TUI: build sequentially
+                  forM_ allTargets $ \(pkg, targetName) -> do
+                    buildTarget opts remoteCfg tc projectRoot pkg targetName
+  where
+    isPrefixOf prefix str = take (length prefix) str == prefix
 
 buildTarget :: Options -> Maybe Remote.RemoteConfig -> TC.Toolchains -> FilePath -> Package -> Text -> IO ()
 buildTarget opts remoteCfg tc projectRoot pkg targetName = do
@@ -196,8 +283,8 @@ buildTarget opts remoteCfg tc projectRoot pkg targetName = do
     Nothing -> do
       if opts.optTUI
         then do
-          -- Use superconsole TUI with DICE dependency resolution
-          result <- buildWithConsole tc projectRoot pkg targetName
+          -- Use Brick TUI with DICE dependency resolution
+          result <- buildWithBrickTUI tc projectRoot pkg targetName
           case result of
             Left err -> do
               TIO.putStrLn $ "  x " <> showError err
@@ -264,13 +351,34 @@ showError = \case
   UnsupportedRule rule -> "Unsupported rule type: " <> rule
   PackageNotFound pkgPath -> "Package not found: " <> pkgPath <> " (no BUILD.dhall)"
 
--- | Parse //path/to/pkg:target
-parseTarget :: Text -> Maybe (Text, Text)
-parseTarget t = do
+-- | Target pattern types
+data TargetPattern
+  = -- | Build all targets: //...
+    PatternAll
+  | -- | Build all in path: //path/to/...
+    PatternPath Text
+  | -- | Single target: //path/to/pkg:target
+    PatternSingle Text Text
+  deriving (Show, Eq)
+
+-- | Parse target pattern (supports //..., //path/..., //path:target)
+parseTargetPattern :: Text -> Maybe TargetPattern
+parseTargetPattern t = do
   rest <- T.stripPrefix "//" t
-  case T.breakOn ":" rest of
-    (_, "") -> Nothing -- No colon found
-    (pkgPath, colonTarget) -> Just (pkgPath, T.drop 1 colonTarget)
+  if rest == "..."
+    then Just PatternAll
+    else
+      if "..." `T.isSuffixOf` rest
+        then Just $ PatternPath (T.dropEnd 3 rest) -- drop "..."
+        else case T.breakOn ":" rest of
+          (_, "") -> Nothing -- No colon found
+          (pkgPath, colonTarget) -> Just $ PatternSingle pkgPath (T.drop 1 colonTarget)
+
+-- | Parse //path/to/pkg:target (legacy, for backward compat)
+parseTarget :: Text -> Maybe (Text, Text)
+parseTarget t = case parseTargetPattern t of
+  Just (PatternSingle pkg target) -> Just (pkg, target)
+  _ -> Nothing
 
 cmdTargets :: [Text] -> IO ()
 cmdTargets _ = do
@@ -371,7 +479,7 @@ cmdRun opts args = do
 
           result <-
             if opts.optTUI
-              then buildWithConsole tc projectRoot pkg targetName
+              then buildWithBrickTUI tc projectRoot pkg targetName
               else do
                 TIO.putStrLn $ "Building " <> T.pack pkg.path <> ":" <> targetName
                 buildWithDeps tc projectRoot pkg targetName
@@ -398,3 +506,90 @@ runOutput projectRoot outputs args = do
       -- Filter out "--" if present at the start of args
       let execArgs = map T.unpack $ filter (/= "--") args
       callProcess execPath execArgs
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Shell Completion
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Generate completions for shell integration
+-- Usage: sensenet --complete <word> [prev-word]
+cmdComplete :: [Text] -> IO ()
+cmdComplete args = do
+  projectRoot <- getCurrentDirectory
+  let (word, prevWord) = case args of
+        [] -> ("", "")
+        [w] -> (w, "")
+        (w : p : _) -> (w, p)
+
+  case prevWord of
+    -- After "build" or "run", complete targets
+    "build" -> completeTargets projectRoot word
+    "run" -> completeTargets projectRoot word
+    -- Default: complete commands or targets if starts with //
+    _ ->
+      if "//" `T.isPrefixOf` word
+        then completeTargets projectRoot word
+        else completeCommands word
+
+-- | Complete available commands
+completeCommands :: Text -> IO ()
+completeCommands prefix = do
+  let commands = ["build", "run", "clean", "targets", "query", "graph", "emit", "test-remote", "--version", "--help"]
+      matches = filter (prefix `T.isPrefixOf`) commands
+  mapM_ TIO.putStrLn matches
+
+-- | Complete targets (supports partial paths)
+completeTargets :: FilePath -> Text -> IO ()
+completeTargets projectRoot prefix = do
+  files <- discover projectRoot
+  pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
+
+  let allTargets =
+        [ "//" <> T.pack pkg.path <> ":" <> ruleName rule
+        | pkg <- pkgs,
+          rule <- pkg.rules
+        ]
+      -- Also add //... and path patterns
+      allPaths = nub ["//" <> T.pack pkg.path <> "/..." | pkg <- pkgs]
+      allCompletions = "//..." : sortOn id (allTargets ++ allPaths)
+      matches = filter (prefix `T.isPrefixOf`) allCompletions
+
+  mapM_ TIO.putStrLn matches
+  where
+    nub [] = []
+    nub (x : xs) = x : nub (filter (/= x) xs)
+
+-- | Print shell completion script
+-- Usage: sensenet --completion-script bash
+--        sensenet --completion-script zsh
+bashCompletionScript :: Text
+bashCompletionScript =
+  T.unlines
+    [ "# Bash completion for sensenet",
+      "# Add to ~/.bashrc: eval \"$(sensenet --completion-script bash)\"",
+      "_sensenet_completions() {",
+      "    local cur prev",
+      "    cur=\"${COMP_WORDS[COMP_CWORD]}\"",
+      "    prev=\"${COMP_WORDS[COMP_CWORD-1]}\"",
+      "",
+      "    COMPREPLY=($(compgen -W \"$(sensenet --complete \"$cur\" \"$prev\" 2>/dev/null)\" -- \"$cur\"))",
+      "}",
+      "",
+      "complete -F _sensenet_completions sensenet",
+      "complete -F _sensenet_completions sense"
+    ]
+
+zshCompletionScript :: Text
+zshCompletionScript =
+  T.unlines
+    [ "# Zsh completion for sensenet",
+      "# Add to ~/.zshrc: eval \"$(sensenet --completion-script zsh)\"",
+      "_sensenet() {",
+      "    local -a completions",
+      "    completions=($(sensenet --complete \"${words[CURRENT]}\" \"${words[CURRENT-1]}\" 2>/dev/null))",
+      "    _describe 'sensenet' completions",
+      "}",
+      "",
+      "compdef _sensenet sensenet",
+      "compdef _sensenet sense"
+    ]

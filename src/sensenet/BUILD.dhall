@@ -110,20 +110,33 @@ let dice =
           ]
 
 -- Build engine (temporarily relaxed warnings for Buck2 bootstrap)
+-- NOTE: Includes TUI module for Brick-based console
 let build =
       (A.haskellLibrary "build"
         [ "SenseNet/Build.hs"
         , "SenseNet/Remote.hs"
+        , "SenseNet/TUI.hs"
+        , "SenseNet/Scheduler.hs"
         ])
         with packages =
-          [ "base"
+          [ "aeson"
+          , "base"
+          , "brick"
           , "bytestring"
           , "containers"
           , "directory"
           , "filepath"
+          , "microlens"
+          , "microlens-mtl"
+          , "microlens-th"
           , "process"
           , "proto-lens"
           , "text"
+          , "time"
+          , "unix"
+          , "vector"
+          , "vty"
+          , "vty-crossplatform"
           ]
         with ghc_options =
           [ "-O2"

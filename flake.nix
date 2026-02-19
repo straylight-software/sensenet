@@ -131,6 +131,16 @@
               filepath
               process
               text
+              # Scheduler deps
+              stm
+              time
+              unix
+              # TUI deps (Brick)
+              brick
+              microlens-mtl
+              microlens-th
+              vty
+              vty-crossplatform
               # NativeLink/gRPC deps
               aeson
               conduit

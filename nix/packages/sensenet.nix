@@ -13,6 +13,16 @@
   filepath,
   process,
   text,
+  # Scheduler deps
+  stm,
+  time,
+  unix,
+  # TUI deps (brick)
+  brick,
+  microlens-mtl,
+  microlens-th,
+  vty,
+  vty-crossplatform,
   # NativeLink/gRPC deps (formerly nativelink-hs)
   aeson,
   conduit,
@@ -46,6 +56,16 @@ mkDerivation {
     filepath
     process
     text
+    # Scheduler
+    stm
+    time
+    unix
+    # TUI (Brick)
+    brick
+    microlens-mtl
+    microlens-th
+    vty
+    vty-crossplatform
     # NativeLink/gRPC
     aeson
     conduit
