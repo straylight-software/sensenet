@@ -30,7 +30,9 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -45,6 +47,7 @@ import GHC.Generics (Generic)
 import GHC.IO.Handle (hGetContents)
 import SenseNet.Console qualified as Console
 import SenseNet.DICE (DICE, DICEError, clearTargets, compute, inject, registerTarget, runDICE, sha256)
+import SenseNet.Dhall qualified as Dhall
 import SenseNet.IR qualified as IR
 import SenseNet.Toolchains qualified as TC
 import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize)
@@ -70,7 +73,21 @@ data BuildError
   | DICEFailed DICEError
   | TargetNotFound Text
   | UnsupportedRule Text
+  | PackageNotFound Text
   deriving (Show, Eq)
+
+-- | Cache for loaded packages to avoid re-parsing BUILD.dhall
+-- MILE MARKER: In Path B, this becomes part of the coeffect discharge state
+type PackageCache = IORef (Map FilePath IR.Package)
+
+-- | State for cross-package dependency resolution
+data BuildContext = BuildContext
+  { bcProjectRoot :: !FilePath,
+    bcToolchains :: !TC.Toolchains,
+    bcPkgCache :: !PackageCache,
+    bcProcessed :: !(IORef (Set Text)), -- Fully qualified target names already registered
+    bcRuleMap :: !(IORef (Map Text (IR.Rule, FilePath))) -- target -> (rule, pkgPath)
+  }
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Build Entry Point
@@ -87,9 +104,13 @@ build tc projectRoot pkg targetName = do
 -- | Build a target with full dependency resolution via DICE
 --
 -- This is the primary entry point for dependency-aware builds:
--- 1. Registers all rules in the package with DICE (with their deps)
--- 2. Requests computation of the target
--- 3. DICE auto-resolves deps in the correct order
+-- 1. Discovers all transitive dependencies (including cross-package)
+-- 2. Registers all required rules with DICE
+-- 3. Requests computation of the target
+-- 4. DICE auto-resolves deps in the correct order
+--
+-- Supports cross-package dependencies like "//src/foo:bar" by lazily
+-- loading packages as they're discovered.
 --
 -- @
 -- buildWithDeps toolchains "." pkg "mybin"
@@ -100,29 +121,150 @@ buildWithDeps tc projectRoot pkg targetName = do
   case findRule targetName pkg.rules of
     Nothing -> pure $ Left $ TargetNotFound targetName
     Just _rule -> do
-      -- Build rule map for quick lookup
-      let ruleMap = Map.fromList [(IR.ruleName r, r) | r <- pkg.rules]
+      -- Initialize build context for lazy loading
+      pkgCache <- newIORef (Map.singleton pkg.path pkg)
+      processedRef <- newIORef Set.empty
+      ruleMapRef <- newIORef Map.empty
 
-      -- Run DICE to register all targets and compute
-      result <- runDICE $ do
-        -- Clear any previous registrations
-        clearTargets
+      let ctx =
+            BuildContext
+              { bcProjectRoot = projectRoot,
+                bcToolchains = tc,
+                bcPkgCache = pkgCache,
+                bcProcessed = processedRef,
+                bcRuleMap = ruleMapRef
+              }
 
-        -- Register all rules with their dependencies
-        liftIO $ TIO.putStrLn $ "Registering " <> T.pack (show $ length pkg.rules) <> " targets..."
-        forM_ pkg.rules $ \rule -> do
-          let name = IR.ruleName rule
-              deps = extractLocalDepNames (IR.ruleDeps rule)
-          liftIO $ TIO.putStrLn $ "  " <> name <> " -> " <> T.pack (show deps)
-          registerTarget name deps (makeCallback tc projectRoot pkg.path ruleMap)
+      -- Discover and register all transitive dependencies
+      liftIO $ TIO.putStrLn $ "Discovering dependencies for " <> targetName <> "..."
+      discoverResult <- discoverAndRegisterDeps ctx pkg targetName
 
-        -- Request computation of the target
-        liftIO $ TIO.putStrLn $ "\nComputing target: " <> targetName
-        compute targetName
+      case discoverResult of
+        Left err -> pure $ Left err
+        Right () -> do
+          -- Get the complete rule map
+          ruleMap <- readIORef ruleMapRef
 
+          -- Run DICE to compute
+          result <- runDICE $ do
+            clearTargets
+
+            -- Register all discovered rules
+            let allRules = Map.toList ruleMap
+            liftIO $ TIO.putStrLn $ "Registering " <> T.pack (show $ length allRules) <> " targets..."
+
+            forM_ allRules $ \(fqName, (rule, pkgPath)) -> do
+              let deps = extractDepNames (IR.ruleDeps rule)
+                  -- Qualify local deps with package path
+                  qualifiedDeps = map (qualifyDep pkgPath) deps
+              liftIO $ TIO.putStrLn $ "  " <> fqName <> " -> " <> T.pack (show qualifiedDeps)
+              registerTarget fqName qualifiedDeps (makeCallbackWithContext ctx fqName)
+
+            -- Compute the target (qualify it too)
+            let fqTarget = "//" <> T.pack pkg.path <> ":" <> targetName
+            liftIO $ TIO.putStrLn $ "\nComputing target: " <> fqTarget
+            compute fqTarget
+
+          case result of
+            Left err -> pure $ Left $ DICEFailed err
+            Right outputs -> pure $ Right $ BuildSuccess (map T.unpack outputs)
+
+-- | Qualify a dep name with package path if it's local
+qualifyDep :: FilePath -> Text -> Text
+qualifyDep pkgPath dep
+  | "//" `T.isPrefixOf` dep = dep -- Already fully qualified
+  | otherwise = "//" <> T.pack pkgPath <> ":" <> dep
+
+-- | Discover all transitive dependencies and register them
+-- Uses a worklist algorithm to lazily load packages
+discoverAndRegisterDeps :: BuildContext -> IR.Package -> Text -> IO (Either BuildError ())
+discoverAndRegisterDeps ctx pkg targetName = do
+  -- Initialize worklist with the initial target
+  let initialFqName = "//" <> T.pack pkg.path <> ":" <> targetName
+  worklistRef <- newIORef [initialFqName]
+
+  let processWorklist = do
+        worklist <- readIORef worklistRef
+        case worklist of
+          [] -> pure $ Right ()
+          (fqName : rest) -> do
+            writeIORef worklistRef rest
+
+            -- Check if already processed
+            processed <- readIORef (bcProcessed ctx)
+            if fqName `Set.member` processed
+              then processWorklist
+              else do
+                -- Parse the fully qualified name
+                case parseFqName fqName of
+                  Nothing -> pure $ Left $ TargetNotFound fqName
+                  Just (pkgPath, tgtName) -> do
+                    -- Load the package (cached)
+                    pkgResult <- loadPackageCached ctx (T.unpack pkgPath)
+                    case pkgResult of
+                      Left err -> pure $ Left err
+                      Right depPkg -> do
+                        -- Find the rule
+                        case findRule tgtName depPkg.rules of
+                          Nothing -> pure $ Left $ TargetNotFound fqName
+                          Just rule -> do
+                            -- Mark as processed
+                            modifyIORef' (bcProcessed ctx) (Set.insert fqName)
+
+                            -- Add to rule map
+                            modifyIORef' (bcRuleMap ctx) (Map.insert fqName (rule, depPkg.path))
+
+                            -- Add deps to worklist
+                            let deps = extractDepNames (IR.ruleDeps rule)
+                                qualifiedDeps = map (qualifyDep depPkg.path) deps
+                            modifyIORef' worklistRef (++ qualifiedDeps)
+
+                            processWorklist
+
+  processWorklist
+
+-- | Parse "//pkg/path:target" into (pkgPath, targetName)
+parseFqName :: Text -> Maybe (Text, Text)
+parseFqName t
+  | "//" `T.isPrefixOf` t = do
+      let withoutSlashes = T.drop 2 t
+      case T.breakOn ":" withoutSlashes of
+        (pkgPath, rest)
+          | T.null rest -> Nothing
+          | otherwise -> Just (pkgPath, T.drop 1 rest)
+  | otherwise = Nothing
+
+-- | Load a package, using cache to avoid re-parsing
+loadPackageCached :: BuildContext -> FilePath -> IO (Either BuildError IR.Package)
+loadPackageCached ctx pkgPath = do
+  cache <- readIORef (bcPkgCache ctx)
+  case Map.lookup pkgPath cache of
+    Just pkg -> pure $ Right pkg
+    Nothing -> do
+      let dhallPath = bcProjectRoot ctx </> pkgPath </> "BUILD.dhall"
+      exists <- doesFileExist dhallPath
+      if not exists
+        then pure $ Left $ PackageNotFound (T.pack pkgPath)
+        else do
+          pkg <- Dhall.parsePackageFile (bcProjectRoot ctx) dhallPath
+          modifyIORef' (bcPkgCache ctx) (Map.insert pkgPath pkg)
+          pure $ Right pkg
+
+-- | Make a callback that uses BuildContext for rule lookup
+makeCallbackWithContext :: BuildContext -> Text -> Text -> Text -> IO Text
+makeCallbackWithContext ctx fqName _targetName depsJson = do
+  ruleMap <- readIORef (bcRuleMap ctx)
+  case Map.lookup fqName ruleMap of
+    Nothing -> pure $ mkResultJson [] 1 ("Target not found in context: " <> fqName) emptyProfile
+    Just (rule, pkgPath) -> do
+      let depOutputs = parseDepOutputs depsJson
+      (result, profile) <-
+        withProfiling $
+          buildRuleWithDeps (bcToolchains ctx) (bcProjectRoot ctx) pkgPath rule depOutputs
       case result of
-        Left err -> pure $ Left $ DICEFailed err
-        Right outputs -> pure $ Right $ BuildSuccess (map T.unpack outputs)
+        Left err -> pure $ mkResultJson [] 1 (T.pack $ show err) profile
+        Right (BuildSuccess outputs) -> pure $ mkResultJson outputs 0 "" profile
+        Right (BuildCached outputs) -> pure $ mkResultJson outputs 0 "cached" emptyProfile
 
 -- | Build state for console progress tracking
 data BuildState = BuildState
@@ -182,55 +324,80 @@ buildWithConsoleInner tc projectRoot pkg targetName console progress = do
   case findRule targetName pkg.rules of
     Nothing -> pure $ Left $ TargetNotFound targetName
     Just _rule -> do
-      -- Build rule map for quick lookup
-      let ruleMap = Map.fromList [(IR.ruleName r, r) | r <- pkg.rules]
-          totalTargets = length pkg.rules
+      -- Initialize build context for lazy loading
+      pkgCache <- newIORef (Map.singleton pkg.path pkg)
+      processedRef <- newIORef Set.empty
+      ruleMapRef <- newIORef Map.empty
 
-      -- Initialize build state
-      stateRef <- newIORef (initialBuildState totalTargets)
+      let ctx =
+            BuildContext
+              { bcProjectRoot = projectRoot,
+                bcToolchains = tc,
+                bcPkgCache = pkgCache,
+                bcProcessed = processedRef,
+                bcRuleMap = ruleMapRef
+              }
 
-      -- Initialize progress display
-      Console.updateProgress
-        progress
-        (fromIntegral totalTargets)
-        0
-        0
-        0
+      -- Discover all transitive dependencies (silent, no console output during discovery)
+      discoverResult <- discoverAndRegisterDeps ctx pkg targetName
 
-      -- Start render thread (updates display at ~10 Hz)
-      renderDone <- newEmptyMVar
-      renderThread <- forkIO $ renderLoop console progress stateRef renderDone
+      case discoverResult of
+        Left err -> pure $ Left err
+        Right () -> do
+          -- Get the complete rule map
+          ruleMap <- readIORef ruleMapRef
+          let totalTargets = Map.size ruleMap
 
-      -- Run the build
-      result <- runDICE $ do
-        clearTargets
+          -- Initialize build state
+          stateRef <- newIORef (initialBuildState totalTargets)
 
-        -- Register all rules with their dependencies
-        forM_ pkg.rules $ \rule -> do
-          let name = IR.ruleName rule
-              deps = extractLocalDepNames (IR.ruleDeps rule)
-          registerTarget name deps (makeConsoleCallback tc projectRoot pkg.path ruleMap console progress stateRef)
+          -- Initialize progress display
+          Console.updateProgress
+            progress
+            (fromIntegral totalTargets)
+            0
+            0
+            0
 
-        -- Request computation of the target
-        compute targetName
+          -- Start render thread (updates display at ~10 Hz)
+          renderDone <- newEmptyMVar
+          renderThread <- forkIO $ renderLoop console progress stateRef renderDone
 
-      -- Stop render thread
-      putMVar renderDone ()
-      killThread renderThread
+          -- Run the build
+          result <- runDICE $ do
+            clearTargets
 
-      -- Final render to show completion
-      state <- readIORef stateRef
-      Console.updateProgress
-        progress
-        (fromIntegral $ bsTotal state)
-        (fromIntegral $ bsCompleted state)
-        0
-        (fromIntegral $ bsCached state)
-      _ <- Console.renderProgress console progress
+            -- Register all discovered rules
+            let allRules = Map.toList ruleMap
+            forM_ allRules $ \(fqName, (rule, rulePkgPath)) -> do
+              let deps = extractDepNames (IR.ruleDeps rule)
+                  qualifiedDeps = map (qualifyDep rulePkgPath) deps
+              registerTarget
+                fqName
+                qualifiedDeps
+                (makeConsoleCallbackWithContext ctx console progress stateRef fqName)
 
-      case result of
-        Left err -> pure $ Left $ DICEFailed err
-        Right outputs -> pure $ Right $ BuildSuccess (map T.unpack outputs)
+            -- Compute the target (qualify it)
+            let fqTarget = "//" <> T.pack pkg.path <> ":" <> targetName
+            compute fqTarget
+
+          -- Stop render thread
+          putMVar renderDone ()
+          killThread renderThread
+
+          -- Final render to show completion
+          state <- readIORef stateRef
+          Console.updateProgress
+            progress
+            (fromIntegral $ bsTotal state)
+            (fromIntegral $ bsCompleted state)
+            0
+            (fromIntegral $ bsCached state)
+          _ <- Console.renderProgress console progress
+
+          case result of
+            Left err -> pure $ Left $ DICEFailed err
+            Right outputs -> pure $ Right $ BuildSuccess (map T.unpack outputs)
 
 -- | Render loop that updates the console display
 renderLoop :: Console.Console -> Console.BuildProgress -> IORef BuildState -> MVar () -> IO ()
@@ -323,6 +490,63 @@ makeConsoleCallback tc projectRoot pkgPath ruleMap console progress stateRef tar
 
   pure resultJson
 
+-- | Console-aware callback for DICE with BuildContext (supports cross-package deps)
+makeConsoleCallbackWithContext ::
+  BuildContext ->
+  Console.Console ->
+  Console.BuildProgress ->
+  IORef BuildState ->
+  Text -> -- Fully qualified target name (//pkg:target)
+  Text -> -- Target name (from DICE, same as fqName here)
+  Text -> -- Deps JSON
+  IO Text -- Result JSON
+makeConsoleCallbackWithContext ctx console progress stateRef fqName _targetName depsJson = do
+  -- Record action start
+  actionId <- modifyIORefRet stateRef $ \s ->
+    let newId = bsNextId s
+        newActions = (newId, fqName) : bsActions s
+     in (s {bsNextId = newId + 1, bsActions = newActions, bsRunning = bsRunning s + 1}, newId)
+
+  -- Add action to progress display
+  Console.addAction progress actionId fqName 0
+
+  -- Build the target with profiling
+  ruleMap <- readIORef (bcRuleMap ctx)
+  resultJson <- case Map.lookup fqName ruleMap of
+    Nothing -> pure $ mkResultJson [] 1 ("Target not found in context: " <> fqName) emptyProfile
+    Just (rule, pkgPath) -> do
+      let depOutputs = parseDepOutputs depsJson
+      (result, profile) <-
+        withProfiling $
+          buildRuleWithDeps (bcToolchains ctx) (bcProjectRoot ctx) pkgPath rule depOutputs
+      case result of
+        Left err -> pure $ mkResultJson [] 1 (T.pack $ show err) profile
+        Right (BuildSuccess outputs) -> pure $ mkResultJson outputs 0 "" profile
+        Right (BuildCached outputs) -> pure $ mkResultJson outputs 0 "cached" emptyProfile
+
+  -- Record action completion
+  Console.removeAction progress actionId
+
+  -- Parse result to determine success/cached
+  let isCached = "\"log\":\"cached\"" `T.isInfixOf` resultJson
+      isSuccess = "\"exit_code\":0" `T.isInfixOf` resultJson
+
+  modifyIORef' stateRef $ \s ->
+    let newActions = filter ((/= actionId) . fst) (bsActions s)
+        logMsg =
+          if isSuccess
+            then "  ✓ " <> fqName
+            else "  ✗ " <> fqName
+     in s
+          { bsCompleted = bsCompleted s + 1,
+            bsRunning = bsRunning s - 1,
+            bsCached = if isCached then bsCached s + 1 else bsCached s,
+            bsActions = newActions,
+            bsLogs = bsLogs s ++ [logMsg]
+          }
+
+  pure resultJson
+
 -- | Modify an IORef and return a value
 modifyIORefRet :: IORef a -> (a -> (a, b)) -> IO b
 modifyIORefRet ref f = do
@@ -331,15 +555,71 @@ modifyIORefRet ref f = do
   writeIORef ref new
   pure ret
 
--- | Extract local dependency names from Dep list
+-- ════════════════════════════════════════════════════════════════════════════
+-- Dependency Parsing
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | A parsed dependency reference
+-- MILE MARKER: This will become part of BuildCoeffect.deps in Path B
+data ParsedDep
+  = LocalDep !Text -- Same-package dep: ":foo" or "foo"
+  | CrossPkgDep !Text !Text -- Cross-package: "//pkg/path:target"
+  deriving (Show, Eq)
+
+-- | Parse a dependency string into structured form
+--
+-- Formats:
+--   ":foo"           -> LocalDep "foo"
+--   "foo"            -> LocalDep "foo"
+--   "//pkg/path:bar" -> CrossPkgDep "pkg/path" "bar"
+parseDep :: IR.Dep -> Maybe ParsedDep
+parseDep (IR.DepLocal t)
+  | "//" `T.isPrefixOf` t = parseCrossPkgDep t
+  | ":" `T.isPrefixOf` t = Just $ LocalDep (T.drop 1 t)
+  | otherwise = Just $ LocalDep t
+parseDep (IR.DepFlake _) = Nothing -- External flake deps, not DICE targets
+
+-- | Parse "//pkg/path:target" format
+parseCrossPkgDep :: Text -> Maybe ParsedDep
+parseCrossPkgDep t = do
+  let withoutSlashes = T.drop 2 t -- Remove "//"
+  case T.breakOn ":" withoutSlashes of
+    (pkgPath, rest)
+      | T.null rest -> Nothing -- No ":" found
+      | otherwise -> Just $ CrossPkgDep pkgPath (T.drop 1 rest) -- Drop the ":"
+
+-- | Partition deps into local and cross-package
+partitionDeps :: [IR.Dep] -> ([Text], [(Text, Text)])
+partitionDeps deps = foldr go ([], []) (mapMaybe parseDep deps)
+  where
+    go (LocalDep name) (locals, cross) = (name : locals, cross)
+    go (CrossPkgDep pkg tgt) (locals, cross) = (locals, (pkg, tgt) : cross)
+
+-- | Extract all dependency names (for DICE registration)
+-- Cross-package deps use fully qualified names: "//pkg:target"
+extractDepNames :: [IR.Dep] -> [Text]
+extractDepNames = mapMaybe toDepName
+  where
+    toDepName (IR.DepLocal t)
+      | "//" `T.isPrefixOf` t = Just t -- Already fully qualified
+      | ":" `T.isPrefixOf` t = Just (T.drop 1 t) -- Strip leading ":"
+      | otherwise = Just t
+    toDepName (IR.DepFlake _) = Nothing
+
+-- | Extract local dependency names from Dep list (legacy, same-package only)
 -- Strips the leading ":" from ":foo" style deps
 extractLocalDepNames :: [IR.Dep] -> [Text]
 extractLocalDepNames = concatMap extract
   where
-    extract (IR.DepLocal name) =
-      -- Strip leading ":" if present
-      [fromMaybe name (T.stripPrefix ":" name)]
+    extract (IR.DepLocal name)
+      | "//" `T.isPrefixOf` name = [] -- Skip cross-package deps
+      | ":" `T.isPrefixOf` name = [T.drop 1 name]
+      | otherwise = [name]
     extract (IR.DepFlake _) = [] -- Flake deps are external, not DICE targets
+
+-- | Get all cross-package dependencies from a list of deps
+extractCrossPkgDeps :: [IR.Dep] -> [(Text, Text)]
+extractCrossPkgDeps = snd . partitionDeps
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Memory Profiling via getrusage(2)

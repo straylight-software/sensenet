@@ -255,13 +255,14 @@ cmdTestRemote opts = do
 showError :: BuildError -> Text
 showError = \case
   SourceNotFound path -> "Source not found: " <> T.pack path
-  CompileFailed cmd code stderr ->
+  CompileFailed _cmd code stderr ->
     "Compile failed (exit " <> T.pack (show code) <> "): " <> stderr
-  LinkFailed cmd code stderr ->
+  LinkFailed _cmd code stderr ->
     "Link failed (exit " <> T.pack (show code) <> "): " <> stderr
   DICEFailed err -> "DICE error: " <> T.pack (show err)
   TargetNotFound name -> "Target not found: " <> name
   UnsupportedRule rule -> "Unsupported rule type: " <> rule
+  PackageNotFound pkgPath -> "Package not found: " <> pkgPath <> " (no BUILD.dhall)"
 
 -- | Parse //path/to/pkg:target
 parseTarget :: Text -> Maybe (Text, Text)
