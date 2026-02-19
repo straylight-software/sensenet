@@ -20,51 +20,52 @@ and drives it directly from Haskell, bypassing Buck2 entirely.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          USER SPACE                                  │
-│                                                                      │
-│  BUILD.dhall          sensenet CLI         .sensenet/toolchains.dhall│
+│                          USER SPACE                                 │
+│                                                                     │
+│  BUILD.dhall          sensenet CLI      .sensenet/toolchains.dhall  │
 │  (target defs)        (build/run/query)    (compiler paths)         │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      HASKELL FRONTEND                                │
-│                                                                      │
-│  ┌────────────┐    ┌────────────┐    ┌─────────────────────────┐   │
-│  │SenseNet.   │───▶│ SenseNet.  │───▶│     SenseNet.Build      │   │
+│                      HASKELL FRONTEND                               │
+│                                                                     │
+│  ┌────────────┐    ┌────────────┐    ┌──────────────────────────┐   │
+│  │SenseNet.   │───▶│ SenseNet.  │───▶│     SenseNet.Build       │   │
 │  │Dhall       │    │ IR         │    │  (rule-specific builders)│   │
 │  │(parse)     │    │(typed graph)│    │                         │   │
-│  └────────────┘    └────────────┘    └────────────┬────────────┘   │
+│  └────────────┘    └────────────┘    └────────────┬─────────────┘   │
 │                                                   │                 │
-│                                      ┌────────────┴────────────┐   │
-│                                      ▼                         ▼   │
-│                           ┌──────────────────┐    ┌──────────────┐ │
-│                           │  SenseNet.DICE   │    │SenseNet.     │ │
-│                           │  (incremental)   │    │Remote        │ │
-│                           └────────┬─────────┘    │(NativeLink)  │ │
-│                                    │              └──────┬───────┘ │
-│  ┌─────────────────┐               │                     │         │
-│  │ SenseNet.Console│◀──────────────┤                     │         │
-│  │ (superconsole)  │               │                     │         │
-│  └────────┬────────┘               │                     │         │
-└───────────┼────────────────────────┼─────────────────────┼─────────┘
+│                                      ┌────────────┴────────────┐    │
+│                                      ▼                         ▼    │
+│                           ┌──────────────────┐    ┌──────────────┐  │
+│                           │  SenseNet.DICE   │    │SenseNet.     │  │
+│                           │  (incremental)   │    │Remote        │  │
+│                           └────────┬─────────┘    │(NativeLink)  │  │
+│                                    │              └──────┬───────┘  │
+│  ┌─────────────────┐               │                     │          │
+│  │ SenseNet.Console│◀──────────────┤                     │          │
+│  │ (superconsole)  │               │                     │          │
+│  └────────┬────────┘               │                     │          │
+└───────────┼────────────────────────┼─────────────────────┼──────────┘
             │ FFI                    │ FFI                 │ gRPC
             ▼                        ▼                     ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        RUST / NATIVE                                 │
-│                                                                      │
+│                        RUST / NATIVE                                │
+│                                                                     │
 │  ┌───────────────────┐    ┌───────────────────┐                     │
 │  │  superconsole_ffi │    │     dice_ffi      │                     │
 │  │  (terminal TUI)   │    │  (DICE engine)    │                     │
 │  └───────────────────┘    └───────────────────┘                     │
-│                                                                      │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
             │                        │
             ▼                        ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          NIX TOOLCHAINS                              │
-│                                                                      │
-│  clang++ (LLVM 22) │ rustc │ ghc 9.12 │ lean │ purs │ esbuild       │
+│                          NIX TOOLCHAINS                             │
+│                                                                     │
+│  clang++ (LLVM 22 fork) │ rustc │ ghc 9.12 │ lean │ purs │ esbuild  │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -405,12 +406,239 @@ Options:
 - [ ] Remote execution for all rule types
 - [x] `sensenet build --remote` works (C++ only)
 
-### M5: Polish (In Progress)
+### M5: Self-Hosting ✓
 
-- [ ] Full remote execution support
-- [ ] Self-hosting SENSENET build
-- [ ] Documentation complete
-- [ ] v1.0.0 release
+- [x] `sensenet emit --write` generates BUCK files
+- [x] `buck2 build //src/sensenet:sensenet` compiles sensenet
+- [x] Memory profiling via `getrusage(RUSAGE_CHILDREN)`
+- [x] Profile data cached in DICE's `TargetResult`
+
+### M6: Memory-Aware Scheduling (In Progress)
+
+- [x] Memory profiling infrastructure (commit `1207719`)
+- [ ] Cross-package dependency resolution
+- [ ] Lazy package loading via PackageCache
+- [ ] Scheduler reads cached ProfileData before spawning
+- [ ] `--max-memory` CLI flag
+
+### M7: Full Coeffect Formalism (Future)
+
+- [ ] BuildCoeffect algebra (graded semiring)
+- [ ] Indexed Build monad
+- [ ] Coeffect discharge proofs
+- [ ] Attestation integration (RFC-008)
+- [ ] Dynamic dependencies (IFD-style)
+
+## Coeffect-Aware Scheduling (RFC-008)
+
+This section documents the formalism and implementation plan for memory-aware
+scheduling with dynamic dependency support. This builds on the Continuity Project
+(aleph-008) and Petricek's coeffect calculus.
+
+### The Problem
+
+Two issues with the current build system:
+
+1. **Memory blindness**: The scheduler doesn't know how much memory actions need.
+   Large parallel builds can OOM the machine because we spawn N jobs without
+   knowing their combined memory footprint.
+
+2. **Static dependencies only**: Cross-package deps (`//src/foo:bar` depending on
+   `//src/baz:qux`) fail because we only load one package at a time. Dynamic
+   dependencies (like GHC discovering imports) aren't supported at all.
+
+### The Formalism
+
+Build systems are fundamentally about **tracking and discharging resource
+requirements** — this is exactly what coeffect systems model.
+
+From Petricek & Orchard's work on coeffects:
+
+- **Coeffects** track what a computation *requires* from its context
+- A **graded comonad** indexes computations by their requirements
+- **Semiring** structure enables composition of requirements
+
+For builds, the coeffect ("grade") is:
+
+```haskell
+-- MILE MARKER: This is the target algebra for full formalism (Path B)
+-- Current implementation uses simpler ProfileData (Path A)
+data BuildCoeffect = BuildCoeffect
+  { deps      :: Set TargetKey           -- Static deps (known at definition)
+  , dynDeps   :: DynDeps                  -- Dynamic deps (discovered at build time)
+  , peakMem   :: MemoryBound              -- Peak memory requirement
+  , wallTime  :: TimeBound                -- Wall time estimate
+  , network   :: NetworkReq               -- Network access requirements
+  , sandbox   :: SandboxReq               -- Isolation level
+  }
+
+-- Semiring operations for composition:
+--   Sequential (>>):  deps union, memory MAX, time SUM
+--   Parallel   (&&):  deps union, memory SUM, time MAX
+```
+
+### Current State (Path A — Bootstrap)
+
+We're implementing a minimal version that captures the key insight without
+requiring full graded monad machinery:
+
+**Memory Profiling** (Completed — commit `1207719`):
+- `getrusage(RUSAGE_CHILDREN)` FFI to track peak memory of child processes
+- `ProfileData` type with `time_ms` and `peak_memory_bytes`
+- Profile data stored in DICE's `TargetResult` for caching
+- First build profiles, subsequent builds use cached data
+
+```haskell
+-- Current implementation
+data ProfileData = ProfileData
+  { timeMs         :: !Word64  -- Wall time in milliseconds
+  , peakMemoryKb   :: !Word64  -- Peak RSS in kilobytes
+  }
+
+-- Stored in DICE result JSON:
+-- {"outputs": [...], "exit_code": 0, "time_ms": 9800, "peak_memory_bytes": 429000000}
+```
+
+**Cross-Package Dependencies** (In Progress):
+- `DepLocal` can be `:foo` (same package) or `//pkg:target` (cross-package)
+- Current `extractLocalDepNames` only handles `:foo` format
+- Need: parse `//pkg:target`, load package lazily, register with DICE
+
+### Implementation Plan
+
+#### Phase 1: Cross-Package Dependencies (Current)
+
+Fix the transitive dependency gap so builds can span packages:
+
+```
+//src/sensenet:sensenet
+    └── depends on → //src/vendor/dice:dice_ffi
+                         └── depends on → //src/vendor/dice:dice
+```
+
+**Changes required:**
+
+1. **Parse cross-package deps** — Update `extractLocalDepNames`:
+   ```haskell
+   -- NEW: returns (Maybe PackagePath, TargetName)
+   parseDep :: Dep -> Maybe (Maybe Text, Text)
+   parseDep (DepLocal t)
+     | "//" `T.isPrefixOf` t = parseFullTarget t  -- //pkg:target
+     | ":" `T.isPrefixOf` t  = Just (Nothing, T.drop 1 t)  -- :target
+     | otherwise             = Just (Nothing, t)  -- target
+   parseDep (DepFlake _) = Nothing  -- External, not DICE
+   ```
+
+2. **Add PackageCache** — Avoid re-parsing BUILD.dhall:
+   ```haskell
+   type PackageCache = IORef (Map FilePath Package)
+   
+   loadPackage :: PackageCache -> FilePath -> FilePath -> IO Package
+   loadPackage cache projectRoot pkgPath = do
+     cached <- readIORef cache
+     case Map.lookup pkgPath cached of
+       Just pkg -> pure pkg
+       Nothing -> do
+         pkg <- Dhall.parsePackageFile projectRoot (pkgPath </> "BUILD.dhall")
+         modifyIORef' cache (Map.insert pkgPath pkg)
+         pure pkg
+   ```
+
+3. **Lazy package loading in buildWithDeps** — Worklist algorithm:
+   ```haskell
+   buildWithDeps tc projectRoot initialPkg targetName = runDICE $ do
+     clearTargets
+     
+     -- Worklist: packages to process
+     -- Start with initial package, discover more via deps
+     processedRef <- newIORef Set.empty
+     cacheRef <- newIORef Map.empty
+     
+     let registerPackage pkg = do
+           forM_ pkg.rules $ \rule -> do
+             let name = ruleName rule
+                 (localDeps, crossPkgDeps) = partitionDeps (ruleDeps rule)
+             
+             -- Load cross-package deps (lazy)
+             forM_ crossPkgDeps $ \(pkgPath, _) -> do
+               processed <- readIORef processedRef
+               when (pkgPath `Set.notMember` processed) $ do
+                 depPkg <- loadPackage cacheRef projectRoot pkgPath
+                 registerPackage depPkg
+                 modifyIORef' processedRef (Set.insert pkgPath)
+             
+             -- Register this target with DICE
+             registerTarget name (allDepNames rule) callback
+     
+     registerPackage initialPkg
+     compute targetName
+   ```
+
+#### Phase 2: Memory-Aware Scheduling
+
+Use cached `ProfileData` to constrain parallelism:
+
+```haskell
+-- Scheduler reads profile data before spawning
+data SchedulerState = SchedulerState
+  { activeMemory :: !Word64      -- Sum of active job memory estimates
+  , maxMemory    :: !Word64      -- --max-memory flag (default: 80% of RAM)
+  , activeJobs   :: !(Set Text)  -- Currently running targets
+  }
+
+-- Before spawning a new job:
+canSpawn :: SchedulerState -> ProfileData -> Bool
+canSpawn state profile =
+  state.activeMemory + profile.peakMemoryKb * 1024 <= state.maxMemory
+```
+
+**CLI addition:**
+```
+sensenet build --max-memory 32G //pkg:target
+```
+
+#### Phase 3: Mile Markers for Full Formalism (Path B)
+
+When we're ready for the full coeffect algebra, these are the integration points:
+
+```haskell
+-- MILE MARKER: Replace ProfileData with BuildCoeffect
+-- Location: SenseNet/Build.hs, around line 60
+
+-- MILE MARKER: Graded monad for build actions
+-- The Build monad would be indexed by its coeffect:
+--   newtype Build (r :: BuildCoeffect) a = Build (Env -> IO a)
+-- Location: New module SenseNet/Coeffect.hs
+
+-- MILE MARKER: Coeffect discharge proofs
+-- When a build completes, produce a witness that requirements were met:
+--   discharge :: BuildCoeffect -> ExecutionTrace -> DischargeProof
+-- Location: SenseNet/Build.hs, in makeCallback
+
+-- MILE MARKER: Attestation integration
+-- Signed attestations carry discharged proof witnesses:
+--   data Attestation = Attestation
+--     { content      :: Hash
+--     , coeffects    :: BuildCoeffect
+--     , discharged   :: DischargeProof
+--     , signature    :: Ed25519Signature
+--     }
+-- Location: New module SenseNet/Attestation.hs
+-- See: aleph/docs/rfc/aleph-008-continuity/armitage.md
+
+-- MILE MARKER: Dynamic dependencies (IFD-style)
+-- For targets that discover deps at build time:
+--   analyze :: Build r (Build s a, CoeffectRefinement r' s)
+-- This requires suspending scheduler (Shake-style) or two-phase builds
+-- Location: SenseNet/DICE.hs, new registerDynamicTarget function
+```
+
+### References
+
+- Petricek, Orchard, Mycroft. "Coeffects: A calculus of context-dependent computation" (ICFP 2014)
+- Mokhov, Mitchell, Jones. "Build Systems à la Carte" (ICFP 2018, JFP 2020)
+- aleph-008: The Continuity Project (aleph/docs/rfc/aleph-008-continuity/)
+- Buck2 documentation on `dynamic_output` and anonymous targets
 
 ## License
 
