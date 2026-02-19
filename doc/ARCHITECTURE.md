@@ -499,16 +499,17 @@ data ProfileData = ProfileData
 -- {"outputs": [...], "exit_code": 0, "time_ms": 9800, "peak_memory_bytes": 429000000}
 ```
 
-**Cross-Package Dependencies** (In Progress):
+**Cross-Package Dependencies** (Completed — commit `a45a402`):
 - `DepLocal` can be `:foo` (same package) or `//pkg:target` (cross-package)
-- Current `extractLocalDepNames` only handles `:foo` format
-- Need: parse `//pkg:target`, load package lazily, register with DICE
+- `ParsedDep` type and `parseDep`/`parseFqName` functions
+- `BuildContext` with `PackageCache` for lazy loading
+- Worklist algorithm in `discoverAndRegisterDeps` for transitive closure
 
 ### Implementation Plan
 
-#### Phase 1: Cross-Package Dependencies (Current)
+#### Phase 1: Cross-Package Dependencies (Completed)
 
-Fix the transitive dependency gap so builds can span packages:
+Fixed the transitive dependency gap so builds can span packages:
 
 ```
 //src/sensenet:sensenet
@@ -576,25 +577,264 @@ Fix the transitive dependency gap so builds can span packages:
 
 #### Phase 2: Memory-Aware Scheduling
 
-Use cached `ProfileData` to constrain parallelism:
+The goal: **don't OOM the build machine**. Use cached `ProfileData` to predict
+memory requirements and throttle parallelism accordingly.
+
+##### The Problem
+
+Current state: DICE calls our callback for each target, potentially in parallel.
+We have no control over how many concurrent builds run. With 64 cores and 64
+parallel compiles each using 1GB, we need 64GB RAM or we OOM.
+
+The insight: after the first "profiling build", we know each target's peak memory.
+Use that to decide whether to start a new job.
+
+##### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  DICE Engine (Rust)                                                     │
+│                                                                         │
+│  Computes dependency graph, calls Haskell callbacks for each target.    │
+│  Currently: fires all ready targets in parallel.                        │
+│  We can't change this (DICE is upstream).                               │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              │ FFI callback
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Scheduler (Haskell)                                                    │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  SchedulerState (MVar)                                          │    │
+│  │                                                                 │    │
+│  │  activeMemoryBytes :: Word64    -- Sum of running job estimates │    │
+│  │  maxMemoryBytes    :: Word64    -- From --max-memory or auto    │    │
+│  │  activeJobs        :: Map Text ProfileData  -- Running targets  │    │
+│  │  profileCache      :: Map Text ProfileData  -- Known profiles   │    │
+│  │  waitingJobs       :: TQueue (Text, MVar ()) -- Throttled jobs  │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                         │
+│  Callback flow:                                                         │
+│  1. DICE calls makeCallback for target T                                │
+│  2. Look up T in profileCache (from prior DICE result or default)       │
+│  3. If activeMemory + T.peakMem <= maxMemory: proceed                   │
+│  4. Else: block on waitingJobs queue until memory available             │
+│  5. When job completes: subtract from activeMemory, wake waiting jobs   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+##### Profile Cache Sources
+
+Where do we get `ProfileData` for scheduling decisions?
+
+1. **DICE cache hit** — Target was built before, profile stored in `TargetResult`
+   - DICE returns cached result immediately, no callback invoked
+   - No scheduling needed (it's instant)
+
+2. **DICE cache miss, profile known** — Target rebuilt, but we profiled it before
+   - Store profiles in a separate persistent cache: `.sensenet/profiles.json`
+   - Even if DICE invalidates (source changed), memory estimate likely similar
+
+3. **DICE cache miss, profile unknown** — First build of this target
+   - Use conservative default: `defaultProfileKb = 512 * 1024` (512 MB)
+   - Or infer from rule type: Rust link = 2GB, C++ compile = 500MB, etc.
+   - Profile the actual run, update cache for next time
+
+##### Profile Persistence
 
 ```haskell
--- Scheduler reads profile data before spawning
-data SchedulerState = SchedulerState
-  { activeMemory :: !Word64      -- Sum of active job memory estimates
-  , maxMemory    :: !Word64      -- --max-memory flag (default: 80% of RAM)
-  , activeJobs   :: !(Set Text)  -- Currently running targets
+-- .sensenet/profiles.json
+data ProfileCache = ProfileCache
+  { version  :: Int
+  , profiles :: Map Text ProfileEntry
   }
 
--- Before spawning a new job:
-canSpawn :: SchedulerState -> ProfileData -> Bool
-canSpawn state profile =
-  state.activeMemory + profile.peakMemoryKb * 1024 <= state.maxMemory
+data ProfileEntry = ProfileEntry
+  { peakMemoryKb :: Word64
+  , wallTimeMs   :: Word64
+  , lastUpdated  :: UTCTime
+  , inputHash    :: Text  -- Hash of inputs, for staleness detection
+  }
+
+-- Load on startup, save after each build
+loadProfileCache :: FilePath -> IO ProfileCache
+saveProfileCache :: FilePath -> ProfileCache -> IO ()
 ```
 
-**CLI addition:**
+##### Scheduler Implementation
+
+```haskell
+data SchedulerState = SchedulerState
+  { ssActiveMemory  :: !Word64              -- Bytes currently committed
+  , ssMaxMemory     :: !Word64              -- Limit (--max-memory or 80% RAM)
+  , ssActiveJobs    :: !(Map Text Word64)   -- target -> estimated bytes
+  , ssProfileCache  :: !ProfileCache        -- Persistent profile data
+  , ssWaiters       :: !(TQueue (Word64, MVar ()))  -- (needed bytes, wake signal)
+  }
+
+-- Called by DICE callback before doing work
+acquireMemory :: MVar SchedulerState -> Text -> Word64 -> IO ()
+acquireMemory stateVar target neededBytes = do
+  -- Try to acquire
+  canProceed <- modifyMVar stateVar $ \ss ->
+    if ssActiveMemory ss + neededBytes <= ssMaxMemory ss
+      then pure (ss { ssActiveMemory = ssActiveMemory ss + neededBytes
+                    , ssActiveJobs = Map.insert target neededBytes (ssActiveJobs ss)
+                    }, True)
+      else pure (ss, False)
+
+  if canProceed
+    then pure ()
+    else do
+      -- Must wait - add to queue
+      wakeVar <- newEmptyMVar
+      atomically $ writeTQueue (ssWaiters ss) (neededBytes, wakeVar)
+      takeMVar wakeVar  -- Block until woken
+
+-- Called by DICE callback after work completes
+releaseMemory :: MVar SchedulerState -> Text -> Word64 -> IO ()
+releaseMemory stateVar target actualBytes = do
+  modifyMVar_ stateVar $ \ss -> do
+    let released = fromMaybe 0 (Map.lookup target (ssActiveJobs ss))
+    let ss' = ss { ssActiveMemory = ssActiveMemory ss - released
+                 , ssActiveJobs = Map.delete target (ssActiveJobs ss)
+                 }
+    -- Wake waiting jobs if possible
+    wakeWaiters ss'
+    pure ss'
+
+-- Wake jobs that now fit in memory budget
+wakeWaiters :: SchedulerState -> IO SchedulerState
+wakeWaiters ss = do
+  mWaiter <- atomically $ tryReadTQueue (ssWaiters ss)
+  case mWaiter of
+    Nothing -> pure ss
+    Just (needed, wakeVar)
+      | ssActiveMemory ss + needed <= ssMaxMemory ss -> do
+          putMVar wakeVar ()
+          wakeWaiters ss { ssActiveMemory = ssActiveMemory ss + needed }
+      | otherwise -> do
+          -- Put it back, can't wake yet
+          atomically $ unGetTQueue (ssWaiters ss) (needed, wakeVar)
+          pure ss
 ```
-sensenet build --max-memory 32G //pkg:target
+
+##### Callback Integration
+
+```haskell
+-- Modified callback wrapper
+makeScheduledCallback ::
+  MVar SchedulerState ->
+  BuildContext ->
+  Text ->          -- Fully qualified target name
+  Text -> Text ->  -- DICE callback args
+  IO Text
+makeScheduledCallback schedVar ctx fqName targetName depsJson = do
+  -- Look up expected memory
+  ss <- readMVar schedVar
+  let profile = lookupProfile (ssProfileCache ss) fqName
+      estimatedBytes = profilePeakMemoryKb profile * 1024
+
+  -- Acquire memory budget (may block)
+  acquireMemory schedVar fqName estimatedBytes
+
+  -- Run the actual build with profiling
+  (result, actualProfile) <- withProfiling $ doBuild ctx fqName depsJson
+
+  -- Release memory and update profile cache
+  releaseMemory schedVar fqName (profilePeakMemoryKb actualProfile * 1024)
+  updateProfileCache schedVar fqName actualProfile
+
+  pure result
+```
+
+##### CLI and Defaults
+
+```
+sensenet build --max-memory 32G //pkg:target   # Explicit limit
+sensenet build --max-memory 80%  //pkg:target  # Percentage of total RAM
+sensenet build //pkg:target                    # Default: 80% of total RAM
+
+sensenet build --profile //pkg:target          # Force profiling mode (sequential)
+sensenet build --jobs 1 //pkg:target           # Sequential build (like make -j1)
+```
+
+```haskell
+data BuildOptions = BuildOptions
+  { optMaxMemory    :: Maybe MemoryLimit    -- Nothing = 80% of RAM
+  , optJobs         :: Maybe Int            -- Nothing = unlimited
+  , optProfile      :: Bool                 -- Force sequential profiling
+  , optTarget       :: Text
+  }
+
+data MemoryLimit
+  = MemoryBytes Word64
+  | MemoryPercent Int  -- 1-100
+
+getMaxMemoryBytes :: BuildOptions -> IO Word64
+getMaxMemoryBytes opts = case optMaxMemory opts of
+  Just (MemoryBytes b) -> pure b
+  Just (MemoryPercent p) -> do
+    total <- getSystemMemory  -- From /proc/meminfo or sysctl
+    pure $ (total * fromIntegral p) `div` 100
+  Nothing -> do
+    total <- getSystemMemory
+    pure $ (total * 80) `div` 100  -- Default 80%
+```
+
+##### First Build Behavior
+
+The "burn one build going slow" insight: first build of a target has no profile.
+
+Options:
+1. **Conservative default** — Assume 512MB, may over-parallelize
+2. **Rule-based heuristics** — Rust link = 2GB, C++ compile = 500MB
+3. **Sequential mode** — `--profile` runs everything sequentially to gather data
+4. **Adaptive** — Start with default, if OOM detected (exit 137), halve parallelism
+
+Recommendation: **Rule-based heuristics + adaptive backoff**
+
+```haskell
+defaultProfileForRule :: Rule -> ProfileData
+defaultProfileForRule = \case
+  RRustBinary _    -> ProfileData { peakMemoryKb = 2 * 1024 * 1024 }  -- 2GB
+  RRustLibrary _   -> ProfileData { peakMemoryKb = 1 * 1024 * 1024 }  -- 1GB
+  RHaskellBinary _ -> ProfileData { peakMemoryKb = 1 * 1024 * 1024 }  -- 1GB
+  RCxxBinary _     -> ProfileData { peakMemoryKb = 512 * 1024 }       -- 512MB
+  RCxxLibrary _    -> ProfileData { peakMemoryKb = 256 * 1024 }       -- 256MB
+  RLeanBinary _    -> ProfileData { peakMemoryKb = 4 * 1024 * 1024 }  -- 4GB (Lean is hungry)
+  _                -> ProfileData { peakMemoryKb = 512 * 1024 }       -- 512MB default
+```
+
+##### Integration Points
+
+```haskell
+-- MILE MARKER: Scheduler state is seed for coeffect discharge tracking
+-- In Path B, SchedulerState.ssActiveJobs becomes evidence that
+-- memory coeffects are being respected
+
+-- MILE MARKER: Profile cache is seed for coeffect inference
+-- In Path B, ProfileCache becomes the learned BuildCoeffect database
+
+-- MILE MARKER: acquireMemory/releaseMemory bracket is coeffect discharge
+-- In Path B, this becomes a proper linear/affine resource protocol
+```
+
+##### Testing
+
+```bash
+# Profile a build (sequential, accurate profiling)
+sensenet build --profile //src/sensenet:sensenet
+
+# Check profile cache
+cat .sensenet/profiles.json | jq '.profiles | to_entries | sort_by(.value.peakMemoryKb) | reverse | .[0:5]'
+
+# Build with memory limit
+sensenet build --max-memory 8G //src/sensenet:sensenet
+
+# Watch memory usage
+sensenet build --max-memory 8G //... 2>&1 | grep -E "(active memory|waiting)"
 ```
 
 #### Phase 3: Mile Markers for Full Formalism (Path B)
