@@ -10,7 +10,8 @@ module Main where
 
 import Control.Concurrent.Async (forConcurrently, mapConcurrently)
 import Control.Exception (SomeException, catch)
-import Control.Monad (forM, forM_, when)
+import Control.Exception qualified
+import Control.Monad (foldM, forM, forM_, when)
 import Data.List (partition, sortOn)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -25,9 +26,9 @@ import SenseNet.Remote qualified as Remote
 import SenseNet.Toolchains qualified as TC
 import System.Directory (doesDirectoryExist, getCurrentDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
-import System.Exit (exitFailure)
+import System.Exit (ExitCode (..), exitFailure)
 import System.FilePath (makeRelative, takeDirectory, (</>))
-import System.Process (callProcess)
+import System.Process (callProcess, readProcessWithExitCode)
 
 -- | Command-line options
 data Options = Options
@@ -98,6 +99,7 @@ mainBody = do
     ("query" : rest) -> cmdTargets (map T.pack rest) -- alias
     ("graph" : _) -> cmdGraph
     ("emit" : rest) -> cmdEmit (map T.pack rest)
+    ("test" : rest) -> cmdTest opts (map T.pack rest)
     ("test-remote" : _) -> cmdTestRemote opts
     ("--complete" : rest) -> cmdComplete (map T.pack rest)
     ("--completion-script" : "bash" : _) -> TIO.putStrLn bashCompletionScript
@@ -129,6 +131,7 @@ usage =
         "",
         "Commands:",
         "  build <target>     Build target(s)",
+        "  test [pattern]     Build and run test targets",
         "  run <target> [--]  Build and run a target",
         "  clean              Remove build outputs (sensenet-out/)",
         "  targets [pattern]  List available targets",
@@ -157,6 +160,8 @@ usage =
         "  sensenet build //src/examples/...    # build all examples",
         "  sensenet build --no-tui //pkg:target # build with plain text output",
         "  sensenet build --remote //pkg:target # build remotely",
+        "  sensenet test //...                  # run all tests",
+        "  sensenet test //src/tests/...        # run tests under path",
         "  sensenet run //src/examples/rust:math_demo",
         "  sensenet clean                       # remove sensenet-out/",
         "  sensenet targets                     # list all targets",
@@ -214,9 +219,17 @@ cmdBuild opts args = do
             pure [(pkg, ruleName rule) | pkg <- pkgs, rule <- pkg.rules]
           Just (PatternPath pathPrefix) -> do
             -- Build all targets under a path prefix
+            -- pathPrefix may have trailing slash (from "path/...") or not
             files <- discover projectRoot
-            let prefix = T.unpack pathPrefix
-                matchingFiles = filter (\f -> prefix `isPrefixOf` makeRelative projectRoot (dhallPath f)) files
+            let prefix = T.unpack (T.dropWhileEnd (== '/') pathPrefix)
+                matchingFiles =
+                  filter
+                    ( \f ->
+                        let rel = makeRelative projectRoot (dhallPath f)
+                            dir = takeDirectory rel
+                         in dir == prefix || (prefix ++ "/") `isPrefixOf` dir
+                    )
+                    files
             pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) matchingFiles
             pure [(pkg, ruleName rule) | pkg <- pkgs, rule <- pkg.rules]
           Just (PatternSingle pkgPath targetName) -> do
@@ -319,6 +332,163 @@ buildTarget opts remoteCfg tc projectRoot pkg targetName = do
                   TIO.putStrLn $ "  v Built: " <> T.intercalate ", " (map T.pack outputs)
                 Right (BuildCached outputs) -> do
                   TIO.putStrLn $ "  v Cached: " <> T.intercalate ", " (map T.pack outputs)
+
+-- | Run tests
+-- Identifies test targets by name pattern (ending in _test, -test, or Test)
+-- Builds them, then executes them and reports results
+cmdTest :: Options -> [Text] -> IO ()
+cmdTest opts args = do
+  projectRoot <- getCurrentDirectory
+
+  -- Load toolchains
+  let tcPath = TC.defaultToolchainsPath projectRoot
+  tc <- TC.loadToolchains tcPath
+
+  -- Discover all packages
+  files <- discover projectRoot
+  pkgs <- mapConcurrently (\file -> Dhall.parsePackageFile projectRoot (dhallPath file)) files
+
+  -- Find test targets based on pattern or discover all tests
+  testTargets <- case args of
+    [] -> do
+      -- No args: find all test targets
+      pure [(pkg, ruleName rule) | pkg <- pkgs, rule <- pkg.rules, isTestTarget (ruleName rule)]
+    patterns -> do
+      -- Parse patterns like build command
+      fmap concat $ forM patterns $ \pattern -> do
+        case parseTargetPattern pattern of
+          Nothing -> do
+            TIO.putStrLn $ "Invalid target pattern: " <> pattern
+            exitFailure
+          Just PatternAll -> do
+            -- //... = all test targets in project
+            pure [(pkg, ruleName rule) | pkg <- pkgs, rule <- pkg.rules, isTestTarget (ruleName rule)]
+          Just (PatternPath pathPrefix) -> do
+            -- //path/... = all test targets under path
+            -- pathPrefix may have trailing slash (from "path/...") or not
+            let prefix = T.unpack (T.dropWhileEnd (== '/') pathPrefix)
+                matchingPkgs = filter (\pkg -> pkg.path == prefix || (prefix ++ "/") `isPrefixOf` pkg.path) pkgs
+            pure [(pkg, ruleName rule) | pkg <- matchingPkgs, rule <- pkg.rules, isTestTarget (ruleName rule)]
+          Just (PatternSingle pkgPath targetName) -> do
+            -- Explicit target: run it even if it doesn't match naming convention
+            let dhallPath' = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
+            pkg <- Dhall.parsePackageFile projectRoot dhallPath'
+            pure [(pkg, targetName)]
+
+  if null testTargets
+    then do
+      TIO.putStrLn "No test targets found."
+      TIO.putStrLn "Test targets are identified by names ending in: _test, -test, Test, _tests, or -tests"
+    else do
+      let targetCount = length testTargets
+      TIO.putStrLn $ "Running " <> T.pack (show targetCount) <> " test(s)..."
+      TIO.putStrLn ""
+
+      -- Build all test targets first
+      if opts.optTUI && targetCount > 0
+        then do
+          result <- buildMultipleWithBrickTUI tc projectRoot testTargets
+          case result of
+            Left err -> do
+              TIO.putStrLn $ "Build failed: " <> showError err
+              exitFailure
+            Right results -> do
+              -- Run each successfully built test
+              runTests projectRoot testTargets results
+        else do
+          -- Non-TUI: build and run sequentially
+          runTestsSequential opts tc projectRoot testTargets
+  where
+    isPrefixOf prefix str = take (length prefix) str == prefix
+
+-- | Check if a target name looks like a test
+isTestTarget :: Text -> Bool
+isTestTarget name =
+  "_test" `T.isSuffixOf` name
+    || "-test" `T.isSuffixOf` name
+    || "Test" `T.isSuffixOf` name
+    || "_tests" `T.isSuffixOf` name
+    || "-tests" `T.isSuffixOf` name
+    || "test_" `T.isPrefixOf` name
+    || "test-" `T.isPrefixOf` name
+
+-- | Run tests after successful builds (TUI mode)
+runTests :: FilePath -> [(Package, Text)] -> [BuildResult] -> IO ()
+runTests projectRoot targets results = do
+  let pairs = zip targets results
+  (passed, failed) <- foldM runOne (0, 0) pairs
+  TIO.putStrLn ""
+  if failed > 0
+    then do
+      TIO.putStrLn $ "Tests: " <> T.pack (show passed) <> " passed, " <> T.pack (show failed) <> " failed"
+      exitFailure
+    else do
+      TIO.putStrLn $ "Tests: " <> T.pack (show passed) <> " passed"
+  where
+    runOne :: (Int, Int) -> ((Package, Text), BuildResult) -> IO (Int, Int)
+    runOne (passed, failed) ((pkg, targetName), result) = do
+      case result of
+        BuildSuccess outputs -> runTestBinary projectRoot pkg targetName outputs passed failed
+        BuildCached outputs -> runTestBinary projectRoot pkg targetName outputs passed failed
+
+-- | Run a single test binary and return updated pass/fail counts
+runTestBinary :: FilePath -> Package -> Text -> [FilePath] -> Int -> Int -> IO (Int, Int)
+runTestBinary projectRoot pkg targetName outputs passed failed = do
+  case outputs of
+    [] -> do
+      TIO.putStrLn $ "  ✗ //" <> T.pack pkg.path <> ":" <> targetName <> " (no output)"
+      pure (passed, failed + 1)
+    (output : _) -> do
+      let execPath = projectRoot </> output
+          label = "//" <> T.pack pkg.path <> ":" <> targetName
+      -- Run the test
+      result <- tryRunTest execPath
+      case result of
+        Right () -> do
+          TIO.putStrLn $ "  ✓ " <> label
+          pure (passed + 1, failed)
+        Left errMsg -> do
+          TIO.putStrLn $ "  ✗ " <> label
+          TIO.putStrLn $ "    " <> errMsg
+          pure (passed, failed + 1)
+
+-- | Try to run a test binary, capturing any errors
+tryRunTest :: FilePath -> IO (Either Text ())
+tryRunTest path = do
+  result <-
+    Control.Exception.catch
+      (readProcessWithExitCode path [] "")
+      (\(e :: SomeException) -> pure (ExitFailure 1, "", show e))
+  case result of
+    (ExitSuccess, _, _) -> pure (Right ())
+    (ExitFailure code, _, stderr) ->
+      pure (Left $ "exit " <> T.pack (show code) <> if null stderr then "" else ": " <> T.pack (take 200 stderr))
+
+-- | Run tests sequentially in non-TUI mode
+runTestsSequential :: Options -> TC.Toolchains -> FilePath -> [(Package, Text)] -> IO ()
+runTestsSequential opts tc projectRoot targets = do
+  (passed, failed) <- foldM runOne (0, 0) targets
+  TIO.putStrLn ""
+  if failed > 0
+    then do
+      TIO.putStrLn $ "Tests: " <> T.pack (show passed) <> " passed, " <> T.pack (show failed) <> " failed"
+      exitFailure
+    else do
+      TIO.putStrLn $ "Tests: " <> T.pack (show passed) <> " passed"
+  where
+    runOne (passed, failed) (pkg, targetName) = do
+      -- Build the target
+      result <-
+        if opts.optWithDeps
+          then buildWithDeps tc projectRoot pkg targetName
+          else build tc projectRoot pkg targetName
+      case result of
+        Left err -> do
+          TIO.putStrLn $ "  ✗ //" <> T.pack pkg.path <> ":" <> targetName <> " (build failed)"
+          TIO.putStrLn $ "    " <> showError err
+          pure (passed, failed + 1)
+        Right (BuildSuccess outputs) -> runTestBinary projectRoot pkg targetName outputs passed failed
+        Right (BuildCached outputs) -> runTestBinary projectRoot pkg targetName outputs passed failed
 
 cmdTestRemote :: Options -> IO ()
 cmdTestRemote opts = do
@@ -522,9 +692,10 @@ cmdComplete args = do
         (w : p : _) -> (w, p)
 
   case prevWord of
-    -- After "build" or "run", complete targets
+    -- After "build", "run", or "test", complete targets
     "build" -> completeTargets projectRoot word
     "run" -> completeTargets projectRoot word
+    "test" -> completeTargets projectRoot word
     -- Default: complete commands or targets if starts with //
     _ ->
       if "//" `T.isPrefixOf` word
@@ -534,7 +705,7 @@ cmdComplete args = do
 -- | Complete available commands
 completeCommands :: Text -> IO ()
 completeCommands prefix = do
-  let commands = ["build", "run", "clean", "targets", "query", "graph", "emit", "test-remote", "--version", "--help"]
+  let commands = ["build", "test", "run", "clean", "targets", "query", "graph", "emit", "test-remote", "--version", "--help"]
       matches = filter (prefix `T.isPrefixOf`) commands
   mapM_ TIO.putStrLn matches
 

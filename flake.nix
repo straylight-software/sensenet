@@ -168,6 +168,50 @@
           packages.dice-ffi = dice-ffi;
           packages.superconsole-ffi = superconsole-ffi;
 
+          # Test suite - run with: nix flake check
+          # Quick mode: only CLI tests (no toolchains needed)
+          checks.sensenet-tests = pkgs.stdenv.mkDerivation {
+            name = "sensenet-tests";
+            src = pkgs.lib.cleanSource ./.;
+            nativeBuildInputs = [
+              sensenet
+              pkgs.bash
+              pkgs.gnugrep
+              pkgs.coreutils
+              pkgs.glibcLocales
+            ];
+            buildPhase = ''
+              # Set up UTF-8 locale for Unicode output
+              export LANG=en_US.UTF-8
+              export LC_ALL=en_US.UTF-8
+              export LOCALE_ARCHIVE="${pkgs.glibcLocales}/lib/locale/locale-archive"
+
+              # Set up environment
+              export HOME=$TMPDIR
+              export PATH="${sensenet}/bin:$PATH"
+              cp ${sensenet}/bin/sensenet ./sense
+              chmod +x ./sense
+
+              # Run quick test suite (CLI only, no build tests)
+              export SENSENET_QUICK_TEST=1
+              bash ./scripts/test-all.sh
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "All tests passed" > $out/result.txt
+            '';
+          };
+
+          # Full integration tests - run locally with ./scripts/test-all.sh
+          # These require the full dev environment with toolchains
+          # Not included in nix flake check because sandbox lacks toolchain paths
+
+          # Convenience app to run tests: nix run .#test
+          packages.test = pkgs.writeShellScriptBin "sensenet-test" ''
+            export PATH="${sensenet}/bin:$PATH"
+            exec bash ${pkgs.lib.cleanSource ./.}/scripts/test-all.sh
+          '';
+
           # Declare examples as a Sensenet project
           sensenet.projects.examples = {
             src = ./.;

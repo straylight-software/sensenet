@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Norman Stansfield Test Suite for sensenet
 # NO SURVIVORS - comprehensive integration tests
+
+# If SENSENET_QUICK_TEST is set, only run CLI tests (for nix sandbox)
+QUICK_TEST="${SENSENET_QUICK_TEST:-}"
+
 set -e
 
 # Colors
@@ -51,10 +55,26 @@ else
 fi
 
 # Test --help
-if ./sense --help 2>&1 | grep -q "Usage\|build\|--"; then
+if ./sense --help 2>&1 | grep -qi "usage\|command\|build"; then
 	pass "--help shows usage info"
 else
 	fail "--help" "did not show usage info"
+fi
+
+# If quick test mode, skip build tests (for nix sandbox without toolchains)
+if [ -n "$QUICK_TEST" ]; then
+	section "Summary (Quick Mode)"
+	echo ""
+	echo "========================================"
+	echo -e "Total: $((PASS + FAIL)) tests (quick mode)"
+	echo -e "${GREEN}Passed: $PASS${NC}"
+	echo -e "${RED}Failed: $FAIL${NC}"
+	echo "========================================"
+	if [ $FAIL -gt 0 ]; then
+		exit 1
+	fi
+	echo -e "${GREEN}Quick tests passed.${NC}"
+	exit 0
 fi
 
 section "Single Target Builds"
