@@ -23,6 +23,11 @@
   microlens-th,
   vty,
   vty-crossplatform,
+  # Test deps
+  tasty,
+  tasty-hunit,
+  tasty-quickcheck,
+  QuickCheck,
   # NativeLink/gRPC deps (formerly nativelink-hs)
   aeson,
   conduit,
@@ -66,6 +71,11 @@ mkDerivation {
     microlens-th
     vty
     vty-crossplatform
+    # Test deps
+    tasty
+    tasty-hunit
+    tasty-quickcheck
+    QuickCheck
     # NativeLink/gRPC
     aeson
     conduit
@@ -83,6 +93,47 @@ mkDerivation {
     dice-ffi
     superconsole-ffi
   ];
+  testHaskellDepends = [
+    # Test framework
+    tasty
+    tasty-hunit
+    tasty-quickcheck
+    QuickCheck
+    # Same deps as main executable
+    async
+    base
+    bytestring
+    containers
+    dhall
+    directory
+    filepath
+    process
+    text
+    stm
+    time
+    unix
+    brick
+    microlens-mtl
+    microlens-th
+    microlens
+    vty
+    vty-crossplatform
+    aeson
+    conduit
+    crypton
+    grapesy
+    grpc-spec
+    memory
+    network
+    proto-lens
+    proto-lens-runtime
+    vector
+  ];
+  testSystemDepends = [
+    dice-ffi
+    superconsole-ffi
+  ];
+  doCheck = false;
   # Parallel GHC compilation + threaded runtime
   configureFlags = [
     "--ghc-options=-j"

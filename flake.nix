@@ -141,6 +141,11 @@
               microlens-th
               vty
               vty-crossplatform
+              # Test deps
+              tasty
+              tasty-hunit
+              tasty-quickcheck
+              QuickCheck
               # NativeLink/gRPC deps
               aeson
               conduit
