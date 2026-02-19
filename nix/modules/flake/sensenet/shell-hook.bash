@@ -2,11 +2,11 @@
 export SENSENET_PRELUDE="@preludePath@"
 export SENSENET_TOOLCHAINS="@toolchainsPath@"
 
-echo "ℵ Sensenet project: @name@"
+echo "ℵ sensenet // @name@"
+echo "  Usage: sense build //...  (or buck2 directly)"
 
 if [ -n "@reEnabled@" ]; then
 	echo "  Remote execution: @reScheduler@:@reSchedulerPort@"
-	echo "  Usage: buck2 build //..."
 fi
 
 if [ -n "@haskellEnabled@" ]; then
@@ -77,6 +77,7 @@ echo "Generated .buckconfig.local"
 
 _generate_buck_files() {
 	local count=0
+	local failed=0
 
 	# Generate BUCK files from BUILD.dhall in src/, toolchains/, and root
 	for search_dir in src toolchains .; do
@@ -87,8 +88,12 @@ _generate_buck_files() {
 
 				# Regenerate if BUCK doesn't exist or BUILD.dhall is newer
 				if [ ! -f "$buck_file" ] || [ "$dhall_file" -nt "$buck_file" ]; then
-					if ./dhall-to-buck "$dhall_file" >"$buck_file" 2>/dev/null; then
+					if ./dhall-to-buck "$dhall_file" >"$buck_file"; then
 						((count++)) || true
+					else
+						echo "ERROR: Failed to generate BUCK from $dhall_file" >&2
+						rm -f "$buck_file" # Don't leave partial/empty BUCK files
+						((failed++)) || true
 					fi
 				fi
 			done < <(find "$search_dir" -name "BUILD.dhall" -print0 2>/dev/null)
@@ -97,6 +102,11 @@ _generate_buck_files() {
 
 	if [ "$count" -gt 0 ]; then
 		echo "Generated $count BUCK file(s) from BUILD.dhall"
+	fi
+
+	if [ "$failed" -gt 0 ]; then
+		echo "WARNING: $failed BUILD.dhall file(s) failed to generate" >&2
+		return 1
 	fi
 }
 
