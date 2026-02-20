@@ -282,7 +282,20 @@ drawAction s action =
     (target, actionType) = parseActionName name
 
     elapsed = diffUTCTime (s ^. tuiCurrentTime) (action ^. actionStartTime)
-    timeStr = formatDuration elapsed
+    -- Use live duration format for running actions (updates every tick)
+    timeStr = formatLiveDuration elapsed
+
+-- | Format duration for live-updating display (running actions)
+-- Shows tenths of a second for short durations to indicate live updates
+formatLiveDuration :: NominalDiffTime -> String
+formatLiveDuration dt
+  | secs < 60 = printf "%.1fs" secs  -- Always show .1 precision for live updates
+  | secs < 3600 = printf "%d:%02d" mins (round secs `mod` 60 :: Int)
+  | otherwise = printf "%d:%02d:%02d" hours (mins `mod` 60) (round secs `mod` 60 :: Int)
+  where
+    secs = realToFrac dt :: Double
+    mins = floor secs `div` 60 :: Int
+    hours = mins `div` 60
 
 -- | Parse "//pkg:target" into (target, action_type)
 parseActionName :: Text -> (Text, Text)
