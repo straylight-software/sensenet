@@ -31,6 +31,7 @@ module SenseNet.DICE.FFI
     c_result_output_count,
     c_result_output_at,
     c_result_error,
+    c_result_log,
     c_result_free,
     c_hash_sha256,
     c_free_string,
@@ -125,6 +126,9 @@ foreign import ccall unsafe "dice_result_output_at"
 
 foreign import ccall unsafe "dice_result_error"
   c_result_error :: ResultPtr -> Ptr CSize -> IO CString
+
+foreign import ccall unsafe "dice_result_log"
+  c_result_log :: ResultPtr -> Ptr CSize -> IO CString
 
 foreign import ccall unsafe "dice_result_free"
   c_result_free :: ResultPtr -> IO ()

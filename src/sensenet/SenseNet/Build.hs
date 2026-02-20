@@ -81,6 +81,7 @@ data BuildError
   | TargetNotFound Text
   | UnsupportedRule Text
   | PackageNotFound Text
+  | ToolchainError Text -- Toolchain not configured or missing
   deriving (Show, Eq)
 
 -- | Cache for loaded packages to avoid re-parsing BUILD.dhall
@@ -1927,32 +1928,34 @@ buildLeanBinary tc projectRoot pkgPath bin = do
   let lean = T.unpack tc.lean.lean.path
       leanc = T.unpack tc.lean.leanc.path
 
-  createDirectoryIfMissing True outDir
+  -- Check for unconfigured toolchain
+  if null lean || null leanc
+    then pure $ Left $ ToolchainError "Lean toolchain not configured (lean.lean or lean.leanc path is empty)"
+    else do
+      createDirectoryIfMissing True outDir
 
-  -- Single file Lean compilation: lean -c -> leanc
-  case bin.srcs of
-    [src] -> do
-      let srcPath = srcDir </> T.unpack src
+      -- Single file Lean compilation: lean -c -> leanc
+      case bin.srcs of
+        [src] -> do
+          let srcPath = srcDir </> T.unpack src
 
-      exists <- doesFileExist srcPath
-      if not exists
-        then pure $ Left $ SourceNotFound srcPath
-        else do
-          -- Step 1: Generate C code
-          let genCCmd = [lean, "-c", outC, srcPath]
-          -- TIO.putStrLn $ "  lean -c: " <> T.pack (unwords genCCmd)
-          (exitCode1, _, stderr1) <- readProcessWithExitCode lean (tail genCCmd) ""
-          case exitCode1 of
-            ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords genCCmd) n (T.pack stderr1)
-            ExitSuccess -> do
-              -- Step 2: Compile C to executable with leanc
-              let compileCmd = [leanc, "-o", outBin, outC]
-              -- TIO.putStrLn $ "  leanc: " <> T.pack (unwords compileCmd)
-              (exitCode2, _, stderr2) <- readProcessWithExitCode leanc (tail compileCmd) ""
-              case exitCode2 of
-                ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
-                ExitFailure n -> pure $ Left $ LinkFailed (T.pack $ unwords compileCmd) n (T.pack stderr2)
-    _ -> pure $ Left $ UnsupportedRule "Multi-file Lean binary"
+          exists <- doesFileExist srcPath
+          if not exists
+            then pure $ Left $ SourceNotFound srcPath
+            else do
+              -- Step 1: Generate C code
+              let genCCmd = [lean, "-c", outC, srcPath]
+              (exitCode1, _, stderr1) <- readProcessWithExitCode lean (tail genCCmd) ""
+              case exitCode1 of
+                ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords genCCmd) n (T.pack stderr1)
+                ExitSuccess -> do
+                  -- Step 2: Compile C to executable with leanc
+                  let compileCmd = [leanc, "-o", outBin, outC]
+                  (exitCode2, _, stderr2) <- readProcessWithExitCode leanc (tail compileCmd) ""
+                  case exitCode2 of
+                    ExitSuccess -> pure $ Right $ BuildSuccess [outBin]
+                    ExitFailure n -> pure $ Left $ LinkFailed (T.pack $ unwords compileCmd) n (T.pack stderr2)
+        _ -> pure $ Left $ UnsupportedRule "Multi-file Lean binary"
 
 buildLeanLibrary :: TC.Toolchains -> FilePath -> FilePath -> IR.LeanLibrary -> IO (Either BuildError BuildResult)
 buildLeanLibrary tc projectRoot pkgPath lib = do
@@ -1962,27 +1965,30 @@ buildLeanLibrary tc projectRoot pkgPath lib = do
   -- Toolchain
   let lean = T.unpack tc.lean.lean.path
 
-  createDirectoryIfMissing True outDir
+  -- Check for unconfigured toolchain
+  if null lean
+    then pure $ Left $ ToolchainError "Lean toolchain not configured (lean.lean path is empty)"
+    else do
+      createDirectoryIfMissing True outDir
 
-  -- Compile each .lean to .olean
-  results <- forM lib.srcs $ \src -> do
-    let srcPath = srcDir </> T.unpack src
-        oleanPath = outDir </> T.unpack src <> ".olean"
-        cmd = [lean, "-c", oleanPath, srcPath]
+      -- Compile each .lean to .olean
+      results <- forM lib.srcs $ \src -> do
+        let srcPath = srcDir </> T.unpack src
+            oleanPath = outDir </> T.unpack src <> ".olean"
+            cmd = [lean, "-c", oleanPath, srcPath]
 
-    exists <- doesFileExist srcPath
-    if not exists
-      then pure $ Left $ SourceNotFound srcPath
-      else do
-        -- TIO.putStrLn $ "  lean: " <> T.pack (unwords cmd)
-        (exitCode, _, stderr) <- readProcessWithExitCode lean (tail cmd) ""
-        case exitCode of
-          ExitSuccess -> pure $ Right oleanPath
-          ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
+        exists <- doesFileExist srcPath
+        if not exists
+          then pure $ Left $ SourceNotFound srcPath
+          else do
+            (exitCode, _, stderr) <- readProcessWithExitCode lean (tail cmd) ""
+            case exitCode of
+              ExitSuccess -> pure $ Right oleanPath
+              ExitFailure n -> pure $ Left $ CompileFailed (T.pack $ unwords cmd) n (T.pack stderr)
 
-  case sequence results of
-    Left err -> pure $ Left err
-    Right oleans -> pure $ Right $ BuildSuccess oleans
+      case sequence results of
+        Left err -> pure $ Left err
+        Right oleans -> pure $ Right $ BuildSuccess oleans
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- NVIDIA/CUDA Build

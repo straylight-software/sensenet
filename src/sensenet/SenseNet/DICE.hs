@@ -277,14 +277,23 @@ compute key = DICE $ \env -> do
           ok <- FFI.c_result_ok resultPtr
           if ok == 1
             then do
-              count <- FFI.c_result_output_count resultPtr
-              -- NOTE: count is CSize (unsigned), so [0 .. count - 1] underflows when count = 0
-              -- Use a safe pattern: only iterate if count > 0
-              outputs <- if count == 0
-                then pure []
-                else mapM (getOutput resultPtr) [0 .. count - 1]
-              FFI.c_result_free resultPtr
-              pure (Right outputs)
+              -- Check exit code from the actual build result
+              exitCode <- FFI.c_result_exit_code resultPtr
+              if exitCode /= 0
+                then do
+                  -- Build failed - get error from log field (not error field)
+                  logText <- getLog resultPtr
+                  FFI.c_result_free resultPtr
+                  pure (Left (ComputeFailed logText))
+                else do
+                  count <- FFI.c_result_output_count resultPtr
+                  -- NOTE: count is CSize (unsigned), so [0 .. count - 1] underflows when count = 0
+                  -- Use a safe pattern: only iterate if count > 0
+                  outputs <- if count == 0
+                    then pure []
+                    else mapM (getOutput resultPtr) [0 .. count - 1]
+                  FFI.c_result_free resultPtr
+                  pure (Right outputs)
             else do
               errText <- getError resultPtr
               FFI.c_result_free resultPtr
@@ -306,6 +315,15 @@ compute key = DICE $ \env -> do
         else do
           len <- peek lenPtr
           bs <- BS.packCStringLen (errPtr, fromIntegral len)
+          pure (TE.decodeUtf8 bs)
+
+    getLog ptr = alloca $ \lenPtr -> do
+      logPtr <- FFI.c_result_log ptr lenPtr
+      if logPtr == nullPtr
+        then pure (T.pack "Build failed (no log)")
+        else do
+          len <- peek lenPtr
+          bs <- BS.packCStringLen (logPtr, fromIntegral len)
           pure (TE.decodeUtf8 bs)
 
 -- | Try to compute a target, returning the result or error without failing the monad.
@@ -395,13 +413,22 @@ computeMany keys = DICE $ \env -> do
           ok <- FFI.c_result_ok resultPtr
           if ok == 1
             then do
-              count <- FFI.c_result_output_count resultPtr
-              -- NOTE: count is CSize (unsigned), so [0 .. count - 1] underflows when count = 0
-              outputs <- if count == 0
-                then pure []
-                else mapM (getOutput resultPtr) [0 .. count - 1]
-              FFI.c_result_free resultPtr
-              pure (Right outputs)
+              -- Check exit code from the actual build result
+              exitCode <- FFI.c_result_exit_code resultPtr
+              if exitCode /= 0
+                then do
+                  -- Build failed - get error from log field
+                  logText <- getLog resultPtr
+                  FFI.c_result_free resultPtr
+                  pure (Left (ComputeFailed logText))
+                else do
+                  count <- FFI.c_result_output_count resultPtr
+                  -- NOTE: count is CSize (unsigned), so [0 .. count - 1] underflows when count = 0
+                  outputs <- if count == 0
+                    then pure []
+                    else mapM (getOutput resultPtr) [0 .. count - 1]
+                  FFI.c_result_free resultPtr
+                  pure (Right outputs)
             else do
               errText <- getError resultPtr
               FFI.c_result_free resultPtr
@@ -423,6 +450,15 @@ computeMany keys = DICE $ \env -> do
         else do
           len <- peek lenPtr
           bs <- BS.packCStringLen (errPtr, fromIntegral len)
+          pure (TE.decodeUtf8 bs)
+
+    getLog ptr = alloca $ \lenPtr -> do
+      logPtr <- FFI.c_result_log ptr lenPtr
+      if logPtr == nullPtr
+        then pure (T.pack "Build failed (no log)")
+        else do
+          len <- peek lenPtr
+          bs <- BS.packCStringLen (logPtr, fromIntegral len)
           pure (TE.decodeUtf8 bs)
 
 -- ════════════════════════════════════════════════════════════════════════════

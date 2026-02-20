@@ -444,6 +444,7 @@ runBuildWithTUI buildAction = do
 
   resultVar <- newEmptyMVar
   cancelledVar <- newEmptyMVar
+  buildDoneVar <- newEmptyMVar
 
   -- Ticker at 10Hz
   tickerThread <- forkIO $ forever $ do
@@ -451,7 +452,7 @@ runBuildWithTUI buildAction = do
     writeBChan chan EventTick
 
   -- Build thread
-  _buildThread <- forkIO $ do
+  buildThread <- forkIO $ do
     result <-
       buildAction chan `catch` \(e :: SomeException) -> do
         cancelled <- tryTakeMVar cancelledVar
@@ -460,6 +461,7 @@ runBuildWithTUI buildAction = do
           Nothing -> pure $ Left $ T.pack $ "Build error: " ++ show e
     writeBChan chan (EventBuildFinished result)
     void $ tryPutMVar resultVar result
+    putMVar buildDoneVar ()
 
   let buildVty = V.mkVty V.defaultConfig
   let runTUI = do
@@ -471,7 +473,18 @@ runBuildWithTUI buildAction = do
       killThread tickerThread
       void $ tryPutMVar cancelledVar ()
 
-  threadDelay 100000
+  -- Wait briefly for the build thread to finish naturally
+  -- If it doesn't, it means the user cancelled early
+  buildFinished <- tryTakeMVar buildDoneVar
+  case buildFinished of
+    Just () -> pure () -- Build completed normally
+    Nothing -> do
+      -- Build was cancelled or interrupted - give it a moment to clean up
+      threadDelay 100000
+      -- If still running, kill it
+      stillRunning <- isEmptyMVar buildDoneVar
+      when stillRunning $ killThread buildThread
+
   tryTakeMVar resultVar >>= \case
     Just r -> pure r
     Nothing -> pure $ Left "Build interrupted"

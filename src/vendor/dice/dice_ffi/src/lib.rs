@@ -871,6 +871,28 @@ pub extern "C" fn dice_result_error(
   }
 }
 
+/// Get log message from result (build output/errors)
+/// Caller must NOT free the returned string - it's owned by the result
+#[no_mangle]
+pub extern "C" fn dice_result_log(
+  handle: *mut ResultHandle,
+  out_len: *mut usize,
+) -> *const c_char {
+  if handle.is_null() {
+    return ptr::null();
+  }
+  let handle = unsafe { &*handle };
+  match &handle.value {
+    Some(v) if !v.log.is_empty() => {
+      if !out_len.is_null() {
+        unsafe { *out_len = v.log.len() };
+      }
+      v.log.as_ptr() as *const c_char
+    }
+    _ => ptr::null(),
+  }
+}
+
 /// Free a result handle
 #[no_mangle]
 pub extern "C" fn dice_result_free(handle: *mut ResultHandle) {
