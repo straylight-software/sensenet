@@ -1,0 +1,1 @@
+{"file":"index.js","mappings":";;;;AA6BA,aAAA;WAEE;gCAAc;yBACH,IAAI,IAAJ,GAAO;eACX,cAAc,WAAY;;;AAInC,YAAA;WAAA;eAEE;uBAAQ,OAAO;mBACR,QAAQ,MAAO;;;;AAjBxB,wBAAA;WAEE;2CAAsB;eACjB;oBAAE;wBAAQ","names":[],"sources":["../../lib/radix-halogen/src/Radix/Pure/Id.purs"],"version":3}

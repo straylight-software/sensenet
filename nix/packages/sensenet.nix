@@ -1,5 +1,5 @@
 # sensenet - SENSE // NET build system
-# All-in-one Haskell package with integrated NativeLink client
+# Pure Haskell implementation - no FFI dependencies
 {
   mkDerivation,
   lib,
@@ -40,13 +40,12 @@
   proto-lens,
   proto-lens-runtime,
   vector,
-  # FFI
-  dice-ffi,
-  superconsole-ffi,
+  # Shell command execution
+  shelly,
 }:
 mkDerivation {
   pname = "sensenet";
-  version = "0.1.0";
+  version = "0.3.0";
   src = lib.cleanSource ../../.;
   isLibrary = false;
   isExecutable = true;
@@ -88,11 +87,11 @@ mkDerivation {
     proto-lens
     proto-lens-runtime
     vector
+    # Shell commands
+    shelly
   ];
-  executableSystemDepends = [
-    dice-ffi
-    superconsole-ffi
-  ];
+  # No FFI dependencies - pure Haskell
+  executableSystemDepends = [ ];
   testHaskellDepends = [
     # Test framework
     tasty
@@ -128,11 +127,9 @@ mkDerivation {
     proto-lens
     proto-lens-runtime
     vector
+    shelly
   ];
-  testSystemDepends = [
-    dice-ffi
-    superconsole-ffi
-  ];
+  testSystemDepends = [ ];
   doCheck = false;
   # Parallel GHC compilation + threaded runtime
   configureFlags = [
@@ -141,7 +138,7 @@ mkDerivation {
     "--ghc-options=-rtsopts"
     "--ghc-options=-with-rtsopts=-N"
   ];
-  description = "SENSE // NET — Typed builds with Dhall + DICE";
+  description = "SENSE // NET — Pure Haskell build system with content-addressed caching";
   license = lib.licenses.mit;
   mainProgram = "sensenet";
   patchPhase = ":";

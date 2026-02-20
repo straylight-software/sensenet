@@ -372,6 +372,90 @@ in
                   echo "Generated .buckconfig.local with Nix toolchain paths"
                 '';
 
+                # ────────────────────────────────────────────────────────────────────────
+                # sensenet toolchains.dhall generation
+                # ────────────────────────────────────────────────────────────────────────
+                toolchains-dhall-template = builtins.readFile ./devshell/toolchains.dhall.template;
+
+                nv-toolchain-dhall = optional-string (cfg.nv.enable && pkgs ? nvidia-sdk) ''
+                  let nvToolchain : TC.Nv =
+                    { image = None Text
+                    , clang = TC.tool "${clang}/bin/clang++"
+                    , ptxas = TC.tool "${pkgs.nvidia-sdk}/bin/ptxas"
+                    , fatbinary = TC.tool "${pkgs.nvidia-sdk}/bin/fatbinary"
+                    , sdk_path = "${pkgs.nvidia-sdk}"
+                    , sdk = TC.paths 
+                        [ "${pkgs.nvidia-sdk}/include" ]
+                        [ "${pkgs.nvidia-sdk}/lib" ]
+                    , archs = ["sm_90", "sm_100", "sm_120"]
+                    , cxx = cxxToolchain
+                    }
+                '';
+
+                toolchains-dhall-filled =
+                  builtins.replaceStrings
+                    [
+                      "@cc@"
+                      "@cxx@"
+                      "@ar@"
+                      "@ld@"
+                      "@gcc_include@"
+                      "@gcc_include_arch@"
+                      "@clang_resource_dir@"
+                      "@glibc_include@"
+                      "@glibc_lib@"
+                      "@gcc_lib@"
+                      "@gcc_lib_base@"
+                      "@rustc@"
+                      "@cargo@"
+                      "@ghc@"
+                      "@ghc_pkg@"
+                      "@lean@"
+                      "@leanc@"
+                      "@purs@"
+                      "@spago@"
+                      "@node@"
+                      "@esbuild@"
+                      "@nv_toolchain@"
+                      "@nv_value@"
+                    ]
+                    [
+                      "${clang}/bin/clang"
+                      "${clang}/bin/clang++"
+                      "${lld}/bin/llvm-ar"
+                      "${lld}/bin/ld.lld"
+                      "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}"
+                      "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}/${pkgs.stdenv.hostPlatform.config}"
+                      "${clang}/lib/clang/22"
+                      "${pkgs.glibc.dev}/include"
+                      "${pkgs.glibc}/lib"
+                      "${pkgs.gcc.cc}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${pkgs.gcc.cc.version}"
+                      "${pkgs.gcc.cc.lib}/lib"
+                      "${pkgs.rustc}/bin/rustc"
+                      "${pkgs.cargo}/bin/cargo"
+                      "${ghc-with-all-deps}/bin/ghc"
+                      "${ghc-with-all-deps}/bin/ghc-pkg"
+                      "${pkgs.lean4}/bin/lean"
+                      "${pkgs.lean4}/bin/leanc"
+                      "${(purs-pkgs.purs or pkgs.purescript)}/bin/purs"
+                      "${(purs-pkgs.spago-unstable or pkgs.spago)}/bin/spago"
+                      "${pkgs.nodejs}/bin/node"
+                      "${pkgs.esbuild}/bin/esbuild"
+                      nv-toolchain-dhall
+                      (if (cfg.nv.enable && pkgs ? nvidia-sdk) then "Some nvToolchain" else "None TC.Nv")
+                    ]
+                    toolchains-dhall-template;
+
+                toolchains-dhall-file = pkgs.writeText "toolchains.dhall" toolchains-dhall-filled;
+
+                toolchains-dhall-hook = ''
+                  # Generate .sensenet/toolchains.dhall with Nix toolchain paths
+                  mkdir -p .sensenet
+                  cp ${toolchains-dhall-file} .sensenet/toolchains.dhall
+                  chmod 644 .sensenet/toolchains.dhall
+                  echo "Generated .sensenet/toolchains.dhall with Nix toolchain paths"
+                '';
+
                 hie-yaml-hook = ''
                   GHC_WITH_DEPS="${ghc-with-all-deps}"
                   ${builtins.readFile ./devshell/hls-setup.sh}
@@ -386,6 +470,7 @@ in
                 echo "GHC: $(${ghc-with-all-deps}/bin/ghc --version)"
                 ${straylight-nix-check}
                 ${buckconfig-hook}
+                ${toolchains-dhall-hook}
                 # Add sense CLI to PATH (bootstrap binary in repo root)
                 export PATH="$PWD:$PATH"
                 ${config.sense.build.shellHook or ""}

@@ -16,6 +16,16 @@ executable sensenet
   other-modules:
     -- SenseNet core
     SenseNet.Build
+    SenseNet.Build.Types
+    SenseNet.Build.Helpers
+    SenseNet.Build.Cxx
+    SenseNet.Build.Rust
+    SenseNet.Build.Haskell
+    SenseNet.Build.Lean
+    SenseNet.Build.Nv
+    SenseNet.Build.PureScript
+    SenseNet.Build.Genrule
+    SenseNet.Build.Nix
     SenseNet.Config
     SenseNet.Console
     SenseNet.Console.FFI

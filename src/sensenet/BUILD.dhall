@@ -111,9 +111,20 @@ let dice =
 
 -- Build engine (temporarily relaxed warnings for Buck2 bootstrap)
 -- NOTE: Includes TUI module for Brick-based console
+-- Build submodules are split by language to reduce compilation times
 let build =
       (A.haskellLibrary "build"
         [ "SenseNet/Build.hs"
+        , "SenseNet/Build/Types.hs"
+        , "SenseNet/Build/Helpers.hs"
+        , "SenseNet/Build/Cxx.hs"
+        , "SenseNet/Build/Rust.hs"
+        , "SenseNet/Build/Haskell.hs"
+        , "SenseNet/Build/Lean.hs"
+        , "SenseNet/Build/Nv.hs"
+        , "SenseNet/Build/PureScript.hs"
+        , "SenseNet/Build/Genrule.hs"
+        , "SenseNet/Build/Nix.hs"
         , "SenseNet/Remote.hs"
         , "SenseNet/TUI.hs"
         , "SenseNet/Scheduler.hs"

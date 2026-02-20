@@ -1,646 +1,351 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
--- | DICE (Dynamic Incremental Computation Engine) for Haskell
+-- |
+-- Module      : SenseNet.DICE
+-- Description : Pure Haskell incremental computation engine
 --
--- This module provides a clean, type-safe interface to DICE, enabling
--- incremental builds without Buck2 or Starlark.
+-- DICE (Dynamic Incremental Computation Engine) - content-addressed builds.
 --
--- = Quick Start
+-- Key insight: ActionKey = hash(inputs + command)
+-- If inputs unchanged → outputs unchanged → skip execution.
 --
--- @
--- import SenseNet.DICE
+-- This module provides:
+--   1. Content-addressed action keys
+--   2. Action graph construction and topological sort
+--   3. Persistent caching via filesystem
+--   4. Coeffect tracking per action (what resources are required)
 --
--- main :: IO ()
--- main = do
---   result <- runDICE $ do
---     -- Inject source files
---     inject "src/main.cpp" "abc123" 1024
---     inject "src/lib.cpp" "def456" 2048
---
---     -- Compute an action
---     compute "compile-main"
---
---   case result of
---     Left err -> putStrLn $ "Error: " <> show err
---     Right outputs -> putStrLn $ "Built: " <> show outputs
--- @
---
--- = Architecture
---
--- DICE uses a transactional model:
---
--- 1. Create an engine (holds the computation graph)
--- 2. Start a transaction (inject source file metadata)
--- 3. Commit the transaction
--- 4. Request computations (DICE handles caching/invalidation)
---
--- The 'DICE' monad handles all of this automatically.
+-- No FFI. No Rust. Just Haskell.
 module SenseNet.DICE
-  ( -- * The DICE Monad
-    DICE,
-    runDICE,
-    runDICE',
+  ( -- * Keys
+    ActionKey (..),
+    actionKey,
+    actionKeyText,
 
-    -- * Errors
-    DICEError (..),
+    -- * Actions
+    Action (..),
+    ActionResult (..),
 
-    -- * Core Operations
-    inject,
-    compute,
-    tryCompute,
-    computeMany,
+    -- * Graph
+    ActionGraph (..),
+    emptyGraph,
+    addAction,
+    topoSort,
 
-    -- * Target Registration (dependency-aware)
-    registerTarget,
-    clearTargets,
+    -- * Execution
+    ExecutionResult (..),
+    executeGraph,
 
-    -- * Callbacks (legacy)
-    onCompute,
+    -- * Cache
+    ActionCache (..),
+    newCache,
+    checkCache,
+    storeCache,
 
-    -- * Utilities
-    sha256,
-    diceVersion,
-
-    -- * Low-level Access (rarely needed)
-    withEngine,
-    withTransaction,
+    -- * Hashing
+    hashBytes,
+    hashText,
+    hashFile,
   )
 where
 
-import Control.Exception (Exception, SomeException, bracket, try)
-import Control.Monad (forM)
-import Control.Monad.IO.Class (MonadIO (..))
+import Crypto.Hash (SHA256 (..), hashWith)
+import Data.ByteArray.Encoding qualified as BA
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
-import Data.ByteString.Unsafe qualified as BSU
-import Data.IORef
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Word (Word64, Word8)
-import Foreign.C.String (peekCString)
-import Foreign.Marshal.Alloc (alloca, mallocBytes)
-import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Ptr (castPtr, nullPtr, plusPtr)
-import Foreign.Storable (peek, poke)
-import SenseNet.DICE.FFI qualified as FFI
+import Data.Text.IO qualified as TIO
+import Data.Time.Clock (UTCTime, getCurrentTime)
+import GHC.Generics (Generic)
+import System.Directory
+  ( XdgDirectory (..),
+    createDirectoryIfMissing,
+    doesFileExist,
+    getXdgDirectory,
+  )
+import System.FilePath ((</>))
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Error Types
+-- Action Keys (content-addressed)
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Errors that can occur during DICE operations
-data DICEError
-  = RuntimeCreateFailed
-  | EngineCreateFailed
-  | UpdaterCreateFailed
-  | CommitFailed
-  | ComputeFailed Text
-  | InjectFailed Text
-  | CallbackRegistrationFailed Text
-  | HashFailed
-  deriving stock (Show, Eq)
+-- | Content-addressed action key (SHA256 hash)
+newtype ActionKey = ActionKey {unActionKey :: ByteString}
+  deriving stock (Show, Eq, Ord, Generic)
 
-instance Exception DICEError
+-- | Compute action key from action content
+actionKey :: Action -> ActionKey
+actionKey action =
+  let content = actionToCanonical action
+      hash = hashWith SHA256 (TE.encodeUtf8 content)
+   in ActionKey (BA.convertToBase BA.Base16 hash)
+
+-- | Get action key as text (hex-encoded)
+actionKeyText :: ActionKey -> Text
+actionKeyText = TE.decodeUtf8 . unActionKey
 
 -- ════════════════════════════════════════════════════════════════════════════
--- DICE Monad
+-- Actions
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | The DICE monad for incremental computation.
---
--- This monad manages:
---
--- * DICE engine lifecycle
--- * Transaction state (injected sources)
--- * Error handling
---
--- Use 'runDICE' to execute DICE computations.
-newtype DICE a = DICE {unDICE :: DICEEnv -> IO (Either DICEError a)}
-
-instance Functor DICE where
-  fmap f (DICE g) = DICE $ \env -> fmap (fmap f) (g env)
-
-instance Applicative DICE where
-  pure a = DICE $ \_ -> pure (Right a)
-  DICE f <*> DICE a = DICE $ \env -> do
-    ef <- f env
-    case ef of
-      Left err -> pure (Left err)
-      Right fn -> fmap (fmap fn) (a env)
-
-instance Monad DICE where
-  DICE m >>= f = DICE $ \env -> do
-    ea <- m env
-    case ea of
-      Left err -> pure (Left err)
-      Right a -> unDICE (f a) env
-
-instance MonadIO DICE where
-  liftIO io = DICE $ \_ -> Right <$> io
-
--- | Internal environment for DICE operations
-data DICEEnv = DICEEnv
-  { envRuntime :: FFI.RuntimePtr,
-    envEngine :: FFI.EnginePtr,
-    envSources :: IORef [(Text, Text, Word64)] -- (path, hash, size)
+-- | An action in the build graph
+data Action = Action
+  { -- | Human-readable name "//pkg:target"
+    aName :: !Text,
+    -- | Command to execute
+    aCommand :: ![Text],
+    -- | Input file paths (hashed for key)
+    aInputs :: ![Text],
+    -- | Dependencies on other actions
+    aInputKeys :: ![ActionKey],
+    -- | Expected output paths
+    aOutputs :: ![Text],
+    -- | Environment variables
+    aEnv :: !(Map Text Text),
+    -- | Resource requirements (pure, network, fs:path, etc)
+    aCoeffects :: ![Text]
   }
+  deriving stock (Show, Eq, Generic)
 
--- | Throw a DICE error
-_throwDICE :: DICEError -> DICE a
-_throwDICE err = DICE $ \_ -> pure (Left err)
-
--- | Catch IO exceptions and convert to DICE errors
-_tryIO :: IO a -> (SomeException -> DICEError) -> DICE a
-_tryIO io mkErr = DICE $ \_ -> do
-  result <- try io
-  case result of
-    Left exc -> pure (Left (mkErr exc))
-    Right a -> pure (Right a)
+-- | Result of executing an action
+data ActionResult = ActionResult
+  { -- | Actual output paths
+    arOutputs :: ![Text],
+    -- | Exit code (0 = success)
+    arExitCode :: !Int,
+    -- | Captured stdout
+    arStdout :: !Text,
+    -- | Captured stderr
+    arStderr :: !Text,
+    -- | When execution started
+    arStartTime :: !UTCTime,
+    -- | When execution finished
+    arEndTime :: !UTCTime
+  }
+  deriving stock (Show, Eq, Generic)
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Running DICE
+-- Canonical Serialization (for content-addressing)
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Run a DICE computation.
---
--- Creates the runtime, engine, and transaction automatically.
--- All resources are properly cleaned up on exit.
---
--- @
--- result <- runDICE $ do
---   inject "src/main.cpp" hash size
---   compute "build-main"
--- @
-runDICE :: DICE a -> IO (Either DICEError a)
-runDICE dice =
-  bracket createRuntime FFI.c_runtime_free $ \rtPtr -> do
-    if rtPtr == nullPtr
-      then pure (Left RuntimeCreateFailed)
-      else bracket createEngine FFI.c_engine_free $ \engPtr -> do
-        if engPtr == nullPtr
-          then pure (Left EngineCreateFailed)
-          else do
-            sourcesRef <- newIORef []
-            let env = DICEEnv rtPtr engPtr sourcesRef
-            unDICE dice env
+-- | Serialize action to canonical form for hashing
+-- Deterministic: sorted keys, consistent formatting
+actionToCanonical :: Action -> Text
+actionToCanonical Action {..} =
+  T.unlines
+    [ "action:1", -- version tag for future compatibility
+      "name:" <> aName,
+      "command:" <> T.intercalate "\0" aCommand,
+      "inputs:" <> T.intercalate "\0" (map escapeText aInputs),
+      "input_keys:" <> T.intercalate "\0" (map actionKeyText aInputKeys),
+      "outputs:" <> T.intercalate "\0" aOutputs,
+      "env:" <> serializeEnv aEnv,
+      "coeffects:" <> T.intercalate "," aCoeffects
+    ]
+
+serializeEnv :: Map Text Text -> Text
+serializeEnv m =
+  T.intercalate
+    "\0"
+    [ k <> "=" <> escapeText v
+    | (k, v) <- Map.toAscList m -- sorted for determinism
+    ]
+
+escapeText :: Text -> Text
+escapeText = T.concatMap $ \case
+  '\0' -> "\\0"
+  '\\' -> "\\\\"
+  c -> T.singleton c
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Action Graph
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | The full build graph
+data ActionGraph = ActionGraph
+  { -- | All actions by key
+    agActions :: !(Map ActionKey Action),
+    -- | Targets to build
+    agRoots :: ![ActionKey]
+  }
+  deriving stock (Show, Generic)
+
+-- | Empty action graph
+emptyGraph :: ActionGraph
+emptyGraph = ActionGraph Map.empty []
+
+-- | Add an action to the graph
+addAction :: Action -> ActionGraph -> ActionGraph
+addAction action graph =
+  let key = actionKey action
+   in graph {agActions = Map.insert key action (agActions graph)}
+
+-- | Topologically sort actions (dependencies before dependents)
+topoSort :: ActionGraph -> [ActionKey]
+topoSort ActionGraph {..} = reverse $ go Set.empty [] (Map.keys agActions)
   where
-    createRuntime = FFI.c_runtime_new
-    createEngine = FFI.c_engine_new
+    go :: Set ActionKey -> [ActionKey] -> [ActionKey] -> [ActionKey]
+    go _ sorted [] = sorted
+    go visited sorted (k : ks)
+      | k `Set.member` visited = go visited sorted ks
+      | otherwise =
+          let action = agActions Map.! k
+              deps = aInputKeys action
+              (visited', sorted') = foldl visitDep (Set.insert k visited, sorted) deps
+           in go visited' (k : sorted') ks
 
--- | Run DICE and throw on error (for simple scripts)
-runDICE' :: DICE a -> IO a
-runDICE' dice = do
-  result <- runDICE dice
-  case result of
-    Left err -> fail $ "DICE error: " <> show err
-    Right a -> pure a
+    visitDep (v, s) dep
+      | dep `Set.member` v = (v, s)
+      | otherwise =
+          case Map.lookup dep agActions of
+            Nothing -> (Set.insert dep v, s) -- External dep, skip
+            Just action ->
+              let deps = aInputKeys action
+                  (v', s') = foldl visitDep (Set.insert dep v, s) deps
+               in (v', dep : s')
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Core Operations
+-- Execution
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Inject a source file into the current transaction.
---
--- This tells DICE about a source file's identity (path, content hash, size).
--- DICE uses this to track dependencies and invalidation.
---
--- @
--- inject "src/main.cpp" "a1b2c3..." 1024
--- @
-inject :: Text -> Text -> Word64 -> DICE ()
-inject path hash size = DICE $ \env -> do
-  modifyIORef' (envSources env) ((path, hash, size) :)
-  pure (Right ())
+-- | Result of executing the entire graph
+data ExecutionResult = ExecutionResult
+  { -- | Results by action
+    erResults :: !(Map ActionKey ActionResult),
+    -- | Number of cache hits
+    erCacheHits :: !Int,
+    -- | Number of actions run
+    erExecuted :: !Int,
+    -- | Failed actions with errors
+    erFailed :: ![(ActionKey, Text)]
+  }
+  deriving stock (Show, Generic)
 
--- | Request computation of an action.
---
--- Commits any pending source injections, then computes the action.
--- Returns the list of output paths on success.
---
--- @
--- outputs <- compute "compile-main"
--- @
-compute :: Text -> DICE [Text]
-compute key = DICE $ \env -> do
-  -- Get pending sources
-  sources <- readIORef (envSources env)
-
-  -- Create updater
-  updPtr <- FFI.c_updater_new (envEngine env)
-  if updPtr == nullPtr
-    then pure (Left UpdaterCreateFailed)
-    else do
-      -- Inject all sources
-      injectResult <- injectAll updPtr (reverse sources)
-      case injectResult of
-        Left err -> do
-          FFI.c_updater_free updPtr
-          pure (Left err)
-        Right () -> do
-          -- Commit transaction
-          txnPtr <- FFI.c_commit (envRuntime env) updPtr
-          if txnPtr == nullPtr
-            then pure (Left CommitFailed)
-            else do
-              -- Compute
-              result <- computeAction (envRuntime env) txnPtr key
-              FFI.c_transaction_free txnPtr
-              pure result
+-- | Execute an action graph
+-- Returns results for all actions, with caching
+executeGraph ::
+  ActionCache ->
+  -- | How to run an action
+  (Action -> IO ActionResult) ->
+  ActionGraph ->
+  IO ExecutionResult
+executeGraph cache runner graph = do
+  let sorted = topoSort graph
+  go Map.empty 0 0 [] sorted
   where
-    injectAll _ [] = pure (Right ())
-    injectAll updPtr ((p, h, s) : rest) = do
-      let pathBS = TE.encodeUtf8 p
-          hashBS = TE.encodeUtf8 h
-      rc <- BS.useAsCStringLen pathBS $ \(pathPtr, pathLen) ->
-        BS.useAsCStringLen hashBS $ \(hashPtr, hashLen) ->
-          FFI.c_inject_source
-            updPtr
-            pathPtr
-            (fromIntegral pathLen)
-            hashPtr
-            (fromIntegral hashLen)
-            s
-      if rc /= 0
-        then pure (Left (InjectFailed p))
-        else injectAll updPtr rest
+    go results hits executed failed [] =
+      pure
+        ExecutionResult
+          { erResults = results,
+            erCacheHits = hits,
+            erExecuted = executed,
+            erFailed = failed
+          }
+    go results hits executed failed (key : rest) = do
+      let action = agActions graph Map.! key
 
-    computeAction rtPtr txnPtr k = do
-      let keyBS = TE.encodeUtf8 k
-      resultPtr <- BS.useAsCStringLen keyBS $ \(keyPtr, keyLen) ->
-        FFI.c_compute_action rtPtr txnPtr keyPtr (fromIntegral keyLen)
-      if resultPtr == nullPtr
-        then pure (Left (ComputeFailed k))
-        else do
-          ok <- FFI.c_result_ok resultPtr
-          if ok == 1
+      -- Check cache
+      cached <- checkCache cache key
+      case cached of
+        Just result -> do
+          -- Cache hit
+          TIO.putStrLn $ "  ✓ " <> aName action <> " (cached)"
+          go (Map.insert key result results) (hits + 1) executed failed rest
+        Nothing -> do
+          -- Cache miss - execute
+          TIO.putStrLn $ "  → " <> aName action
+          result <- runner action
+
+          if arExitCode result == 0
             then do
-              -- Check exit code from the actual build result
-              exitCode <- FFI.c_result_exit_code resultPtr
-              if exitCode /= 0
-                then do
-                  -- Build failed - get error from log field (not error field)
-                  logText <- getLog resultPtr
-                  FFI.c_result_free resultPtr
-                  pure (Left (ComputeFailed logText))
-                else do
-                  count <- FFI.c_result_output_count resultPtr
-                  -- NOTE: count is CSize (unsigned), so [0 .. count - 1] underflows when count = 0
-                  -- Use a safe pattern: only iterate if count > 0
-                  outputs <- if count == 0
-                    then pure []
-                    else mapM (getOutput resultPtr) [0 .. count - 1]
-                  FFI.c_result_free resultPtr
-                  pure (Right outputs)
+              -- Success - cache and continue
+              storeCache cache key result
+              go (Map.insert key result results) hits (executed + 1) failed rest
             else do
-              errText <- getError resultPtr
-              FFI.c_result_free resultPtr
-              pure (Left (ComputeFailed errText))
+              -- Failure
+              let errMsg =
+                    "exit "
+                      <> T.pack (show (arExitCode result))
+                      <> ": "
+                      <> T.take 200 (arStderr result)
+              TIO.putStrLn $ "  ✗ " <> aName action <> " - " <> errMsg
+              go results hits executed ((key, errMsg) : failed) rest
 
-    getOutput ptr idx = alloca $ \lenPtr -> do
-      outPtr <- FFI.c_result_output_at ptr idx lenPtr
-      if outPtr == nullPtr
-        then pure T.empty
-        else do
-          len <- peek lenPtr
-          bs <- BS.packCStringLen (outPtr, fromIntegral len)
-          pure (TE.decodeUtf8 bs)
+-- ════════════════════════════════════════════════════════════════════════════
+-- Cache (persistent, file-based)
+-- ════════════════════════════════════════════════════════════════════════════
 
-    getError ptr = alloca $ \lenPtr -> do
-      errPtr <- FFI.c_result_error ptr lenPtr
-      if errPtr == nullPtr
-        then pure (T.pack "Unknown error")
-        else do
-          len <- peek lenPtr
-          bs <- BS.packCStringLen (errPtr, fromIntegral len)
-          pure (TE.decodeUtf8 bs)
+-- | Action cache handle
+newtype ActionCache = ActionCache {unActionCache :: FilePath}
 
-    getLog ptr = alloca $ \lenPtr -> do
-      logPtr <- FFI.c_result_log ptr lenPtr
-      if logPtr == nullPtr
-        then pure (T.pack "Build failed (no log)")
-        else do
-          len <- peek lenPtr
-          bs <- BS.packCStringLen (logPtr, fromIntegral len)
-          pure (TE.decodeUtf8 bs)
+-- | Create or open action cache
+newCache :: IO ActionCache
+newCache = do
+  dir <- getXdgDirectory XdgCache "sensenet/actions"
+  createDirectoryIfMissing True dir
+  pure (ActionCache dir)
 
--- | Try to compute a target, returning the result or error without failing the monad.
---
--- This is useful for "keep-going" builds where you want to continue
--- building other independent targets even if one fails.
---
--- @
--- results <- forM targets $ \t -> tryCompute t
--- let (failures, successes) = partitionEithers results
--- @
-tryCompute :: Text -> DICE (Either DICEError [Text])
-tryCompute key = DICE $ \env -> do
-  -- Run compute and capture either result
-  result <- unDICE (compute key) env
-  -- Always return Right, wrapping the inner Either
-  pure (Right result)
-
--- | Compute multiple targets in a single transaction (keep-going semantics).
---
--- This is the preferred way to build multiple independent targets:
--- - Uses a SINGLE shared transaction for all computations
--- - Continues on failure (returns results for each target)
--- - Allows DICE to properly memoize and share dependency results
---
--- @
--- results <- computeMany ["//pkg:target1", "//pkg:target2", "//pkg:target3"]
--- forM_ results $ \(target, result) ->
---   case result of
---     Right outputs -> putStrLn $ target ++ " succeeded"
---     Left err -> putStrLn $ target ++ " failed: " ++ show err
--- @
-computeMany :: [Text] -> DICE [(Text, Either DICEError [Text])]
-computeMany keys = DICE $ \env -> do
-  -- Get pending sources
-  sources <- readIORef (envSources env)
-
-  -- Create updater
-  updPtr <- FFI.c_updater_new (envEngine env)
-  if updPtr == nullPtr
-    then pure (Left UpdaterCreateFailed)
+-- | Check cache for action result
+checkCache :: ActionCache -> ActionKey -> IO (Maybe ActionResult)
+checkCache (ActionCache dir) key = do
+  let path = dir </> T.unpack (actionKeyText key)
+  exists <- doesFileExist path
+  if not exists
+    then pure Nothing
     else do
-      -- Inject all sources
-      injectResult <- injectAll updPtr (reverse sources)
-      case injectResult of
-        Left err -> do
-          FFI.c_updater_free updPtr
-          pure (Left err)
-        Right () -> do
-          -- Commit transaction ONCE
-          txnPtr <- FFI.c_commit (envRuntime env) updPtr
-          if txnPtr == nullPtr
-            then pure (Left CommitFailed)
-            else do
-              -- Compute ALL targets with the SAME transaction
-              results <- forM keys $ \key -> do
-                result <- computeAction (envRuntime env) txnPtr key
-                pure (key, result)
-              -- Free transaction ONCE at the end
-              FFI.c_transaction_free txnPtr
-              pure (Right results)
-  where
-    injectAll _ [] = pure (Right ())
-    injectAll updPtr ((p, h, s) : rest) = do
-      let pathBS = TE.encodeUtf8 p
-          hashBS = TE.encodeUtf8 h
-      rc <- BS.useAsCStringLen pathBS $ \(pathPtr, pathLen) ->
-        BS.useAsCStringLen hashBS $ \(hashPtr, hashLen) ->
-          FFI.c_inject_source
-            updPtr
-            pathPtr
-            (fromIntegral pathLen)
-            hashPtr
-            (fromIntegral hashLen)
-            s
-      if rc /= 0
-        then pure (Left (InjectFailed p))
-        else injectAll updPtr rest
+      content <- TIO.readFile path
+      -- Simple format: outputs on separate lines, then metadata
+      let ls = T.lines content
+      case ls of
+        [] -> pure Nothing
+        (outputsLine : _) -> do
+          let outputs = filter (not . T.null) $ T.splitOn "\0" outputsLine
+          now <- getCurrentTime
+          pure $
+            Just
+              ActionResult
+                { arOutputs = outputs,
+                  arExitCode = 0,
+                  arStdout = "",
+                  arStderr = "",
+                  arStartTime = now,
+                  arEndTime = now
+                }
 
-    computeAction rtPtr txnPtr k = do
-      let keyBS = TE.encodeUtf8 k
-      resultPtr <- BS.useAsCStringLen keyBS $ \(keyPtr, keyLen) ->
-        FFI.c_compute_action rtPtr txnPtr keyPtr (fromIntegral keyLen)
-      if resultPtr == nullPtr
-        then pure (Left (ComputeFailed k))
-        else do
-          ok <- FFI.c_result_ok resultPtr
-          if ok == 1
-            then do
-              -- Check exit code from the actual build result
-              exitCode <- FFI.c_result_exit_code resultPtr
-              if exitCode /= 0
-                then do
-                  -- Build failed - get error from log field
-                  logText <- getLog resultPtr
-                  FFI.c_result_free resultPtr
-                  pure (Left (ComputeFailed logText))
-                else do
-                  count <- FFI.c_result_output_count resultPtr
-                  -- NOTE: count is CSize (unsigned), so [0 .. count - 1] underflows when count = 0
-                  outputs <- if count == 0
-                    then pure []
-                    else mapM (getOutput resultPtr) [0 .. count - 1]
-                  FFI.c_result_free resultPtr
-                  pure (Right outputs)
-            else do
-              errText <- getError resultPtr
-              FFI.c_result_free resultPtr
-              pure (Left (ComputeFailed errText))
-
-    getOutput ptr idx = alloca $ \lenPtr -> do
-      outPtr <- FFI.c_result_output_at ptr idx lenPtr
-      if outPtr == nullPtr
-        then pure T.empty
-        else do
-          len <- peek lenPtr
-          bs <- BS.packCStringLen (outPtr, fromIntegral len)
-          pure (TE.decodeUtf8 bs)
-
-    getError ptr = alloca $ \lenPtr -> do
-      errPtr <- FFI.c_result_error ptr lenPtr
-      if errPtr == nullPtr
-        then pure (T.pack "Unknown error")
-        else do
-          len <- peek lenPtr
-          bs <- BS.packCStringLen (errPtr, fromIntegral len)
-          pure (TE.decodeUtf8 bs)
-
-    getLog ptr = alloca $ \lenPtr -> do
-      logPtr <- FFI.c_result_log ptr lenPtr
-      if logPtr == nullPtr
-        then pure (T.pack "Build failed (no log)")
-        else do
-          len <- peek lenPtr
-          bs <- BS.packCStringLen (logPtr, fromIntegral len)
-          pure (TE.decodeUtf8 bs)
+-- | Store result in cache
+storeCache :: ActionCache -> ActionKey -> ActionResult -> IO ()
+storeCache (ActionCache dir) key result = do
+  let path = dir </> T.unpack (actionKeyText key)
+      content = T.intercalate "\0" (arOutputs result)
+  TIO.writeFile path content
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Target Registration (Dependency-Aware)
+-- Hashing Utilities
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Register a target with its dependencies.
---
--- This is the primary API for dependency-aware builds. When the target is computed:
--- 1. DICE computes all dependencies first
--- 2. Dep outputs are serialized to JSON
--- 3. Your callback receives resolved dep outputs
---
--- @
--- registerTarget "mybin" [":mylib"] $ \key depsJson -> do
---   -- depsJson contains: [{\"name\": \"mylib\", \"outputs\": [\"libmylib.a\"]}]
---   -- Use dep outputs to link
---   pure "{\"outputs\": [\"mybin\"], \"exit_code\": 0}"
--- @
---
--- Note: Targets are global and persist for the program lifetime.
-registerTarget :: Text -> [Text] -> (Text -> Text -> IO Text) -> DICE ()
-registerTarget targetName deps callback = DICE $ \_ -> do
-  let wrapped keyPtr keyLen depsPtr depsLen _userData = do
-        keyBS <- BS.packCStringLen (keyPtr, fromIntegral keyLen)
-        depsBS <- BS.packCStringLen (depsPtr, fromIntegral depsLen)
-        result <- callback (TE.decodeUtf8 keyBS) (TE.decodeUtf8 depsBS)
-        -- Allocate result string for Rust to free
-        let resultBS = TE.encodeUtf8 result
-        BS.useAsCStringLen resultBS $ \(srcPtr, len) -> do
-          dest <- mallocBytes (len + 1)
-          copyBytes dest srcPtr len
-          poke (dest `plusPtr` len) (0 :: Word8)
-          pure (castPtr dest)
+-- | Hash bytes to hex text
+hashBytes :: ByteString -> Text
+hashBytes bs =
+  let hash = hashWith SHA256 bs
+   in TE.decodeUtf8 (BA.convertToBase BA.Base16 hash)
 
-  fnPtr <- FFI.mkComputeCallback wrapped
+-- | Hash text to hex text
+hashText :: Text -> Text
+hashText = hashBytes . TE.encodeUtf8
 
-  -- Serialize deps to JSON array: ["dep1", "dep2", ...]
-  let depsJson = "[" <> T.intercalate "," (map (\d -> "\"" <> escapeJson d <> "\"") deps) <> "]"
-      nameBS = TE.encodeUtf8 targetName
-      depsBS = TE.encodeUtf8 depsJson
-
-  rc <- BS.useAsCStringLen nameBS $ \(namePtr, nameLen) ->
-    BS.useAsCStringLen depsBS $ \(depsPtr, depsLen) ->
-      FFI.c_register_target
-        namePtr
-        (fromIntegral nameLen)
-        depsPtr
-        (fromIntegral depsLen)
-        fnPtr
-        nullPtr
-
-  if rc /= 0
-    then pure (Left (CallbackRegistrationFailed targetName))
-    else pure (Right ())
-
--- | Clear all registered targets (useful for tests/resets)
-clearTargets :: DICE ()
-clearTargets = DICE $ \_ -> do
-  FFI.c_clear_targets
-  pure (Right ())
-
--- | Escape special characters for JSON strings
-escapeJson :: Text -> Text
-escapeJson = T.concatMap escapeChar
-  where
-    escapeChar :: Char -> Text
-    escapeChar '\\' = T.pack "\\\\"
-    escapeChar '"' = T.pack "\\\""
-    escapeChar '\n' = T.pack "\\n"
-    escapeChar '\r' = T.pack "\\r"
-    escapeChar '\t' = T.pack "\\t"
-    escapeChar c = T.singleton c
-
--- ════════════════════════════════════════════════════════════════════════════
--- Callbacks (Legacy)
--- ════════════════════════════════════════════════════════════════════════════
-
--- | Register a compute callback for a key type (legacy API).
---
--- When DICE needs to compute a key of this type, it will call your function.
---
--- @
--- onCompute "action" $ \\key deps -> do
---   -- Run build command
---   pure "{\"outputs\": [\"out.o\"], \"exit_code\": 0}"
--- @
---
--- Note: Callbacks are global and persist for the program lifetime.
--- Prefer 'registerTarget' for dependency-aware builds.
-onCompute :: Text -> (Text -> Text -> IO Text) -> DICE ()
-onCompute keyType callback = DICE $ \_ -> do
-  let wrapped keyPtr keyLen depsPtr depsLen _userData = do
-        keyBS <- BS.packCStringLen (keyPtr, fromIntegral keyLen)
-        depsBS <- BS.packCStringLen (depsPtr, fromIntegral depsLen)
-        result <- callback (TE.decodeUtf8 keyBS) (TE.decodeUtf8 depsBS)
-        -- Allocate result string for Rust to free
-        let resultBS = TE.encodeUtf8 result
-        BS.useAsCStringLen resultBS $ \(srcPtr, len) -> do
-          dest <- mallocBytes (len + 1)
-          copyBytes dest srcPtr len
-          poke (dest `plusPtr` len) (0 :: Word8)
-          pure (castPtr dest)
-
-  fnPtr <- FFI.mkComputeCallback wrapped
-  let keyTypeBS = TE.encodeUtf8 keyType
-  rc <- BS.useAsCStringLen keyTypeBS $ \(ptr, len) ->
-    FFI.c_register_compute ptr (fromIntegral len) fnPtr nullPtr
-  if rc /= 0
-    then pure (Left (CallbackRegistrationFailed keyType))
-    else pure (Right ())
-
--- ════════════════════════════════════════════════════════════════════════════
--- Utilities
--- ════════════════════════════════════════════════════════════════════════════
-
--- | Compute SHA256 hash of data.
---
--- Uses the DICE library's hash implementation for consistency.
---
--- @
--- hash <- sha256 fileContents
--- @
-sha256 :: ByteString -> DICE Text
-sha256 bs = DICE $ \_ ->
-  BSU.unsafeUseAsCStringLen bs $ \(ptr, len) -> do
-    hashPtr <- FFI.c_hash_sha256 (castPtr ptr) (fromIntegral len)
-    if hashPtr == nullPtr
-      then pure (Left HashFailed)
-      else do
-        hash <- peekCString hashPtr
-        FFI.c_free_string hashPtr
-        pure (Right (T.pack hash))
-
--- | Get DICE library version.
-diceVersion :: IO Text
-diceVersion = do
-  vPtr <- FFI.c_version
-  v <- peekCString vPtr
-  pure (T.pack v)
-
--- ════════════════════════════════════════════════════════════════════════════
--- Low-level Access
--- ════════════════════════════════════════════════════════════════════════════
-
--- | Run an action with direct engine access.
---
--- For advanced use cases that need the raw engine handle.
-withEngine :: (FFI.EnginePtr -> IO a) -> DICE a
-withEngine f = DICE $ \env -> Right <$> f (envEngine env)
-
--- | Run an action with direct transaction access.
---
--- Creates a transaction from pending sources, runs the action,
--- then cleans up.
-withTransaction :: (FFI.TransactionPtr -> IO a) -> DICE a
-withTransaction f = DICE $ \env -> do
-  sources <- readIORef (envSources env)
-  updPtr <- FFI.c_updater_new (envEngine env)
-  if updPtr == nullPtr
-    then pure (Left UpdaterCreateFailed)
-    else do
-      -- Inject sources
-      mapM_ (injectOne updPtr) (reverse sources)
-      -- Commit
-      txnPtr <- FFI.c_commit (envRuntime env) updPtr
-      if txnPtr == nullPtr
-        then pure (Left CommitFailed)
-        else do
-          result <- f txnPtr
-          FFI.c_transaction_free txnPtr
-          pure (Right result)
-  where
-    injectOne updPtr (p, h, s) = do
-      let pathBS = TE.encodeUtf8 p
-          hashBS = TE.encodeUtf8 h
-      BS.useAsCStringLen pathBS $ \(pathPtr, pathLen) ->
-        BS.useAsCStringLen hashBS $ \(hashPtr, hashLen) ->
-          FFI.c_inject_source
-            updPtr
-            pathPtr
-            (fromIntegral pathLen)
-            hashPtr
-            (fromIntegral hashLen)
-            s
+-- | Hash a file's contents
+hashFile :: FilePath -> IO Text
+hashFile path = do
+  contents <- BS.readFile path
+  pure (hashBytes contents)

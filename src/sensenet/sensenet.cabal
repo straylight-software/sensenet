@@ -1,0 +1,47 @@
+cabal-version:      3.0
+name:               sensenet
+version:            0.3.0
+synopsis:           Pure Haskell build system with content-addressed caching
+description:        The best build system in the world. Pure Haskell, no FFI.
+license:            MIT
+author:             Straylight
+maintainer:         dev@straylight.ai
+category:           Development
+build-type:         Simple
+
+executable sensenet
+    main-is:          Main.hs
+    other-modules:
+        SenseNet.Build
+        SenseNet.CAS
+        SenseNet.Config
+        SenseNet.DICE
+        SenseNet.Dhall
+        SenseNet.Discover
+        SenseNet.IR
+        SenseNet.Toolchains
+    build-depends:
+        base >= 4.18 && < 5,
+        bytestring,
+        containers,
+        crypton,
+        dhall,
+        directory,
+        filepath,
+        memory,
+        shelly,
+        text,
+        time
+    default-language: GHC2024
+    default-extensions:
+        LambdaCase
+        OverloadedStrings
+        OverloadedRecordDot
+    ghc-options:
+        -Wall
+        -Werror
+        -O2
+        -threaded
+        -rtsopts
+        "-with-rtsopts=-N"
+    hs-source-dirs:   .

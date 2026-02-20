@@ -112,13 +112,7 @@
           # GHC 9.12 with haskell overlay applied (via std.nix)
           inherit (pkgs.haskell.packages) ghc912;
 
-          # DICE FFI library
-          dice-ffi = pkgs.callPackage ./nix/packages/dice-ffi.nix { };
-
-          # SuperConsole FFI library
-          superconsole-ffi = pkgs.callPackage ./nix/packages/superconsole-ffi.nix { };
-
-          # Build sensenet CLI (with integrated NativeLink client)
+          # Build sensenet CLI - pure Haskell, no FFI
           sensenet = pkgs.callPackage ./nix/packages/sensenet.nix {
             inherit (ghc912)
               mkDerivation
@@ -158,15 +152,20 @@
               proto-lens
               proto-lens-runtime
               vector
+              # Shell commands
+              shelly
               ;
-            inherit dice-ffi superconsole-ffi;
           };
         in
         {
           packages.sense-lint = pkgs.callPackage ./nix/packages/sense-lint.nix { };
           packages.sensenet = sensenet;
-          packages.dice-ffi = dice-ffi;
-          packages.superconsole-ffi = superconsole-ffi;
+
+          # Static binary using pkgsStatic (musl-based)
+          packages.sensenet-static = import ./nix/packages/sensenet-static.nix {
+            inherit (pkgs) lib;
+            pkgsMusl = pkgs.pkgsStatic;
+          };
 
           # Test suite - run with: nix flake check
           # Quick mode: only CLI tests (no toolchains needed)
@@ -270,6 +269,13 @@
               pkgs.dhall-json
               ghc912.haskell-language-server
               sensenet
+              # Static linking libs for sensenet binary
+              pkgs.glibc.static
+              pkgs.zlib.static
+              pkgs.gmp.static
+              pkgs.libffi
+              pkgs.numactl
+              (pkgs.ncurses.override { enableStatic = true; })
             ];
           };
 
