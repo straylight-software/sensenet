@@ -45,6 +45,7 @@ def _lre_execution_platform_impl(ctx: AnalysisContext) -> list[Provider]:
         executor_config = CommandExecutorConfig(
             local_enabled = ctx.attrs.local_enabled,
             remote_enabled = True,
+            use_limited_hybrid = True,
             use_windows_path_separators = False,
             remote_execution_properties = {
                 "OSFamily": "linux",

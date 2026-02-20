@@ -1,0 +1,67 @@
+// NativeLink CAS configuration for GCP gigafleet
+// Deployed to: giga-x86-0 (34.28.196.149)
+// Ports: 50051 (CAS gRPC)
+//
+// This provides content-addressed storage with LZ4 compression
+// and filesystem-backed persistence in ~/nativelink/data
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      compression: {
+        compression_algorithm: {
+          lz4: {},
+        },
+        backend: {
+          filesystem: {
+            content_path: "NATIVELINK_DATA_DIR/cas/content",
+            temp_path: "NATIVELINK_DATA_DIR/cas/tmp",
+            eviction_policy: {
+              // 500GB - plenty of space on n2-standard-64
+              max_bytes: 500000000000,
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "NATIVELINK_DATA_DIR/ac/content",
+        temp_path: "NATIVELINK_DATA_DIR/ac/tmp",
+        eviction_policy: {
+          // 10GB for action cache
+          max_bytes: 10000000000,
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [],
+        bytestream: {
+          cas_stores: {
+            "": "CAS_MAIN_STORE",
+          },
+        },
+        health: {},
+      },
+    },
+  ],
+}

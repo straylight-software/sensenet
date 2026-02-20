@@ -1,0 +1,88 @@
+// NativeLink Worker configuration for GCP gigafleet
+// Deployed to: giga-x86-1,2,3 (x86_64) and giga-arm-0,1 (aarch64)
+//
+// Workers connect to:
+// - CAS: 34.28.196.149:50051
+// - Scheduler Worker API: 34.28.196.149:50061
+//
+// Replace NATIVELINK_DATA_DIR with actual path (e.g., ~/nativelink/data)
+// Replace WORKER_ISA with "x86-64" or "aarch64" depending on architecture
+{
+  stores: [
+    {
+      name: "GRPC_REMOTE_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            // CAS server on giga-x86-0
+            address: "grpc://34.28.196.149:50051",
+          },
+        ],
+        store_type: "cas",
+      },
+    },
+    {
+      name: "GRPC_REMOTE_AC_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://34.28.196.149:50051",
+          },
+        ],
+        store_type: "ac",
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "NATIVELINK_DATA_DIR/worker/content",
+            temp_path: "NATIVELINK_DATA_DIR/worker/tmp",
+            eviction_policy: {
+              // 100GB local cache per worker
+              max_bytes: 100000000000,
+            },
+          },
+        },
+        slow: {
+          ref_store: {
+            name: "GRPC_REMOTE_STORE",
+          },
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          // Scheduler worker API on giga-x86-0
+          uri: "grpc://34.28.196.149:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "GRPC_REMOTE_AC_STORE",
+        },
+        work_directory: "NATIVELINK_DATA_DIR/work",
+        platform_properties: {
+          cpu_count: {
+            query_cmd: "nproc",
+          },
+          OSFamily: {
+            values: ["linux"],
+          },
+          "container-image": {
+            values: [""],
+          },
+          ISA: {
+            values: ["WORKER_ISA"],
+          },
+        },
+      },
+    },
+  ],
+  servers: [],
+}

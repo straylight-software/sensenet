@@ -51,6 +51,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # nix2gpu - OCI container builder for Nix
+    nix2gpu.url = "github:fleek-sh/nix2gpu";
+
     # nix-compile - Type inference and static analysis for Nix
     # TODO: Uncomment when repository is public
     # nix-compile = {
