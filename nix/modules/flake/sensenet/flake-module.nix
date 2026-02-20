@@ -77,7 +77,12 @@
 
           # ── Generate buckconfig.local ──────────────────────────────────────────
           buckconfiglocal = toolchainlib.mkBuckconfigLocal {
-            cxx = lib.optionalString cxxenabled (toolchainlib.mkCxxSection { llvmPackages = llvmpackages; });
+            cxx = lib.optionalString cxxenabled (
+              toolchainlib.mkCxxSection {
+                llvmPackages = llvmpackages;
+                libraries = toolchain.cxx.libraries or [ ];
+              }
+            );
             haskell = lib.optionalString haskellenabled (
               toolchainlib.mkHaskellSection {
                 inherit ghc;

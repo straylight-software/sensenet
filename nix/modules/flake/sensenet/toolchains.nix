@@ -38,13 +38,19 @@
 
   # C++ toolchain section
   mkCxxSection =
-    { llvmPackages }:
+    {
+      llvmPackages,
+      libraries ? [ ],
+    }:
     let
       llvm = llvmPackages;
       inherit (pkgs) gcc;
       gcc-unwrapped = gcc.cc;
       gcc-version = gcc-unwrapped.version;
       triple = pkgs.stdenv.hostPlatform.config;
+      # Generate extra include/lib dirs from libraries
+      extraIncludeDirs = lib.concatMapStringsSep ":" (pkg: "${lib.getDev pkg}/include") libraries;
+      extraLibDirs = lib.concatMapStringsSep ":" (pkg: "${lib.getLib pkg}/lib") libraries;
     in
     ''
 
@@ -61,6 +67,10 @@
       gcc_lib = ${gcc-unwrapped}/lib/gcc/${triple}/${gcc-version}
       gcc_lib_base = ${gcc.cc.lib}/lib
       glibc_lib = ${pkgs.glibc}/lib
+    ''
+    + lib.optionalString (libraries != [ ]) ''
+      extra_include_dirs = ${extraIncludeDirs}
+      extra_lib_dirs = ${extraLibDirs}
     '';
 
   # Haskell toolchain section
