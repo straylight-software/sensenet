@@ -278,7 +278,11 @@ compute key = DICE $ \env -> do
           if ok == 1
             then do
               count <- FFI.c_result_output_count resultPtr
-              outputs <- mapM (getOutput resultPtr) [0 .. count - 1]
+              -- NOTE: count is CSize (unsigned), so [0 .. count - 1] underflows when count = 0
+              -- Use a safe pattern: only iterate if count > 0
+              outputs <- if count == 0
+                then pure []
+                else mapM (getOutput resultPtr) [0 .. count - 1]
               FFI.c_result_free resultPtr
               pure (Right outputs)
             else do
@@ -392,7 +396,10 @@ computeMany keys = DICE $ \env -> do
           if ok == 1
             then do
               count <- FFI.c_result_output_count resultPtr
-              outputs <- mapM (getOutput resultPtr) [0 .. count - 1]
+              -- NOTE: count is CSize (unsigned), so [0 .. count - 1] underflows when count = 0
+              outputs <- if count == 0
+                then pure []
+                else mapM (getOutput resultPtr) [0 .. count - 1]
               FFI.c_result_free resultPtr
               pure (Right outputs)
             else do

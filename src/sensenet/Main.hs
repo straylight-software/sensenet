@@ -16,6 +16,7 @@ import Data.List (partition, sortOn)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import System.IO (hFlush, stdout, stderr, hSetBuffering, BufferMode(..))
 import SenseNet.Build (BuildError (..), BuildResult (..), build, buildMultipleStub, buildMultipleWithBrickTUI, buildWithBrickTUI, buildWithConsole, buildWithDeps)
 import SenseNet.DICE qualified as DICE
 import SenseNet.Dhall qualified as Dhall
@@ -69,7 +70,11 @@ parseOptions = go defaultOptions
        in (opts', x : rest')
 
 main :: IO ()
-main = mainBody `catch` handleException
+main = do
+  -- Ensure unbuffered output for progress messages
+  hSetBuffering stdout LineBuffering
+  hSetBuffering stderr LineBuffering
+  mainBody `catch` handleException
   where
     handleException :: SomeException -> IO ()
     handleException e = do
