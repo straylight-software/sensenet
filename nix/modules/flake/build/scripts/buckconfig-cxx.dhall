@@ -19,6 +19,8 @@ let gcc_lib = env:GCC_LIB as Text
 let gcc_lib_base = env:GCC_LIB_BASE as Text
 let glibc_lib = env:GLIBC_LIB as Text
 let mdspan_include = env:MDSPAN_INCLUDE ? "" as Text
+let extra_include_dirs = env:EXTRA_INCLUDE_DIRS ? "" as Text
+let extra_lib_dirs = env:EXTRA_LIB_DIRS ? "" as Text
 
 in ''
 [cxx]
@@ -42,4 +44,6 @@ ${if mdspan_include == "" then "" else "mdspan_include = ${mdspan_include}"}
 gcc_lib = ${gcc_lib}
 gcc_lib_base = ${gcc_lib_base}
 glibc_lib = ${glibc_lib}
+${if extra_include_dirs == "" then "" else "extra_include_dirs = ${extra_include_dirs}"}
+${if extra_lib_dirs == "" then "" else "extra_lib_dirs = ${extra_lib_dirs}"}
 ''

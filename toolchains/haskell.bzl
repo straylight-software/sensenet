@@ -521,6 +521,10 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     # GHC options from attrs
     ghc_cmd.add(ctx.attrs.ghc_options)
     
+    # Include directories for CApi FFI headers
+    for inc_dir in ctx.attrs.include_dirs:
+        ghc_cmd.add("-optc", "-I" + inc_dir)
+    
     # Packages
     for pkg in ctx.attrs.packages:
         ghc_cmd.add("-package", pkg)
@@ -657,6 +661,10 @@ def _haskell_ffi_test_impl(ctx: AnalysisContext) -> list[Provider]:
     
     # GHC options from attrs
     ghc_cmd.add(ctx.attrs.ghc_options)
+    
+    # Include directories for CApi FFI headers
+    for inc_dir in ctx.attrs.include_dirs:
+        ghc_cmd.add("-optc", "-I" + inc_dir)
     
     # Packages
     for pkg in ctx.attrs.packages:

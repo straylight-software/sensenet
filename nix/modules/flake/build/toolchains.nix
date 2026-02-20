@@ -115,6 +115,14 @@ let
       # mdspan
       mdspan-include = "${mdspan}/include";
 
+      # Extra C++ libraries (from cxx.libraries)
+      extra-include-dirs = lib.concatMapStringsSep ":" (pkg: "${lib.getDev pkg}/include") (
+        cfg.toolchain.cxx.libraries or [ ]
+      );
+      extra-lib-dirs = lib.concatMapStringsSep ":" (pkg: "${lib.getLib pkg}/lib") (
+        cfg.toolchain.cxx.libraries or [ ]
+      );
+
       # Turing Registry flags (the true names)
       c-flags = turing-registry.cflags;
       cxx-flags = turing-registry.cxxflags;

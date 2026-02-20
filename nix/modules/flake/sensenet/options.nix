@@ -54,6 +54,11 @@ let
               default = pkgs.llvmPackages_19;
               description = "LLVM packages to use";
             };
+            libraries = lib.mkOption {
+              type = lib.types.listOf lib.types.package;
+              default = [ ];
+              description = "C++ library packages (adds -isystem and -L flags)";
+            };
           };
 
           # Haskell

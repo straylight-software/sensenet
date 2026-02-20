@@ -67,6 +67,8 @@ let
         gcc_lib_base = buck2-toolchain.gcc-lib-base;
         glibc_lib = buck2-toolchain.glibc-lib;
         mdspan_include = buck2-toolchain.mdspan-include or "";
+        extra_include_dirs = buck2-toolchain.extra-include-dirs or "";
+        extra_lib_dirs = buck2-toolchain.extra-lib-dirs or "";
       }
     else
       null;
