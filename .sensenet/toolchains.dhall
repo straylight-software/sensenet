@@ -7,17 +7,26 @@ let cxxToolchain : TC.Cxx =
   , cxx = TC.tool "/nix/store/rwv3n4h5wrin94j6mzdhjlbs06br9a8x-llvm-git-22.0.0-straylight/bin/clang++"
   , ar = TC.tool "/nix/store/rwv3n4h5wrin94j6mzdhjlbs06br9a8x-llvm-git-22.0.0-straylight/bin/llvm-ar"
   , ld = TC.tool "/nix/store/rwv3n4h5wrin94j6mzdhjlbs06br9a8x-llvm-git-22.0.0-straylight/bin/ld.lld"
-  , paths = TC.emptyPaths
+  , paths = TC.paths 
+      [ "/nix/store/kzq78n13l8w24jn8bx4djj79k5j717f1-gcc-14.3.0/include/c++/14.3.0"
+      , "/nix/store/kzq78n13l8w24jn8bx4djj79k5j717f1-gcc-14.3.0/include/c++/14.3.0/x86_64-unknown-linux-gnu"
+      , "/nix/store/l8pxgsjvga08z1nhi7rxcs6kgjk1f2fs-clang-wrapper-20.1.8/resource-root/include"
+      , "/nix/store/gi4cz4ir3zlwhf1azqfgxqdnczfrwsr7-glibc-2.40-66-dev/include"
+      ]
+      [ "/nix/store/8p33is69mjdw3bi1wmi8v2zpsxir8nwd-glibc-2.40-66/lib"
+      , "/nix/store/kzq78n13l8w24jn8bx4djj79k5j717f1-gcc-14.3.0/lib/gcc/x86_64-unknown-linux-gnu/14.3.0"
+      , "/nix/store/ysdkxvcvy2sy36sqigkyqanixm76z2xh-gcc-14.3.0-lib/lib"
+      ]
   , sysroot = ""
-  , target = "aarch64-unknown-linux-gnu"
+  , target = "x86_64-unknown-linux-gnu"
   }
 
 let rustToolchain : TC.Rust =
   { image = None Text
-  , rustc = TC.tool ""
-  , cargo = TC.tool ""
+  , rustc = TC.tool "/nix/store/i6xakg19vy8vc2g211yr9d5nmb0wk7v0-rustc-1.91.1/bin/rustc"
+  , cargo = TC.tool "/nix/store/9db7xb1axdgqp4lakdxbp27yh7kfvm0b-cargo-1.91.1/bin/cargo"
   , edition = "2021"
-  , target = "aarch64-unknown-linux-gnu"
+  , target = "x86_64-unknown-linux-gnu"
   }
 
 let haskellToolchain : TC.Haskell =
@@ -29,8 +38,8 @@ let haskellToolchain : TC.Haskell =
 
 let leanToolchain : TC.Lean =
   { image = None Text
-  , lean = TC.tool ""
-  , leanc = TC.tool ""
+  , lean = TC.tool "/nix/store/bk4lkjfp9z9xciwa99y0gjk99sjz7j83-lean4-4.27.0/bin/lean"
+  , leanc = TC.tool "/nix/store/bk4lkjfp9z9xciwa99y0gjk99sjz7j83-lean4-4.27.0/bin/leanc"
   , paths = TC.emptyPaths
   }
 
