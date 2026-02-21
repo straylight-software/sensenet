@@ -11,7 +11,7 @@ module Main where
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import SenseNet.Build (BuildError (..), BuildResult (..), build)
+import SenseNet.Build (BuildError (..), BuildResult (..), buildWithDeps)
 -- SenseNet.DICE used by Build module
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover)
@@ -91,7 +91,7 @@ cmdBuild (target : _) = do
 
       -- Build
       TIO.putStrLn $ "Building //" <> pkgPath <> ":" <> targetName
-      result <- build tc projectRoot pkg targetName
+      result <- buildWithDeps tc projectRoot pkg targetName
 
       case result of
         Left err -> do

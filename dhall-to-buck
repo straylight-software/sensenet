@@ -13,11 +13,43 @@ else
     DHALL_INPUT="./$INPUT"
 fi
 
-# Check if this is the new format (exports { rules, header }) or legacy (List Binary)
+# Check the structure of the BUILD.dhall file
 STRUCTURE=$(dhall type <<< "$DHALL_INPUT" 2>/dev/null || echo "unknown")
 
+# New format: { targets : List Rule }
+if [[ "$STRUCTURE" == *"targets"* ]]; then
+  # Generate the Starlark rules first
+  RULES=$(dhall text <<< "let S = ./dhall/prelude/to-starlark.dhall in S.rules ($DHALL_INPUT).targets")
+  
+  # Determine which loads are needed based on what rules appear in the output
+  # Native rules (cxx_binary, rust_binary, genrule) don't need loads
+  # Custom rules (haskell, lean, nv, purescript) come from toolchains
+  LOADS=""
+  [[ "$RULES" == *"haskell_binary("* || "$RULES" == *"haskell_library("* || "$RULES" == *"haskell_ffi_binary("* ]] && \
+    LOADS+=$'load("@toolchains//:haskell.bzl", "haskell_binary", "haskell_library", "haskell_ffi_binary")\n'
+  [[ "$RULES" == *"lean_binary("* || "$RULES" == *"lean_library("* ]] && \
+    LOADS+=$'load("@toolchains//:lean.bzl", "lean_binary", "lean_library")\n'
+  [[ "$RULES" == *"nv_binary("* || "$RULES" == *"nv_library("* ]] && \
+    LOADS+=$'load("@toolchains//:nv.bzl", "nv_binary", "nv_library")\n'
+  [[ "$RULES" == *"purescript_app("* || "$RULES" == *"purescript_binary("* || "$RULES" == *"purescript_library("* ]] && \
+    LOADS+=$'load("@toolchains//:purescript.bzl", "purescript_app", "purescript_binary", "purescript_library")\n'
+  [[ "$RULES" == *"nix_cxx_binary("* ]] && \
+    LOADS+=$'load("@toolchains//:nix.bzl", "nix_cxx_binary")\n'
+  # rust_crate loads - build dynamically based on what's actually used
+  CRATE_SYMBOLS=""
+  [[ "$RULES" == *"crates_io("* ]] && CRATE_SYMBOLS+="\"crates_io\", "
+  [[ "$RULES" == *"http_archive("* ]] && CRATE_SYMBOLS+="\"http_archive\", "
+  [[ -n "$CRATE_SYMBOLS" ]] && \
+    LOADS+="load(\"@toolchains//:rust_crate.bzl\", ${CRATE_SYMBOLS%, })"$'\n'
+
+  echo "# Generated from $INPUT"
+  echo "$LOADS"
+  echo "$RULES"
+  exit 0
+fi
+
+# Legacy format: { rules, header } (pre-generated starlark)
 if [[ "$STRUCTURE" == *"rules"* && "$STRUCTURE" == *"header"* ]]; then
-  # New format: { rules : List Text, header : Text }
   HEADER=$(dhall text <<< "($DHALL_INPUT).header")
   echo "# Generated from $INPUT"
   echo "$HEADER"

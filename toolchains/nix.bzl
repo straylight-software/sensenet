@@ -115,3 +115,54 @@ nix_prebuilt = rule(
     },
 )
 
+
+# Macro: nix_cxx_binary - C++ binary with nix flake dependencies
+def nix_cxx_binary(
+    name: str,
+    srcs: list[str],
+    deps: list[str] = [],       # Nix flake refs like "nixpkgs#zlib"
+    compiler_flags: list[str] = [],
+    linker_flags: list[str] = [],
+    visibility: list[str] = ["PUBLIC"],
+    **kwargs
+):
+    """
+    Create a cxx_binary with nix flake dependencies resolved to compiler/linker flags.
+    
+    The nix deps must be pre-resolved in .buckconfig.local by `nix develop`.
+    """
+    # Collect compiler and linker flags from all nix deps
+    all_compiler_flags = list(compiler_flags)
+    all_linker_flags = list(linker_flags)
+    
+    for flake_ref in deps:
+        out_path = read_root_config("nix.resolved", flake_ref + ".out", None)
+        dev_path = read_root_config("nix.resolved", flake_ref + ".dev", None)
+        
+        if out_path == None:
+            # Create a failing genrule if dep not resolved
+            native.genrule(
+                name = name,
+                out = "error.txt",
+                cmd = "echo 'Nix dep not resolved: {}. Run nix develop.' && exit 1".format(flake_ref),
+            )
+            return
+        
+        include_path = (dev_path or out_path) + "/include"
+        lib_path = out_path + "/lib"
+        
+        pkg_name = flake_ref.split("#")[-1] if "#" in flake_ref else flake_ref
+        lib_name = _lib_name_map.get(pkg_name, pkg_name)
+        
+        all_compiler_flags.extend(["-isystem", include_path])
+        all_linker_flags.extend(["-L" + lib_path, "-Wl,-rpath," + lib_path, "-l" + lib_name])
+    
+    native.cxx_binary(
+        name = name,
+        srcs = srcs,
+        compiler_flags = all_compiler_flags,
+        linker_flags = all_linker_flags,
+        visibility = visibility,
+        **kwargs
+    )
+

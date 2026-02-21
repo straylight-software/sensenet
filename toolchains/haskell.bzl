@@ -279,7 +279,21 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     # Link against compiled deps
     cmd.add(dep_libs)
     
-    ctx.actions.run(cmd, category = "ghc", identifier = ctx.attrs.name)
+    # Use local_only=True for builds with nested module hierarchies
+    # to work around NativeLink Tree proto bug with nested directories.
+    # This completely bypasses remote execution AND remote cache for this action.
+    # The env var changes the action digest to avoid stale remote cache entries.
+    env = {}
+    if ctx.attrs.local_only:
+        env["BUCK2_LOCAL_ONLY"] = "1"
+    
+    ctx.actions.run(
+        cmd,
+        category = "ghc",
+        identifier = ctx.attrs.name,
+        local_only = ctx.attrs.local_only,
+        env = env,
+    )
     
     return [
         DefaultInfo(
@@ -303,6 +317,10 @@ haskell_binary = rule(
         "ghc_options": attrs.list(attrs.string(), default = []),
         "language_extensions": attrs.list(attrs.string(), default = []),
         "compiler_flags": attrs.list(attrs.string(), default = []),
+        # Set to True to force local-only execution (workaround for NativeLink
+        # Tree proto bug with nested output directories from hierarchical modules).
+        # This bypasses BOTH remote execution AND remote cache.
+        "local_only": attrs.bool(default = False),
     },
 )
 

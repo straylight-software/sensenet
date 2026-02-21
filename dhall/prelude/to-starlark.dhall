@@ -80,11 +80,19 @@ let cxxLibrary
 let rustBinary
     : R.Binary -> Text
     = \(b : R.Binary) ->
-        ''
+        -- If there's exactly one source file, use it as crate_root
+        let crateRoot = merge
+              { Some = \(first : Text) ->
+                  if Natural/isZero (Natural/subtract 1 (List/length Text b.srcs))
+                  then "    crate_root = ${q first},\n"
+                  else ""
+              , None = ""
+              } (List/head Text b.srcs)
+        in ''
         rust_binary(
             name = ${q b.name},
             srcs = ${list b.srcs},
-            deps = ${list (locals b.deps)},
+        ${crateRoot}    deps = ${list (locals b.deps)},
             edition = ${q (rustEdition b.edition)},
             visibility = ${vis b.vis},
         )
@@ -506,6 +514,45 @@ let nixCxxBinary
         )
         ''
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Rule union dispatch
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let Ru = ./Rule.dhall
+
+let emptyFlags = { compiler = [] : List Text, linker = [] : List Text }
+
+let rule
+    : Ru.Rule -> Text
+    = \(r : Ru.Rule) ->
+        merge
+          { CxxBinary = \(b : C.Binary) -> cxxBinary b emptyFlags
+          , CxxLibrary = \(lib : C.Library) -> cxxLibrary lib emptyFlags
+          , RustBinary = rustBinary
+          , RustLibrary = rustLibrary
+          , HaskellBinary = haskellBinary
+          , HaskellLibrary = haskellLibrary
+          , HaskellFFIBinary = haskellFFIBinary
+          , LeanBinary = leanBinary
+          , LeanLibrary = leanLibrary
+          , NvBinary = nvBinary
+          , NvLibrary = nvLibrary
+          , PureScriptApp = purescriptApp
+          , PureScriptBinary = purescriptBinary
+          , PureScriptLibrary = purescriptLibrary
+          , Genrule = genrule
+          , NixCxxBinary = nixCxxBinary
+          , CratesIo = cratesIo
+          , HttpArchive = httpArchive
+          }
+          r
+
+-- Convert a list of rules to BUCK file content
+let rules
+    : List Ru.Rule -> Text
+    = \(rs : List Ru.Rule) ->
+        P.Text.concatSep "\n" (P.List.map Ru.Rule Text rule rs)
+
 in  { q, list, flakes, locals
     , cxxStd, rustEdition, vis, Flags
     -- C++
@@ -532,6 +579,8 @@ in  { q, list, flakes, locals
     , cxxToolchain, haskellToolchain, executionPlatform
     , pythonBootstrap, genruleToolchain
     , nvToolchain, rustToolchain, leanToolchain, purescriptToolchain
+    -- Rule dispatch (for { targets = List Rule } format)
+    , rule, rules
     -- backward compat
     , std, binary, deps
     }

@@ -1,8 +1,11 @@
 cabal-version:      3.0
 name:               sensenet
-version:            0.3.0
+version:            0.4.0
 synopsis:           Pure Haskell build system with content-addressed caching
-description:        The best build system in the world. Pure Haskell, no FFI.
+description:        
+    sensenet is a build system that reads typed Dhall configuration,
+    executes builds with content-addressed caching (DICE), and produces
+    reproducible outputs. No FFI, no daemon, just Haskell.
 license:            MIT
 author:             Straylight
 maintainer:         dev@straylight.ai
@@ -13,8 +16,6 @@ executable sensenet
     main-is:          Main.hs
     other-modules:
         SenseNet.Build
-        SenseNet.CAS
-        SenseNet.Config
         SenseNet.DICE
         SenseNet.Dhall
         SenseNet.Discover
@@ -29,7 +30,7 @@ executable sensenet
         directory,
         filepath,
         memory,
-        shelly,
+        process,
         text,
         time
     default-language: GHC2024
