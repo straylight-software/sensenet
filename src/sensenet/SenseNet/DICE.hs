@@ -40,6 +40,7 @@ module SenseNet.DICE
     -- * Execution
     ExecutionResult (..),
     executeGraph,
+    executeGraphParallel,
 
     -- * Cache
     ActionCache (..),
@@ -54,6 +55,9 @@ module SenseNet.DICE
   )
 where
 
+import Control.Concurrent.Async (forConcurrently)
+import Control.Concurrent.MVar
+import Control.Monad (forM_, when)
 import Crypto.Hash (SHA256 (..), hashWith)
 import Data.ByteArray.Encoding qualified as BA
 import Data.ByteString (ByteString)
@@ -281,6 +285,127 @@ executeGraph cache runner graph = do
                       <> T.take 200 (arStderr result)
               TIO.putStrLn $ "  ✗ " <> aName action <> " - " <> errMsg
               go results hits executed ((key, errMsg) : failed) rest
+
+-- | Execute an action graph in parallel
+-- Actions are executed as soon as their dependencies complete
+executeGraphParallel ::
+  ActionCache ->
+  -- | How to run an action
+  (Action -> IO ActionResult) ->
+  ActionGraph ->
+  IO ExecutionResult
+executeGraphParallel cache runner graph = do
+  -- Shared state
+  resultsVar <- newMVar Map.empty
+  hitsVar <- newMVar 0
+  executedVar <- newMVar 0
+  failedVar <- newMVar []
+
+  -- Track completed actions
+  completedVar <- newMVar Set.empty
+
+  -- Build reverse dep map: for each action, who depends on it?
+  let allKeys = Map.keys (agActions graph)
+      depCount = Map.fromList [(k, length (aInputKeys (agActions graph Map.! k))) | k <- allKeys]
+
+  -- Pending count for each action (how many deps not yet done)
+  pendingVar <- newMVar depCount
+
+  -- Find initially ready actions (no deps)
+  let ready0 = [k | k <- allKeys, Map.findWithDefault 0 k depCount == 0]
+
+  -- Process ready actions in waves
+  processWaves cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar ready0
+
+  -- Collect results
+  results <- readMVar resultsVar
+  hits <- readMVar hitsVar
+  executed <- readMVar executedVar
+  failed <- readMVar failedVar
+
+  pure
+    ExecutionResult
+      { erResults = results,
+        erCacheHits = hits,
+        erExecuted = executed,
+        erFailed = failed
+      }
+
+-- | Process waves of ready actions
+processWaves ::
+  ActionCache ->
+  (Action -> IO ActionResult) ->
+  ActionGraph ->
+  MVar (Map ActionKey ActionResult) ->
+  MVar Int ->
+  MVar Int ->
+  MVar [(ActionKey, Text)] ->
+  MVar (Set ActionKey) ->
+  MVar (Map ActionKey Int) ->
+  [ActionKey] ->
+  IO ()
+processWaves _ _ _ _ _ _ _ _ _ [] = pure ()
+processWaves cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar ready = do
+  -- Execute all ready actions in parallel
+  newlyReady <- forConcurrently ready $ \key -> do
+    let action = agActions graph Map.! key
+
+    -- Check cache first
+    cached <- checkCache cache key
+    case cached of
+      Just result -> do
+        TIO.putStrLn $ "  ✓ " <> aName action <> " (cached)"
+        modifyMVar_ resultsVar $ pure . Map.insert key result
+        modifyMVar_ hitsVar $ pure . (+ 1)
+        modifyMVar_ completedVar $ pure . Set.insert key
+        findNewlyReady graph completedVar pendingVar key
+      Nothing -> do
+        TIO.putStrLn $ "  → " <> aName action
+        result <- runner action
+
+        if arExitCode result == 0
+          then do
+            storeCache cache key result
+            modifyMVar_ resultsVar $ pure . Map.insert key result
+            modifyMVar_ executedVar $ pure . (+ 1)
+            modifyMVar_ completedVar $ pure . Set.insert key
+            findNewlyReady graph completedVar pendingVar key
+          else do
+            let errMsg = "exit " <> T.pack (show (arExitCode result)) <> ": " <> T.take 200 (arStderr result)
+            TIO.putStrLn $ "  ✗ " <> aName action <> " - " <> errMsg
+            modifyMVar_ failedVar $ pure . ((key, errMsg) :)
+            pure []
+
+  -- Flatten and dedupe newly ready actions
+  let nextReady = Set.toList $ Set.fromList $ concat newlyReady
+
+  -- Continue with next wave
+  processWaves cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar nextReady
+
+-- | Find actions that become ready after completing an action
+findNewlyReady ::
+  ActionGraph ->
+  MVar (Set ActionKey) ->
+  MVar (Map ActionKey Int) ->
+  ActionKey ->
+  IO [ActionKey]
+findNewlyReady graph _completedVar pendingVar completedKey = do
+  -- Find all actions that depend on completedKey
+  let dependents = [k | (k, action) <- Map.toList (agActions graph), completedKey `elem` aInputKeys action]
+
+  -- Decrement pending count for each dependent
+  newlyReady <- modifyMVar pendingVar $ \pending -> do
+    let (ready, pending') = foldr updatePending ([], pending) dependents
+    pure (pending', ready)
+
+  pure newlyReady
+  where
+    updatePending depKey (ready, pending) =
+      let newCount = Map.findWithDefault 1 depKey pending - 1
+          pending' = Map.insert depKey newCount pending
+       in if newCount == 0
+            then (depKey : ready, pending')
+            else (ready, pending')
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Cache (persistent, file-based)

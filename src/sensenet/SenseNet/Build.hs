@@ -18,6 +18,7 @@ module SenseNet.Build
   ( -- * Build
     build,
     buildWithDeps,
+    buildAllTargets,
     BuildResult (..),
     BuildError (..),
 
@@ -44,7 +45,7 @@ import SenseNet.DICE
     addAction,
     checkCache,
     emptyGraph,
-    executeGraph,
+    executeGraphParallel,
     hashFile,
     newCache,
     storeCache,
@@ -145,8 +146,8 @@ buildWithDeps tc projectRoot pkg targetName = do
         Right graph -> do
           cache <- newCache
 
-          -- Execute graph in topological order
-          execResult <- executeGraph cache runAction graph
+          -- Execute graph in parallel (actions run as soon as deps complete)
+          execResult <- executeGraphParallel cache runAction graph
 
           -- Check for failures
           case erFailed execResult of
@@ -158,6 +159,51 @@ buildWithDeps tc projectRoot pkg targetName = do
                 (rootKey : _) -> case Map.lookup rootKey (erResults execResult) of
                   Just result -> pure $ Right $ BuildSuccess (map T.unpack $ arOutputs result)
                   Nothing -> pure $ Left $ CommandFailed "graph" 1 "root action not in results"
+
+-- | Build all targets in a package in parallel
+buildAllTargets ::
+  Toolchains ->
+  FilePath ->
+  Package ->
+  IO (Either BuildError Int)
+buildAllTargets tc projectRoot pkg = do
+  let outDir = projectRoot </> "sensenet-out" </> pkg.path
+  createDirectoryIfMissing True outDir
+
+  -- Build graph for ALL rules (no filtering)
+  graphResult <- buildAllActionGraph tc projectRoot pkg outDir
+  case graphResult of
+    Left err -> pure $ Left err
+    Right graph -> do
+      cache <- newCache
+      execResult <- executeGraphParallel cache runAction graph
+      case erFailed execResult of
+        ((_, err) : _) -> pure $ Left $ CommandFailed "graph" 1 err
+        [] -> pure $ Right (erExecuted execResult + erCacheHits execResult)
+
+-- | Build action graph for ALL rules in a package
+buildAllActionGraph ::
+  Toolchains ->
+  FilePath ->
+  Package ->
+  FilePath ->
+  IO (Either BuildError ActionGraph)
+buildAllActionGraph tc projectRoot pkg outDir = do
+  let allRules = pkg.rules
+      ruleMap = Map.fromList [(ruleName r, r) | r <- allRules]
+
+  -- Build actions for all rules
+  actionsResult <- buildActionsWithRules tc projectRoot pkg.path outDir allRules
+  case actionsResult of
+    Left err -> pure $ Left err
+    Right ruleActionPairs -> do
+      let nameToKey = Map.fromList [(aName a, actionKey a) | (_, a) <- ruleActionPairs]
+          resolvedActions = [resolveDepsForRule nameToKey pkg.path r a | (r, a) <- ruleActionPairs]
+          graph = foldl (\g a -> addAction a g) emptyGraph resolvedActions
+          -- All top-level rules are roots
+          rootKeys = [actionKey a | a <- resolvedActions]
+          graphWithRoots = graph {agRoots = rootKeys}
+      pure $ Right graphWithRoots
 
 -- | Build an action graph from a rule and its dependencies
 buildActionGraph ::
@@ -241,10 +287,12 @@ resolveDepsForRule nameToKey pkgPath rule action =
     -- Get local deps from the rule
     localDeps = [name | DepLocal name <- ruleDeps rule]
     -- Convert dep names to full target names and look up keys
+    -- Dep names may have leading ":" (e.g., ":mathlib") - strip it
     depKeys =
       [ key
       | depName <- localDeps,
-        let fullName = "//" <> T.pack pkgPath <> ":" <> depName,
+        let cleanName = if ":" `T.isPrefixOf` depName then T.drop 1 depName else depName
+            fullName = "//" <> T.pack pkgPath <> ":" <> cleanName,
         Just key <- [Map.lookup fullName nameToKey]
       ]
 

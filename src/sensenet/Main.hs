@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- |
@@ -11,7 +12,7 @@ module Main where
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import SenseNet.Build (BuildError (..), BuildResult (..), buildWithDeps)
+import SenseNet.Build (BuildError (..), BuildResult (..), buildAllTargets, buildWithDeps)
 -- SenseNet.DICE used by Build module
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover)
@@ -78,7 +79,7 @@ cmdBuild (target : _) = do
   case parseTarget (T.pack target) of
     Nothing -> do
       TIO.putStrLn $ "Invalid target: " <> T.pack target
-      TIO.putStrLn "Expected: //path/to/pkg:target"
+      TIO.putStrLn "Expected: //path/to/pkg:target or //path/to/pkg:all"
       exitFailure
     Just (pkgPath, targetName) -> do
       -- Load toolchains
@@ -89,20 +90,31 @@ cmdBuild (target : _) = do
       let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
       pkg <- Dhall.parsePackageFile projectRoot dhallPath
 
-      -- Build
-      TIO.putStrLn $ "Building //" <> pkgPath <> ":" <> targetName
-      result <- buildWithDeps tc projectRoot pkg targetName
-
-      case result of
-        Left err -> do
-          TIO.putStrLn $ "✗ " <> showError err
-          exitFailure
-        Right (BuildSuccess outputs) -> do
-          TIO.putStrLn $ "✓ Built: " <> T.intercalate ", " (map T.pack outputs)
-          exitSuccess
-        Right (BuildCached outputs) -> do
-          TIO.putStrLn $ "✓ Cached: " <> T.intercalate ", " (map T.pack outputs)
-          exitSuccess
+      -- Build all targets or single target
+      if targetName == "all"
+        then do
+          TIO.putStrLn $ "Building //" <> pkgPath <> ":all (" <> T.pack (show (length pkg.rules)) <> " targets)"
+          result <- buildAllTargets tc projectRoot pkg
+          case result of
+            Left err -> do
+              TIO.putStrLn $ "✗ " <> showError err
+              exitFailure
+            Right n -> do
+              TIO.putStrLn $ "✓ Built " <> T.pack (show n) <> " targets"
+              exitSuccess
+        else do
+          TIO.putStrLn $ "Building //" <> pkgPath <> ":" <> targetName
+          result <- buildWithDeps tc projectRoot pkg targetName
+          case result of
+            Left err -> do
+              TIO.putStrLn $ "✗ " <> showError err
+              exitFailure
+            Right (BuildSuccess outputs) -> do
+              TIO.putStrLn $ "✓ Built: " <> T.intercalate ", " (map T.pack outputs)
+              exitSuccess
+            Right (BuildCached outputs) -> do
+              TIO.putStrLn $ "✓ Cached: " <> T.intercalate ", " (map T.pack outputs)
+              exitSuccess
 
 cmdTargets :: IO ()
 cmdTargets = do
