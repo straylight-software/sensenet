@@ -18,9 +18,15 @@ module SenseNet.Build
   ( -- * Build
     build,
     buildWithDeps,
+    buildWithDepsJ,
     buildAllTargets,
+    buildAllTargetsJ,
     BuildResult (..),
     BuildError (..),
+
+    -- * Package-level dependencies
+    packageDeps,
+    sortPackagesByDeps,
 
     -- * Low-level
     runCommand,
@@ -45,12 +51,13 @@ import SenseNet.DICE
     addAction,
     checkCache,
     emptyGraph,
-    executeGraphParallel,
+    executeGraphWithJobs,
     hashFile,
     newCache,
     storeCache,
     topoSort,
   )
+import SenseNet.Dhall qualified as Dhall
 import SenseNet.IR
   ( CxxBinary (..),
     CxxLibrary (..),
@@ -132,7 +139,21 @@ buildWithDeps ::
   -- | Target name
   Text ->
   IO (Either BuildError BuildResult)
-buildWithDeps tc projectRoot pkg targetName = do
+buildWithDeps = buildWithDepsJ Nothing
+
+-- | Build a target with job limit
+buildWithDepsJ ::
+  -- | Max concurrent jobs (Nothing = unlimited)
+  Maybe Int ->
+  Toolchains ->
+  -- | Project root
+  FilePath ->
+  -- | Package containing the target
+  Package ->
+  -- | Target name
+  Text ->
+  IO (Either BuildError BuildResult)
+buildWithDepsJ mJobs tc projectRoot pkg targetName = do
   case findRule targetName pkg.rules of
     Nothing -> pure $ Left $ TargetNotFound targetName
     Just rootRule -> do
@@ -147,7 +168,7 @@ buildWithDeps tc projectRoot pkg targetName = do
           cache <- newCache
 
           -- Execute graph in parallel (actions run as soon as deps complete)
-          execResult <- executeGraphParallel cache runAction graph
+          execResult <- executeGraphWithJobs mJobs cache runAction graph
 
           -- Check for failures
           case erFailed execResult of
@@ -166,7 +187,17 @@ buildAllTargets ::
   FilePath ->
   Package ->
   IO (Either BuildError Int)
-buildAllTargets tc projectRoot pkg = do
+buildAllTargets = buildAllTargetsJ Nothing
+
+-- | Build all targets with job limit
+buildAllTargetsJ ::
+  -- | Max concurrent jobs (Nothing = unlimited)
+  Maybe Int ->
+  Toolchains ->
+  FilePath ->
+  Package ->
+  IO (Either BuildError Int)
+buildAllTargetsJ mJobs tc projectRoot pkg = do
   let outDir = projectRoot </> "sensenet-out" </> pkg.path
   createDirectoryIfMissing True outDir
 
@@ -176,7 +207,7 @@ buildAllTargets tc projectRoot pkg = do
     Left err -> pure $ Left err
     Right graph -> do
       cache <- newCache
-      execResult <- executeGraphParallel cache runAction graph
+      execResult <- executeGraphWithJobs mJobs cache runAction graph
       case erFailed execResult of
         ((_, err) : _) -> pure $ Left $ CommandFailed "graph" 1 err
         [] -> pure $ Right (erExecuted execResult + erCacheHits execResult)
@@ -190,7 +221,6 @@ buildAllActionGraph ::
   IO (Either BuildError ActionGraph)
 buildAllActionGraph tc projectRoot pkg outDir = do
   let allRules = pkg.rules
-      ruleMap = Map.fromList [(ruleName r, r) | r <- allRules]
 
   -- Build actions for all rules
   actionsResult <- buildActionsWithRules tc projectRoot pkg.path outDir allRules
@@ -198,7 +228,7 @@ buildAllActionGraph tc projectRoot pkg outDir = do
     Left err -> pure $ Left err
     Right ruleActionPairs -> do
       let nameToKey = Map.fromList [(aName a, actionKey a) | (_, a) <- ruleActionPairs]
-          resolvedActions = [resolveDepsForRule nameToKey pkg.path r a | (r, a) <- ruleActionPairs]
+          resolvedActions = [resolveDepsForRule nameToKey pkg r a | (r, a) <- ruleActionPairs]
           graph = foldl (\g a -> addAction a g) emptyGraph resolvedActions
           -- All top-level rules are roots
           rootKeys = [actionKey a | a <- resolvedActions]
@@ -206,6 +236,7 @@ buildAllActionGraph tc projectRoot pkg outDir = do
       pure $ Right graphWithRoots
 
 -- | Build an action graph from a rule and its dependencies
+-- Supports both local (:target) and cross-package (//pkg:target) deps
 buildActionGraph ::
   Toolchains ->
   FilePath ->
@@ -213,27 +244,23 @@ buildActionGraph ::
   FilePath ->
   Rule ->
   IO (Either BuildError ActionGraph)
-buildActionGraph tc projectRoot pkg outDir rootRule = do
-  -- First pass: build all actions and collect name -> key mapping
-  let allRules = pkg.rules
-      ruleMap = Map.fromList [(ruleName r, r) | r <- allRules]
+buildActionGraph tc projectRoot pkg _outDir rootRule = do
+  -- Collect rules needed (root + transitive deps), including cross-package
+  (_, neededRules) <- collectDepsWithPackages projectRoot Map.empty pkg rootRule
 
-  -- Collect rules needed (root + transitive deps)
-  -- Deps come first so they're built first
-  let neededRules = collectDeps ruleMap rootRule
-
-  -- Build actions for all needed rules (paired with rules for dep resolution)
-  actionsResult <- buildActionsWithRules tc projectRoot pkg.path outDir neededRules
+  -- Build actions for all needed rules (paired with package+rule for dep resolution)
+  -- Each rule builds into its own package's output dir
+  actionsResult <- buildActionsWithPackages tc projectRoot neededRules
   case actionsResult of
     Left err -> pure $ Left err
-    Right ruleActionPairs -> do
+    Right pkgRuleActionTriples -> do
       -- Two-pass resolution:
       -- Pass 1: Build name -> ActionKey mapping using actions WITHOUT deps
       --         (needed because deps refer to names, not keys)
-      let nameToKey = Map.fromList [(aName a, actionKey a) | (_, a) <- ruleActionPairs]
+      let nameToKey = Map.fromList [(aName a, actionKey a) | (_, _, a) <- pkgRuleActionTriples]
 
       -- Pass 2: Resolve dependencies - update aInputKeys for each action
-      let resolvedActions = [resolveDepsForRule nameToKey pkg.path r a | (r, a) <- ruleActionPairs]
+      let resolvedActions = [resolveDepsForRule nameToKey p r a | (p, r, a) <- pkgRuleActionTriples]
 
       -- Build graph with RESOLVED actions (keys will be recalculated by addAction)
       let graph = foldl (\g a -> addAction a g) emptyGraph resolvedActions
@@ -248,7 +275,89 @@ buildActionGraph tc projectRoot pkg outDir rootRule = do
 
       pure $ Right graphWithRoot
 
+-- | Parse a dependency reference
+-- Returns (Maybe pkgPath, targetName)
+-- ":foo" -> (Nothing, "foo")
+-- "//pkg/path:foo" -> (Just "pkg/path", "foo")
+parseDep :: Text -> (Maybe Text, Text)
+parseDep dep
+  | "//" `T.isPrefixOf` dep =
+      -- Cross-package: //pkg/path:target
+      let rest = T.drop 2 dep
+       in case T.breakOn ":" rest of
+            (pkgPath, colonTarget)
+              | not (T.null colonTarget) ->
+                  (Just pkgPath, T.drop 1 colonTarget)
+            _ -> (Nothing, dep) -- malformed, treat as local
+  | ":" `T.isPrefixOf` dep =
+      -- Local: :target
+      (Nothing, T.drop 1 dep)
+  | otherwise =
+      -- Bare name (legacy)
+      (Nothing, dep)
+
 -- | Collect all rules needed (transitive closure of deps)
+-- Now handles cross-package deps by loading external packages
+-- Returns (Package, Rule) pairs to preserve package info for each rule
+collectDepsWithPackages ::
+  FilePath -> -- project root
+  Map Text Package -> -- cache of loaded packages
+  Package -> -- current package
+  Rule -> -- root rule
+  IO (Map Text Package, [(Package, Rule)]) -- updated cache, rules in dependency order
+collectDepsWithPackages projectRoot pkgCache pkg rootRule =
+  go pkgCache [] [(pkg, rootRule)]
+  where
+    -- visited is [(Package, Rule)] pairs
+    go cache visited [] = pure (cache, visited)
+    go cache visited ((currentPkg, r) : rest)
+      | any (\(p, v) -> ruleName v == ruleName r && p.path == currentPkg.path) visited =
+          go cache visited rest
+      | otherwise = do
+          -- Get deps for this rule
+          let deps = [dep | DepLocal dep <- ruleDeps r]
+
+          -- Partition into local and cross-package
+          let parsed = map parseDep deps
+              localDeps = [(currentPkg, targetName) | (Nothing, targetName) <- parsed]
+              crossPkgDeps = [(pkgPath, targetName) | (Just pkgPath, targetName) <- parsed]
+
+          -- Load cross-package deps
+          (cache', crossRules) <- loadCrossPackageDeps projectRoot cache crossPkgDeps
+
+          -- Resolve local deps
+          let ruleMap = Map.fromList [(ruleName rule, rule) | rule <- currentPkg.rules]
+              localRules = [(currentPkg, ruleMap Map.! name) | (_, name) <- localDeps, Map.member name ruleMap]
+
+          -- Continue with all deps - keep (currentPkg, r) pair in visited
+          go cache' ((currentPkg, r) : visited) (localRules ++ crossRules ++ rest)
+
+-- | Load cross-package dependencies
+loadCrossPackageDeps ::
+  FilePath ->
+  Map Text Package ->
+  [(Text, Text)] -> -- (pkgPath, targetName)
+  IO (Map Text Package, [(Package, Rule)])
+loadCrossPackageDeps projectRoot cache deps = go cache [] deps
+  where
+    go c rules [] = pure (c, rules)
+    go c rules ((pkgPath, targetName) : rest) = do
+      -- Check cache first
+      (c', pkg) <- case Map.lookup pkgPath c of
+        Just p -> pure (c, p)
+        Nothing -> do
+          -- Load package
+          let dhallPath = projectRoot </> T.unpack pkgPath </> "BUILD.dhall"
+          p <- Dhall.parsePackageFile projectRoot dhallPath
+          pure (Map.insert pkgPath p c, p)
+
+      -- Find the rule
+      let ruleMap = Map.fromList [(ruleName rule, rule) | rule <- pkg.rules]
+      case Map.lookup targetName ruleMap of
+        Just rule -> go c' ((pkg, rule) : rules) rest
+        Nothing -> go c' rules rest -- Skip missing (will error later)
+
+-- | Collect deps for local-only case (backward compat)
 collectDeps :: Map Text Rule -> Rule -> [Rule]
 collectDeps ruleMap rootRule = go [] [rootRule]
   where
@@ -257,12 +366,13 @@ collectDeps ruleMap rootRule = go [] [rootRule]
       | any (\v -> ruleName v == ruleName r) visited = go visited rest
       | otherwise =
           let localDeps = [name | DepLocal name <- ruleDeps r]
-              -- Strip leading ":" from dep names
-              cleanDeps = map (\n -> if ":" `T.isPrefixOf` n then T.drop 1 n else n) localDeps
+              -- Strip leading ":" from dep names, ignore cross-package for now
+              cleanDeps = [T.drop 1 n | n <- localDeps, ":" `T.isPrefixOf` n, not ("//" `T.isPrefixOf` n)]
               depRules = [ruleMap Map.! depName | depName <- cleanDeps, Map.member depName ruleMap]
            in go (r : visited) (depRules ++ rest)
 
 -- | Build actions for a list of rules, returning (Rule, Action) pairs
+-- Used for single-package builds (backward compat)
 buildActionsWithRules ::
   Toolchains ->
   FilePath ->
@@ -278,21 +388,40 @@ buildActionsWithRules tc projectRoot pkgPath outDir rules = do
     ((_, err) : _) -> pure $ Left err
     [] -> pure $ Right [(r, a) | (r, Right a) <- results]
 
--- | Resolve local dependencies to ActionKeys
--- Takes the rule alongside the action to access deps
-resolveDepsForRule :: Map Text ActionKey -> FilePath -> Rule -> Action -> Action
-resolveDepsForRule nameToKey pkgPath rule action =
+-- | Build actions for rules from potentially different packages
+-- Each rule builds into its own package's output dir
+buildActionsWithPackages ::
+  Toolchains ->
+  FilePath ->
+  [(Package, Rule)] ->
+  IO (Either BuildError [(Package, Rule, Action)])
+buildActionsWithPackages tc projectRoot pkgRules = do
+  results <- forM pkgRules $ \(pkg, rule) -> do
+    let outDir = projectRoot </> "sensenet-out" </> pkg.path
+    createDirectoryIfMissing True outDir
+    actionResult <- ruleToAction tc projectRoot pkg.path outDir rule
+    pure (pkg, rule, actionResult)
+  case [(p, r, e) | (p, r, Left e) <- results] of
+    ((_, _, err) : _) -> pure $ Left err
+    [] -> pure $ Right [(p, r, a) | (p, r, Right a) <- results]
+
+-- | Resolve dependencies to ActionKeys
+-- Takes the package and rule alongside the action to access deps
+-- Handles both local (:target) and cross-package (//pkg:target) deps
+resolveDepsForRule :: Map Text ActionKey -> Package -> Rule -> Action -> Action
+resolveDepsForRule nameToKey pkg rule action =
   action {aInputKeys = depKeys}
   where
-    -- Get local deps from the rule
-    localDeps = [name | DepLocal name <- ruleDeps rule]
+    -- Get deps from the rule
+    allDeps = [name | DepLocal name <- ruleDeps rule]
     -- Convert dep names to full target names and look up keys
-    -- Dep names may have leading ":" (e.g., ":mathlib") - strip it
     depKeys =
       [ key
-      | depName <- localDeps,
-        let cleanName = if ":" `T.isPrefixOf` depName then T.drop 1 depName else depName
-            fullName = "//" <> T.pack pkgPath <> ":" <> cleanName,
+      | depName <- allDeps,
+        let (maybePkg, targetName) = parseDep depName
+            fullName = case maybePkg of
+              Just pkgPath -> "//" <> pkgPath <> ":" <> targetName
+              Nothing -> "//" <> T.pack pkg.path <> ":" <> targetName,
         Just key <- [Map.lookup fullName nameToKey]
       ]
 
@@ -391,10 +520,15 @@ cxxBinaryAction tc projectRoot pkgPath outDir bin = do
           ldFlag = ["-fuse-ld=" <> T.unpack ldPath]
           stdFlag = cxxStdFlag bin.std
 
+          -- Build include and link flags for local deps
+          (depIncludes, depLibs) = cxxDepFlags projectRoot outDir bin.deps
+
           cmd =
             [T.unpack cxxPath, "-o", output, stdFlag]
               ++ includeFlags
+              ++ depIncludes
               ++ srcPaths -- full paths to source files
+              ++ depLibs
               ++ libFlags
               ++ ldFlag
 
@@ -451,6 +585,32 @@ cxxStdFlag = \case
   Cxx20 -> "-std=c++20"
   Cxx23 -> "-std=c++23"
 
+-- | Generate include and link flags for C++ dependencies
+-- Returns (include flags, library paths)
+cxxDepFlags :: FilePath -> FilePath -> [Dep] -> ([String], [String])
+cxxDepFlags projectRoot outDir deps =
+  let flags = map (cxxDepFlag projectRoot outDir) deps
+   in (concatMap fst flags, concatMap snd flags)
+
+-- | Generate flags for a single C++ dependency
+cxxDepFlag :: FilePath -> FilePath -> Dep -> ([String], [String])
+cxxDepFlag projectRoot outDir = \case
+  DepLocal name ->
+    let (maybePkg, targetName) = parseDep name
+     in case maybePkg of
+          Just pkgPath ->
+            -- Cross-package dep: //pkg/path:target
+            let depSrcDir = projectRoot </> T.unpack pkgPath
+                depOutDir = projectRoot </> "sensenet-out" </> T.unpack pkgPath
+                libPath = depOutDir </> "lib" <> T.unpack targetName <> ".a"
+             in (["-I" <> depSrcDir], [libPath])
+          Nothing ->
+            -- Local dep: :target
+            let depName = T.unpack targetName
+                libPath = outDir </> "lib" <> depName <> ".a"
+             in ([], [libPath]) -- Same package, no extra include needed
+  DepFlake _ -> ([], []) -- TODO: handle flake deps
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- Rust Actions
 -- ════════════════════════════════════════════════════════════════════════════
@@ -469,8 +629,8 @@ rustBinaryAction tc projectRoot pkgPath outDir bin = do
           editionFlag = "--edition=" <> rustEdition bin.edition
           mainSrc = T.unpack $ headOr "main.rs" bin.srcs
 
-          -- Build --extern flags for local deps
-          externFlags = concatMap (rustExternFlag outDir) bin.deps
+          -- Build --extern flags for deps (local and cross-package)
+          externFlags = concatMap (rustExternFlag projectRoot outDir) bin.deps
 
           cmd =
             [T.unpack rustcPath, editionFlag]
@@ -490,13 +650,22 @@ rustBinaryAction tc projectRoot pkgPath outDir bin = do
             }
 
 -- | Generate --extern flag for a Rust dependency
-rustExternFlag :: FilePath -> Dep -> [String]
-rustExternFlag outDir = \case
+-- Handles both local (:target) and cross-package (//pkg:target) deps
+rustExternFlag :: FilePath -> FilePath -> Dep -> [String]
+rustExternFlag projectRoot outDir = \case
   DepLocal name ->
-    -- Strip leading ":" if present
-    let depName = T.unpack $ if ":" `T.isPrefixOf` name then T.drop 1 name else name
-        rlibPath = outDir </> "lib" <> depName <> ".rlib"
-     in ["--extern", depName <> "=" <> rlibPath]
+    let (maybePkg, targetName) = parseDep name
+        depName = T.unpack targetName
+     in case maybePkg of
+          Just pkgPath ->
+            -- Cross-package dep: //pkg/path:target
+            let depOutDir = projectRoot </> "sensenet-out" </> T.unpack pkgPath
+                rlibPath = depOutDir </> "lib" <> depName <> ".rlib"
+             in ["--extern", depName <> "=" <> rlibPath]
+          Nothing ->
+            -- Local dep: :target
+            let rlibPath = outDir </> "lib" <> depName <> ".rlib"
+             in ["--extern", depName <> "=" <> rlibPath]
   DepFlake _ -> [] -- TODO: handle flake deps
 
 rustLibraryAction :: Toolchains -> FilePath -> FilePath -> FilePath -> RustLibrary -> IO (Either BuildError Action)
@@ -715,3 +884,47 @@ findRule name = foldr check Nothing
     check r acc
       | ruleName r == name = Just r
       | otherwise = acc
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Package-level Dependencies
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Get cross-package dependencies for a package
+-- Returns list of package paths that this package depends on
+packageDeps :: Package -> [Text]
+packageDeps pkg =
+  let allDeps = concatMap extractCrossPkgDeps pkg.rules
+   in nub allDeps
+  where
+    -- Extract cross-package deps from a rule
+    extractCrossPkgDeps :: Rule -> [Text]
+    extractCrossPkgDeps rule =
+      [ pkgPath
+      | DepLocal name <- ruleDeps rule,
+        let (maybePkg, _) = parseDep name,
+        Just pkgPath <- [maybePkg]
+      ]
+
+    -- Simple nub (could use Set for efficiency but lists are small)
+    nub [] = []
+    nub (x : xs) = x : nub (filter (/= x) xs)
+
+-- | Sort packages by dependencies (topological sort)
+-- Packages with no deps come first, packages depending on others come later
+-- Returns packages in build order (dependencies before dependents)
+sortPackagesByDeps :: [Package] -> [Package]
+sortPackagesByDeps pkgs = reverse $ go [] pkgSet pkgs
+  where
+    pkgSet = map (T.pack . (.path)) pkgs
+    pkgMap = Map.fromList [(T.pack p.path, p) | p <- pkgs]
+
+    go sorted _ [] = sorted
+    go sorted remaining (p : rest)
+      | T.pack p.path `elem` map (T.pack . (.path)) sorted = go sorted remaining rest
+      | otherwise =
+          -- Get deps that are in our package set
+          let deps = filter (`elem` remaining) (packageDeps p)
+              -- Recursively sort deps first
+              depPkgs = [pkgMap Map.! d | d <- deps, Map.member d pkgMap]
+              sorted' = foldl (\s dp -> if T.pack dp.path `elem` map (T.pack . (.path)) s then s else go s remaining [dp]) sorted depPkgs
+           in go (p : sorted') remaining rest

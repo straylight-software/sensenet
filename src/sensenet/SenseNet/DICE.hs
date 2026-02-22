@@ -41,6 +41,7 @@ module SenseNet.DICE
     ExecutionResult (..),
     executeGraph,
     executeGraphParallel,
+    executeGraphWithJobs,
 
     -- * Cache
     ActionCache (..),
@@ -57,6 +58,8 @@ where
 
 import Control.Concurrent.Async (forConcurrently)
 import Control.Concurrent.MVar
+import Control.Concurrent.QSem
+import Control.Exception (bracket_)
 import Control.Monad (forM_, when)
 import Crypto.Hash (SHA256 (..), hashWith)
 import Data.ByteArray.Encoding qualified as BA
@@ -286,15 +289,22 @@ executeGraph cache runner graph = do
               TIO.putStrLn $ "  ✗ " <> aName action <> " - " <> errMsg
               go results hits executed ((key, errMsg) : failed) rest
 
--- | Execute an action graph in parallel
+-- | Execute an action graph in parallel with limited concurrency
 -- Actions are executed as soon as their dependencies complete
-executeGraphParallel ::
+executeGraphWithJobs ::
+  -- | Max concurrent jobs (Nothing = unlimited)
+  Maybe Int ->
   ActionCache ->
   -- | How to run an action
   (Action -> IO ActionResult) ->
   ActionGraph ->
   IO ExecutionResult
-executeGraphParallel cache runner graph = do
+executeGraphWithJobs mJobs cache runner graph = do
+  -- Create semaphore for job limiting (if specified)
+  semMaybe <- case mJobs of
+    Just n | n > 0 -> Just <$> newQSem n
+    _ -> pure Nothing
+
   -- Shared state
   resultsVar <- newMVar Map.empty
   hitsVar <- newMVar 0
@@ -307,15 +317,19 @@ executeGraphParallel cache runner graph = do
   -- Build reverse dep map: for each action, who depends on it?
   let allKeys = Map.keys (agActions graph)
       depCount = Map.fromList [(k, length (aInputKeys (agActions graph Map.! k))) | k <- allKeys]
+      total = length allKeys
 
   -- Pending count for each action (how many deps not yet done)
   pendingVar <- newMVar depCount
+
+  -- Progress counter (starts at 0)
+  progressVar <- newMVar 0
 
   -- Find initially ready actions (no deps)
   let ready0 = [k | k <- allKeys, Map.findWithDefault 0 k depCount == 0]
 
   -- Process ready actions in waves
-  processWaves cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar ready0
+  processWaves semMaybe total progressVar cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar ready0
 
   -- Collect results
   results <- readMVar resultsVar
@@ -331,8 +345,24 @@ executeGraphParallel cache runner graph = do
         erFailed = failed
       }
 
+-- | Execute an action graph in parallel (unlimited concurrency)
+-- Actions are executed as soon as their dependencies complete
+executeGraphParallel ::
+  ActionCache ->
+  -- | How to run an action
+  (Action -> IO ActionResult) ->
+  ActionGraph ->
+  IO ExecutionResult
+executeGraphParallel cache runner graph = executeGraphWithJobs Nothing cache runner graph
+
 -- | Process waves of ready actions
 processWaves ::
+  -- | Semaphore for limiting concurrency
+  Maybe QSem ->
+  -- | Total number of actions (for progress display)
+  Int ->
+  -- | Progress counter (completed so far)
+  MVar Int ->
   ActionCache ->
   (Action -> IO ActionResult) ->
   ActionGraph ->
@@ -344,43 +374,53 @@ processWaves ::
   MVar (Map ActionKey Int) ->
   [ActionKey] ->
   IO ()
-processWaves _ _ _ _ _ _ _ _ _ [] = pure ()
-processWaves cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar ready = do
-  -- Execute all ready actions in parallel
+processWaves _ _ _ _ _ _ _ _ _ _ _ _ [] = pure ()
+processWaves semMaybe total progressVar cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar ready = do
+  -- Execute all ready actions in parallel (but limited by semaphore if present)
   newlyReady <- forConcurrently ready $ \key -> do
     let action = agActions graph Map.! key
 
-    -- Check cache first
-    cached <- checkCache cache key
-    case cached of
-      Just result -> do
-        TIO.putStrLn $ "  ✓ " <> aName action <> " (cached)"
-        modifyMVar_ resultsVar $ pure . Map.insert key result
-        modifyMVar_ hitsVar $ pure . (+ 1)
-        modifyMVar_ completedVar $ pure . Set.insert key
-        findNewlyReady graph completedVar pendingVar key
-      Nothing -> do
-        TIO.putStrLn $ "  → " <> aName action
-        result <- runner action
+    -- Wrap in semaphore if we have one
+    let runWithLimit io = case semMaybe of
+          Just sem -> bracket_ (waitQSem sem) (signalQSem sem) io
+          Nothing -> io
 
-        if arExitCode result == 0
-          then do
-            storeCache cache key result
-            modifyMVar_ resultsVar $ pure . Map.insert key result
-            modifyMVar_ executedVar $ pure . (+ 1)
-            modifyMVar_ completedVar $ pure . Set.insert key
-            findNewlyReady graph completedVar pendingVar key
-          else do
-            let errMsg = "exit " <> T.pack (show (arExitCode result)) <> ": " <> T.take 200 (arStderr result)
-            TIO.putStrLn $ "  ✗ " <> aName action <> " - " <> errMsg
-            modifyMVar_ failedVar $ pure . ((key, errMsg) :)
-            pure []
+    runWithLimit $ do
+      -- Get and increment progress counter atomically
+      n <- modifyMVar progressVar $ \p -> pure (p + 1, p + 1)
+      let progress = "[" <> T.pack (show n) <> "/" <> T.pack (show total) <> "] "
+
+      -- Check cache first
+      cached <- checkCache cache key
+      case cached of
+        Just result -> do
+          TIO.putStrLn $ progress <> "✓ " <> aName action <> " (cached)"
+          modifyMVar_ resultsVar $ pure . Map.insert key result
+          modifyMVar_ hitsVar $ pure . (+ 1)
+          modifyMVar_ completedVar $ pure . Set.insert key
+          findNewlyReady graph completedVar pendingVar key
+        Nothing -> do
+          TIO.putStrLn $ progress <> "→ " <> aName action
+          result <- runner action
+
+          if arExitCode result == 0
+            then do
+              storeCache cache key result
+              modifyMVar_ resultsVar $ pure . Map.insert key result
+              modifyMVar_ executedVar $ pure . (+ 1)
+              modifyMVar_ completedVar $ pure . Set.insert key
+              findNewlyReady graph completedVar pendingVar key
+            else do
+              let errMsg = "exit " <> T.pack (show (arExitCode result)) <> ": " <> T.take 200 (arStderr result)
+              TIO.putStrLn $ progress <> "✗ " <> aName action <> " - " <> errMsg
+              modifyMVar_ failedVar $ pure . ((key, errMsg) :)
+              pure []
 
   -- Flatten and dedupe newly ready actions
   let nextReady = Set.toList $ Set.fromList $ concat newlyReady
 
   -- Continue with next wave
-  processWaves cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar nextReady
+  processWaves semMaybe total progressVar cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar nextReady
 
 -- | Find actions that become ready after completing an action
 findNewlyReady ::

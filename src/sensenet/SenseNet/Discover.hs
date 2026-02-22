@@ -7,6 +7,7 @@
 module SenseNet.Discover
   ( DhallFile (..),
     discover,
+    discoverUnder,
   )
 where
 
@@ -27,24 +28,34 @@ data DhallFile = DhallFile
 -- | Discover all .dhall files under a directory
 -- Respects .gitignore patterns and skips generated content
 discover :: FilePath -> IO [DhallFile]
-discover root = do
+discover root = discoverUnder root root
+
+-- | Discover all .dhall files under a specific subdirectory
+-- @discoverUnder projectRoot startDir@ finds BUILD.dhall files under startDir
+-- but paths are relative to projectRoot
+discoverUnder :: FilePath -> FilePath -> IO [DhallFile]
+discoverUnder root startDir = do
   ignores <- loadIgnorePatterns root
-  go ignores root
+  go ignores startDir
   where
     go ignores dir = do
-      entries <- listDirectory dir
-      let paths = map (dir </>) entries
+      exists <- doesDirectoryExist dir
+      if not exists
+        then pure []
+        else do
+          entries <- listDirectory dir
+          let paths = map (dir </>) entries
 
-      -- Find BUILD.dhall files only
-      dhallFiles <- filterM doesFileExist $ filter isBuildDhall paths
-      let here = map (\fp -> DhallFile fp (makeRelative root fp)) dhallFiles
+          -- Find BUILD.dhall files only
+          dhallFiles <- filterM doesFileExist $ filter isBuildDhall paths
+          let here = map (\fp -> DhallFile fp (makeRelative root fp)) dhallFiles
 
-      -- Recurse into subdirectories
-      subdirs <- filterM doesDirectoryExist paths
-      let validDirs = filter (not . isIgnored ignores root) subdirs
+          -- Recurse into subdirectories
+          subdirs <- filterM doesDirectoryExist paths
+          let validDirs = filter (not . isIgnored ignores root) subdirs
 
-      children <- concat <$> forM validDirs (go ignores)
-      pure (here ++ children)
+          children <- concat <$> forM validDirs (go ignores)
+          pure (here ++ children)
 
     isBuildDhall p = takeFileName p == "BUILD.dhall"
 
