@@ -735,8 +735,12 @@ haskellBinaryAction tc projectRoot pkgPath outDir bin = do
           -- Build -i flags for library dependencies
           depFlags = concatMap (haskellDepFlag projectRoot outDir) bin.deps
 
+          -- Temporary directory for .hi/.o files during binary compilation
+          -- This prevents polluting the source tree
+          tmpDir = outDir </> T.unpack bin.name <> "-tmp"
+
           cmd =
-            [T.unpack ghcPath, "-o", output, "-i" <> srcDir]
+            [T.unpack ghcPath, "-o", output, "-hidir", tmpDir, "-odir", tmpDir, "-i" <> srcDir]
               ++ depFlags
               ++ pkgFlags
               ++ extFlags
@@ -750,7 +754,8 @@ haskellBinaryAction tc projectRoot pkgPath outDir bin = do
               aCommand = map T.pack cmd,
               aInputs = hashes,
               aInputKeys = [],
-              aOutputs = [T.pack output],
+              -- Include tmpDir/.keep to ensure the temp directory is created
+              aOutputs = [T.pack output, T.pack (tmpDir </> ".keep")],
               aEnv = Map.empty,
               aCoeffects = ["fs:" <> T.pack srcDir]
             }
@@ -901,10 +906,8 @@ runAction Action {..} = do
         [] -> ("", [])
         (e : as) -> (e, as)
 
-  -- Ensure output directory exists
-  case aOutputs of
-    (out : _) -> createDirectoryIfMissing True (takeDirectory $ T.unpack out)
-    [] -> pure ()
+  -- Ensure output directories exist (for all outputs)
+  mapM_ (createDirectoryIfMissing True . takeDirectory . T.unpack) aOutputs
 
   result <-
     if null exe

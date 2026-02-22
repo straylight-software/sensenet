@@ -22,6 +22,7 @@ import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
 import SenseNet.IR (Package (..), ruleName)
 import SenseNet.Toolchains qualified as TC
+import System.Directory (XdgDirectory (..), doesDirectoryExist, getXdgDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -39,7 +40,7 @@ main = do
     ["-h"] -> usage
     ("build" : rest) -> cmdBuild rest
     ("targets" : _) -> cmdTargets
-    ("clean" : _) -> cmdClean
+    ("clean" : rest) -> cmdClean ("--full" `elem` rest)
     (cmd : _) -> do
       TIO.putStrLn $ "Unknown command: " <> T.pack cmd
       usage
@@ -62,7 +63,7 @@ usage = do
         "Commands:",
         "  build <target> [-j N]  Build target(s) with N parallel jobs",
         "  targets                List available targets",
-        "  clean                  Remove build outputs",
+        "  clean [--full]         Remove build outputs (--full: also clear cache)",
         "",
         "Target patterns:",
         "  //path/to/pkg:target   Single target",
@@ -255,10 +256,29 @@ cmdTargets = do
         ]
   mapM_ TIO.putStrLn targets
 
-cmdClean :: IO ()
-cmdClean = do
-  TIO.putStrLn "Removing sensenet-out/"
-  -- TODO: actually remove
+cmdClean :: Bool -> IO ()
+cmdClean full = do
+  -- Remove build outputs
+  let outDir = "sensenet-out"
+  outExists <- doesDirectoryExist outDir
+  if outExists
+    then do
+      TIO.putStrLn "Removing sensenet-out/"
+      removeDirectoryRecursive outDir
+    else TIO.putStrLn "sensenet-out/ does not exist"
+
+  -- With --full, also remove the action cache
+  if full
+    then do
+      cacheDir <- getXdgDirectory XdgCache "sensenet"
+      cacheExists <- doesDirectoryExist cacheDir
+      if cacheExists
+        then do
+          TIO.putStrLn $ "Removing " <> T.pack cacheDir <> "/"
+          removeDirectoryRecursive cacheDir
+        else TIO.putStrLn $ T.pack cacheDir <> "/ does not exist"
+    else pure ()
+
   TIO.putStrLn "✓ Clean"
 
 -- ════════════════════════════════════════════════════════════════════════════
