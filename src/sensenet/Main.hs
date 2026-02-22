@@ -21,7 +21,7 @@ import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
 import SenseNet.IR (Package (..), ruleName)
 import SenseNet.Toolchains qualified as TC
-import System.Directory (XdgDirectory (..), doesDirectoryExist, getXdgDirectory, removeDirectoryRecursive)
+import System.Directory (XdgDirectory (..), doesDirectoryExist, getCurrentDirectory, getXdgDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -137,7 +137,7 @@ cmdBuild args = do
         exitFailure
       Just pattern -> do
         -- Load toolchains
-        projectRoot <- pure "." -- TODO: find project root
+        projectRoot <- getCurrentDirectory -- Use absolute path to avoid issues with cd in subshells
         tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
 
         case pattern of

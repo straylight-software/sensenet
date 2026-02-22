@@ -75,10 +75,12 @@ import SenseNet.IR
     LeanBinary (..),
     NixCxxBinary (..),
     Package (..),
+    PureScriptApp (..),
     Rule (..),
     RustBinary (..),
     RustEdition (..),
     RustLibrary (..),
+    SrcSpec (..),
     ruleDeps,
     ruleName,
   )
@@ -510,6 +512,7 @@ ruleToAction tc projectRoot pkgPath outDir = \case
   RHaskellFFIBinary bin -> haskellFFIBinaryAction tc projectRoot pkgPath outDir bin
   RLeanBinary bin -> leanBinaryAction tc projectRoot pkgPath outDir bin
   RNixCxxBinary bin -> nixCxxBinaryAction tc projectRoot pkgPath outDir bin
+  RPureScriptApp app -> pureScriptAppAction tc projectRoot pkgPath outDir app
   RGenrule gen -> genruleAction projectRoot pkgPath outDir gen
   _ -> pure $ Left $ CommandFailed "unsupported" 1 "Rule type not yet implemented"
 
@@ -1105,6 +1108,80 @@ genruleAction projectRoot pkgPath outDir gen = do
             }
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- PureScript Actions
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Build a PureScript web application
+-- Uses spago to compile and bundle, then copies assets to output
+pureScriptAppAction :: Toolchains -> FilePath -> FilePath -> FilePath -> PureScriptApp -> IO (Either BuildError Action)
+pureScriptAppAction tc projectRoot pkgPath outDir app = do
+  let srcDir = projectRoot </> pkgPath
+      appDir = outDir </> T.unpack app.name
+
+      -- Get source files based on SrcSpec
+      _srcGlob = case app.srcs of
+        SrcExplicit files -> files
+        SrcGlob pattern -> [pattern] -- Will be expanded by shell
+        SrcGlobs patterns -> patterns
+
+  -- Hash spago.yaml and source spec (simplified - ideally glob would be resolved)
+  let spagoYamlPath = srcDir </> T.unpack app.spagoYaml
+      configFiles =
+        [spagoYamlPath]
+          ++ maybe [] (\l -> [srcDir </> T.unpack l]) app.spagoLock
+          ++ maybe [] (\h -> [srcDir </> T.unpack h]) app.indexHtml
+          ++ maybe [] (\c -> [srcDir </> T.unpack c]) app.styleCss
+
+  inputHashes <- hashSourceFiles configFiles
+  case inputHashes of
+    Left err -> pure $ Left err
+    Right hashes -> do
+      let TC.PureScript {spago = TC.Tool spagoPath, esbuild = TC.Tool _esbuildPath} = tc.purescript
+
+          -- Build command:
+          -- 1. mkdir output directory first
+          -- 2. cd to srcDir (spago needs to run from package root)
+          -- 3. spago build (compiles to output/)
+          -- 4. spago bundle (creates bundled JS)
+          -- 5. Copy assets to appDir
+          -- Note: 2>&1 redirects stderr to stdout to avoid pipe buffer deadlock
+          shellCmd =
+            unwords
+              [ "mkdir -p",
+                appDir,
+                "&&",
+                "cd",
+                srcDir,
+                "&&",
+                T.unpack spagoPath,
+                "build",
+                "2>&1",
+                "&&",
+                T.unpack spagoPath,
+                "bundle",
+                "--outfile",
+                appDir </> "app.js",
+                "2>&1"
+              ]
+              -- After cd to srcDir, copy files from current dir (.) to appDir
+              ++ maybe "" (\h -> " && cp " <> T.unpack h <> " " <> appDir </> T.unpack h) app.indexHtml
+              ++ maybe "" (\c -> " && cp " <> T.unpack c <> " " <> appDir </> T.unpack c) app.styleCss
+
+          cmd = ["sh", "-c", shellCmd]
+
+      pure $
+        Right
+          Action
+            { aName = "//" <> T.pack pkgPath <> ":" <> app.name,
+              aCommand = map T.pack cmd,
+              aInputs = hashes,
+              aInputKeys = [],
+              aOutputs = [T.pack appDir],
+              aEnv = Map.empty,
+              aCoeffects = ["fs:" <> T.pack srcDir, "network"] -- spago may fetch packages
+            }
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- Memory Profiling via getrusage(2)
 -- ════════════════════════════════════════════════════════════════════════════
 
@@ -1167,7 +1244,8 @@ runAction Action {..} = do
             fullEnv = actionEnv ++ baseEnv -- Action env takes precedence
         let cp =
               (proc exe args)
-                { std_out = CreatePipe,
+                { std_in = NoStream,
+                  std_out = CreatePipe,
                   std_err = CreatePipe,
                   env = Just fullEnv
                 }
