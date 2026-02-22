@@ -33,6 +33,7 @@ module SenseNet.Build
   )
 where
 
+import Control.Exception (evaluate)
 import Control.Monad (forM)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -78,10 +79,12 @@ import SenseNet.IR
 import SenseNet.Toolchains (Toolchains (..))
 import SenseNet.Toolchains qualified as TC
 import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
+import System.IO (hGetContents)
 import System.IO.Error (tryIOError)
-import System.Process (readProcessWithExitCode)
+import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, readProcessWithExitCode, waitForProcess)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Helpers
@@ -880,6 +883,13 @@ genruleAction projectRoot pkgPath outDir gen = do
     Left err -> pure $ Left err
     Right hashes -> do
       let cmd = ["sh", "-c", T.unpack gen.cmd]
+          -- Set $OUT, $SRCS, $SRCDIR for use in the command
+          env =
+            Map.fromList
+              [ ("OUT", T.pack output),
+                ("SRCDIR", T.pack srcDir),
+                ("SRCS", T.unwords (map T.pack srcPaths))
+              ]
 
       pure $
         Right
@@ -889,7 +899,7 @@ genruleAction projectRoot pkgPath outDir gen = do
               aInputs = hashes,
               aInputKeys = [],
               aOutputs = [T.pack output],
-              aEnv = Map.empty,
+              aEnv = env,
               aCoeffects = ["fs:" <> T.pack srcDir, "shell"]
             }
 
@@ -913,7 +923,27 @@ runAction Action {..} = do
     if null exe
       then pure $ Left "Empty command"
       else do
-        r <- tryIOError (readProcessWithExitCode exe args "")
+        -- Merge action env with inherited environment
+        baseEnv <- getEnvironment
+        let actionEnv = [(T.unpack k, T.unpack v) | (k, v) <- Map.toList aEnv]
+            fullEnv = actionEnv ++ baseEnv -- Action env takes precedence
+        let cp =
+              (proc exe args)
+                { std_out = CreatePipe,
+                  std_err = CreatePipe,
+                  env = Just fullEnv
+                }
+
+        r <- tryIOError $ do
+          (_, Just hOut, Just hErr, ph) <- createProcess cp
+          stdout <- hGetContents hOut
+          stderr <- hGetContents hErr
+          -- Force evaluation before waiting
+          _ <- evaluate (length stdout)
+          _ <- evaluate (length stderr)
+          exitCode <- waitForProcess ph
+          pure (exitCode, stdout, stderr)
+
         case r of
           Left ioErr -> pure $ Left (show ioErr)
           Right res -> pure $ Right res
