@@ -321,3 +321,4 @@ showError = \case
     "Command failed: " <> cmd <> " (exit " <> T.pack (show code) <> ")\n" <> err
   DependencyFailed dep err -> "Dependency failed: " <> dep <> " - " <> err
   SourceNotFound path -> "Source not found: " <> T.pack path
+  PackageError err -> "Package error: " <> err

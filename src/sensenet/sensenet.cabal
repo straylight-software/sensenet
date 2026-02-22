@@ -20,6 +20,7 @@ executable sensenet
         SenseNet.Dhall
         SenseNet.Discover
         SenseNet.IR
+        SenseNet.PureScript
         SenseNet.Toolchains
     build-depends:
         async,

@@ -84,9 +84,10 @@ import SenseNet.IR
     ruleDeps,
     ruleName,
   )
+import SenseNet.PureScript qualified as PS
 import SenseNet.Toolchains (Toolchains (..))
 import SenseNet.Toolchains qualified as TC
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesFileExist, listDirectory)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
@@ -119,6 +120,7 @@ data BuildError
   | CommandFailed Text Int Text
   | DependencyFailed Text Text
   | SourceNotFound FilePath
+  | PackageError Text -- PureScript package fetch/resolve errors
   deriving (Show, Eq)
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -1117,69 +1119,92 @@ pureScriptAppAction :: Toolchains -> FilePath -> FilePath -> FilePath -> PureScr
 pureScriptAppAction tc projectRoot pkgPath outDir app = do
   let srcDir = projectRoot </> pkgPath
       appDir = outDir </> T.unpack app.name
+      pursOutputDir = srcDir </> "output"
+      mainModule = T.unpack app.main
 
-      -- Get source files based on SrcSpec
-      _srcGlob = case app.srcs of
-        SrcExplicit files -> files
-        SrcGlob pattern -> [pattern] -- Will be expanded by shell
-        SrcGlobs patterns -> patterns
+      -- Get source globs based on SrcSpec
+      srcGlobs = case app.srcs of
+        SrcExplicit files -> map T.unpack files
+        SrcGlob pattern -> [T.unpack pattern]
+        SrcGlobs patterns -> map T.unpack patterns
 
-  -- Hash spago.yaml and source spec (simplified - ideally glob would be resolved)
-  let spagoYamlPath = srcDir </> T.unpack app.spagoYaml
-      configFiles =
-        [spagoYamlPath]
-          ++ maybe [] (\l -> [srcDir </> T.unpack l]) app.spagoLock
-          ++ maybe [] (\h -> [srcDir </> T.unpack h]) app.indexHtml
-          ++ maybe [] (\c -> [srcDir </> T.unpack c]) app.styleCss
+  -- Fetch package set and resolve dependencies
+  pkgSetResult <- PS.fetchPackageSet app.packageSet
+  case pkgSetResult of
+    Left err -> pure $ Left $ PackageError $ "//" <> T.pack pkgPath <> ":" <> app.name <> ": " <> T.pack (show err)
+    Right pkgSet -> do
+      case PS.resolveDeps pkgSet app.deps of
+        Left err -> pure $ Left $ PackageError $ "//" <> T.pack pkgPath <> ":" <> app.name <> ": " <> T.pack (show err)
+        Right allDeps -> do
+          -- Fetch all packages to cache
+          fetchResult <- PS.fetchPackages pkgSet allDeps
+          case fetchResult of
+            Left err -> pure $ Left $ PackageError $ "//" <> T.pack pkgPath <> ":" <> app.name <> ": " <> T.pack (show err)
+            Right pkgCacheDir -> do
+              -- Build dep globs from cached packages
+              -- Each package is at: {cache}/packages/{name}-{version}/src/**/*.purs
+              pkgDirs <- listDirectory pkgCacheDir
+              let depGlobs = map (\d -> pkgCacheDir </> d </> "src/**/*.purs") pkgDirs
 
-  inputHashes <- hashSourceFiles configFiles
-  case inputHashes of
-    Left err -> pure $ Left err
-    Right hashes -> do
-      let TC.PureScript {spago = TC.Tool spagoPath, esbuild = TC.Tool _esbuildPath} = tc.purescript
+              -- All source globs (app + deps)
+              let allGlobs = srcGlobs ++ depGlobs
 
-          -- Build command:
-          -- 1. mkdir output directory first
-          -- 2. cd to srcDir (spago needs to run from package root)
-          -- 3. spago build (compiles to output/)
-          -- 4. spago bundle (creates bundled JS)
-          -- 5. Copy assets to appDir
-          -- Note: 2>&1 redirects stderr to stdout to avoid pipe buffer deadlock
-          shellCmd =
-            unwords
-              [ "mkdir -p",
-                appDir,
-                "&&",
-                "cd",
-                srcDir,
-                "&&",
-                T.unpack spagoPath,
-                "build",
-                "2>&1",
-                "&&",
-                T.unpack spagoPath,
-                "bundle",
-                "--outfile",
-                appDir </> "app.js",
-                "2>&1"
-              ]
-              -- After cd to srcDir, copy files from current dir (.) to appDir
-              ++ maybe "" (\h -> " && cp " <> T.unpack h <> " " <> appDir </> T.unpack h) app.indexHtml
-              ++ maybe "" (\c -> " && cp " <> T.unpack c <> " " <> appDir </> T.unpack c) app.styleCss
+              -- Hash source files and config
+              let configFiles =
+                    maybe [] (\h -> [srcDir </> T.unpack h]) app.indexHtml
+                      ++ maybe [] (\c -> [srcDir </> T.unpack c]) app.styleCss
 
-          cmd = ["sh", "-c", shellCmd]
+              inputHashes <- hashSourceFiles configFiles
+              case inputHashes of
+                Left err -> pure $ Left err
+                Right hashes -> do
+                  let TC.PureScript {purs = TC.Tool pursPath, esbuild = TC.Tool esbuildPath} = tc.purescript
 
-      pure $
-        Right
-          Action
-            { aName = "//" <> T.pack pkgPath <> ":" <> app.name,
-              aCommand = map T.pack cmd,
-              aInputs = hashes,
-              aInputKeys = [],
-              aOutputs = [T.pack appDir],
-              aEnv = Map.empty,
-              aCoeffects = ["fs:" <> T.pack srcDir, "network"] -- spago may fetch packages
-            }
+                      -- Quote globs for shell (single quotes prevent expansion before purs sees them)
+                      quotedGlobs = unwords $ map (\g -> "'" <> g <> "'") allGlobs
+
+                      -- Build command:
+                      -- 1. mkdir output directory
+                      -- 2. cd to srcDir (for local sources)
+                      -- 3. purs compile with all source globs -> output/
+                      -- 4. esbuild bundle output/Main/index.js -> appDir/app.js
+                      -- 5. Copy assets to appDir
+                      shellCmd =
+                        unwords
+                          [ "mkdir -p",
+                            appDir,
+                            "&&",
+                            "cd",
+                            srcDir,
+                            "&&",
+                            T.unpack pursPath,
+                            "compile",
+                            quotedGlobs,
+                            "-o",
+                            pursOutputDir,
+                            "&&",
+                            T.unpack esbuildPath,
+                            pursOutputDir </> mainModule </> "index.js",
+                            "--bundle",
+                            "--outfile=" <> appDir </> "app.js"
+                          ]
+                          -- Copy assets after cd to srcDir
+                          ++ maybe "" (\h -> " && cp " <> T.unpack h <> " " <> appDir </> T.unpack h) app.indexHtml
+                          ++ maybe "" (\c -> " && cp " <> T.unpack c <> " " <> appDir </> T.unpack c) app.styleCss
+
+                      cmd = ["sh", "-c", shellCmd]
+
+                  pure $
+                    Right
+                      Action
+                        { aName = "//" <> T.pack pkgPath <> ":" <> app.name,
+                          aCommand = map T.pack cmd,
+                          aInputs = hashes,
+                          aInputKeys = [],
+                          aOutputs = [T.pack appDir],
+                          aEnv = Map.empty,
+                          aCoeffects = ["fs:" <> T.pack srcDir] -- Deps already fetched before build
+                        }
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Memory Profiling via getrusage(2)

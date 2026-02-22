@@ -238,8 +238,8 @@ instance FromDhall DhallNvLibrary
 data DhallPureScriptApp = DhallPureScriptApp
   { name :: Text,
     srcs :: DhallSrcSpec,
-    spago_yaml :: Text,
-    spago_lock :: Maybe Text,
+    deps :: [Text], -- Direct dependencies (package names)
+    package_set :: Text, -- Package set version (e.g., "psc-0.15.15-20240416")
     main :: Text,
     index_html :: Maybe Text,
     style_css :: Maybe Text,
@@ -509,8 +509,8 @@ toIRRule = \case
       IR.PureScriptApp
         { IR.name = r.name,
           IR.srcs = toIRSrcSpec r.srcs,
-          IR.spagoYaml = r.spago_yaml,
-          IR.spagoLock = r.spago_lock,
+          IR.deps = r.deps,
+          IR.packageSet = r.package_set,
           IR.main = r.main,
           IR.indexHtml = r.index_html,
           IR.styleCss = r.style_css,

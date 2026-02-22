@@ -245,8 +245,8 @@ data SrcSpec
 data PureScriptApp = PureScriptApp
   { name :: Text,
     srcs :: SrcSpec,
-    spagoYaml :: Text,
-    spagoLock :: Maybe Text,
+    deps :: [Text], -- Direct dependencies (package names)
+    packageSet :: Text, -- Package set version (e.g., "psc-0.15.15-20240416")
     main :: Text,
     indexHtml :: Maybe Text,
     styleCss :: Maybe Text,

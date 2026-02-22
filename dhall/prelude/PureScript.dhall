@@ -6,24 +6,29 @@ let T = ./Types.dhall
 let SrcSpec = < Explicit : List Text | Glob : Text | Globs : List Text >
 
 -- | PureScript web application (Halogen, etc.)
+--   deps: Direct dependencies (package names from the registry)
+--   package_set: Package set version (e.g., "psc-0.15.15-20240416")
 let App =
       { name : Text
       , srcs : SrcSpec
-      , spago_yaml : Text
-      , spago_lock : Optional Text
+      , deps : List Text
+      , package_set : Text
       , main : Text
       , index_html : Optional Text
       , style_css : Optional Text
       , vis : T.Vis
       }
 
+-- | Default package set - PureScript 0.15.15 from April 2024
+let defaultPackageSet = "psc-0.15.15-20240416"
+
 let app
-    : Text -> SrcSpec -> Text -> App
+    : Text -> SrcSpec -> List Text -> App
     = \(name : Text) ->
       \(srcs : SrcSpec) ->
-      \(spago_yaml : Text) ->
-        { name, srcs, spago_yaml
-        , spago_lock = None Text
+      \(deps : List Text) ->
+        { name, srcs, deps
+        , package_set = defaultPackageSet
         , main = "Main"
         , index_html = Some "index.html"
         , style_css = Some "style.css"
