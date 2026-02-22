@@ -35,7 +35,7 @@ module SenseNet.Build
 where
 
 import Control.Exception (evaluate)
-import Control.Monad (forM)
+import Control.Monad (filterM, forM)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -73,6 +73,7 @@ import SenseNet.IR
     HaskellFFIBinary (..),
     HaskellLibrary (..),
     LeanBinary (..),
+    NixCxxBinary (..),
     Package (..),
     Rule (..),
     RustBinary (..),
@@ -508,6 +509,7 @@ ruleToAction tc projectRoot pkgPath outDir = \case
   RHaskellLibrary lib -> haskellLibraryAction tc projectRoot pkgPath outDir lib
   RHaskellFFIBinary bin -> haskellFFIBinaryAction tc projectRoot pkgPath outDir bin
   RLeanBinary bin -> leanBinaryAction tc projectRoot pkgPath outDir bin
+  RNixCxxBinary bin -> nixCxxBinaryAction tc projectRoot pkgPath outDir bin
   RGenrule gen -> genruleAction projectRoot pkgPath outDir gen
   _ -> pure $ Left $ CommandFailed "unsupported" 1 "Rule type not yet implemented"
 
@@ -629,6 +631,94 @@ cxxDepFlag projectRoot outDir = \case
                 libPath = outDir </> "lib" <> depName <> ".a"
              in ([], [libPath]) -- Same package, no extra include needed
   DepFlake _ -> ([], []) -- TODO: handle flake deps
+
+-- | Build a C++ binary with Nix flake dependencies
+-- Resolves nixDeps using nix-analyze at planning time
+nixCxxBinaryAction :: Toolchains -> FilePath -> FilePath -> FilePath -> NixCxxBinary -> IO (Either BuildError Action)
+nixCxxBinaryAction tc projectRoot pkgPath outDir bin = do
+  let srcDir = projectRoot </> pkgPath
+      output = outDir </> T.unpack bin.name
+      srcPaths = map (\s -> srcDir </> T.unpack s) bin.srcs
+
+  -- Hash source files for cache key
+  inputHashes <- hashSourceFiles srcPaths
+  case inputHashes of
+    Left err -> pure $ Left err
+    Right hashes -> do
+      -- Resolve nix dependencies using nix-analyze
+      -- Each nixDep is a flake ref like "nixpkgs#zlib"
+      nixFlags <- resolveNixDeps bin.nixDeps
+      case nixFlags of
+        Left err -> pure $ Left err
+        Right flags -> do
+          let TC.Cxx {cxx = TC.Tool cxxPath, ld = TC.Tool ldPath, paths = TC.Paths incPaths libPaths} = tc.cxx
+              includeFlags = concatMap (\i -> ["-isystem", i]) (map T.unpack incPaths)
+              libFlags = concatMap (\l -> ["-B" <> l, "-L" <> l]) (map T.unpack libPaths)
+              ldFlag = case T.unpack ldPath of
+                "lld" -> ["-fuse-ld=lld"]
+                "gold" -> ["-fuse-ld=gold"]
+                "mold" -> ["-fuse-ld=mold"]
+                "bfd" -> ["-fuse-ld=bfd"]
+                _ -> []
+
+              cmd =
+                [T.unpack cxxPath, "-o", output]
+                  ++ includeFlags
+                  ++ flags -- Nix-resolved flags
+                  ++ map T.unpack bin.compilerFlags
+                  ++ srcPaths
+                  ++ libFlags
+                  ++ ldFlag
+                  ++ map T.unpack bin.linkerFlags
+
+          pure $
+            Right
+              Action
+                { aName = "//" <> T.pack pkgPath <> ":" <> bin.name,
+                  aCommand = map T.pack cmd,
+                  aInputs = hashes,
+                  aInputKeys = [],
+                  aOutputs = [T.pack output],
+                  aEnv = Map.empty,
+                  aCoeffects = ["fs:" <> T.pack srcDir, "nix:" <> T.intercalate "," bin.nixDeps]
+                }
+
+-- | Resolve Nix flake dependencies to compiler/linker flags
+-- Calls nix-analyze for each dependency
+resolveNixDeps :: [Text] -> IO (Either BuildError [String])
+resolveNixDeps deps = do
+  results <- mapM resolveNixDep deps
+  case [e | Left e <- results] of
+    (err : _) -> pure $ Left err
+    [] -> pure $ Right $ concat [flags | Right flags <- results]
+
+-- | Resolve a single Nix flake dependency
+resolveNixDep :: Text -> IO (Either BuildError [String])
+resolveNixDep flakeRef = do
+  -- Try to find nix-analyze in sensenet-out or PATH
+  let nixAnalyzePaths =
+        [ "sensenet-out/src/nix-analyze/nix-analyze",
+          "result/bin/nix-analyze"
+        ]
+
+  -- Find first existing nix-analyze binary
+  existingPaths <- filterM doesFileExist nixAnalyzePaths
+  case existingPaths of
+    [] -> do
+      -- Try PATH
+      result <- tryIOError $ readProcessWithExitCode "nix-analyze" ["resolve", T.unpack flakeRef] ""
+      case result of
+        Left _ -> pure $ Left $ CommandFailed "nix-analyze" 127 "nix-analyze not found. Build //src/nix-analyze:nix-analyze first."
+        Right (ExitSuccess, stdout, _) -> pure $ Right $ words stdout
+        Right (ExitFailure code, _, stderr) ->
+          pure $ Left $ CommandFailed "nix-analyze" code (T.pack stderr)
+    (nixAnalyze : _) -> do
+      result <- tryIOError $ readProcessWithExitCode nixAnalyze ["resolve", T.unpack flakeRef] ""
+      case result of
+        Left ioErr -> pure $ Left $ CommandFailed "nix-analyze" 1 (T.pack $ show ioErr)
+        Right (ExitSuccess, stdout, _) -> pure $ Right $ words stdout
+        Right (ExitFailure code, _, stderr) ->
+          pure $ Left $ CommandFailed "nix-analyze" code (T.pack stderr)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Rust Actions
