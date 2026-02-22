@@ -16,6 +16,7 @@ import Data.Char (isDigit)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import GHC.Conc (getNumProcessors)
 import SenseNet.Build (BuildError (..), BuildResult (..), buildAllTargetsJ, buildWithDepsJ, packageDeps, sortPackagesByDeps)
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
@@ -50,6 +51,8 @@ version = do
 
 usage :: IO ()
 usage = do
+  numCores <- getNumProcessors
+  let defaultJobs = max 1 (numCores * 4 `div` 5) -- 80% of cores
   TIO.putStrLn $
     T.unlines
       [ "sensenet — the best build system in the world",
@@ -68,7 +71,8 @@ usage = do
         "  //...                  All targets in project",
         "",
         "Options:",
-        "  -j N, --jobs=N         Limit parallel jobs (default: unlimited)",
+        "  -j N, --jobs=N         Limit parallel jobs (default: " <> T.pack (show defaultJobs) <> ", 80% of cores)",
+        "  --all-cores            Use all cores (unlimited parallelism)",
         "",
         "Examples:",
         "  sensenet build //src/examples/cxx:hello",
@@ -80,31 +84,48 @@ usage = do
 -- Commands
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Parse -j/--jobs option from args
--- Returns (Maybe Int, remaining args)
-parseJobsOpt :: [String] -> (Maybe Int, [String])
-parseJobsOpt = go Nothing
+-- | Job limit specification
+data JobsSpec
+  = JobsDefault -- Use 80% of cores
+  | JobsUnlimited -- --all-cores: no limit
+  | JobsExact Int -- -j N: exactly N jobs
+  deriving (Eq, Show)
+
+-- | Parse -j/--jobs/--all-cores options from args
+-- Returns (JobsSpec, remaining args)
+parseJobsOpt :: [String] -> (JobsSpec, [String])
+parseJobsOpt = go JobsDefault
   where
-    go mj [] = (mj, [])
+    go js [] = (js, [])
+    go _ ("--all-cores" : rest) = go JobsUnlimited rest
     go _ ("-j" : n : rest)
-      | all isDigit n = go (Just (read n)) rest
+      | all isDigit n = go (JobsExact (read n)) rest
     go _ (arg : rest)
       | "-j" `isPrefixOf` arg && all isDigit (drop 2 arg) =
-          go (Just (read (drop 2 arg))) rest
+          go (JobsExact (read (drop 2 arg))) rest
       | "--jobs=" `isPrefixOf` arg && all isDigit (drop 7 arg) =
-          go (Just (read (drop 7 arg))) rest
-    go mj (arg : rest) =
-      let (mj', rest') = go mj rest
-       in (mj', arg : rest')
+          go (JobsExact (read (drop 7 arg))) rest
+    go js (arg : rest) =
+      let (js', rest') = go js rest
+       in (js', arg : rest')
 
     isPrefixOf prefix str = take (length prefix) str == prefix
+
+-- | Resolve JobsSpec to Maybe Int for the executor
+resolveJobs :: JobsSpec -> IO (Maybe Int)
+resolveJobs JobsDefault = do
+  numCores <- getNumProcessors
+  pure $ Just $ max 1 (numCores * 4 `div` 5) -- 80% of cores
+resolveJobs JobsUnlimited = pure Nothing
+resolveJobs (JobsExact n) = pure $ Just n
 
 cmdBuild :: [String] -> IO ()
 cmdBuild [] = do
   TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
   exitFailure
 cmdBuild args = do
-  let (mJobs, rest) = parseJobsOpt args
+  let (jobsSpec, rest) = parseJobsOpt args
+  mJobs <- resolveJobs jobsSpec
   case rest of
     [] -> do
       TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
