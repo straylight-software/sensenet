@@ -747,7 +747,8 @@ haskellBinaryAction tc projectRoot pkgPath outDir bin = do
               aCoeffects = ["fs:" <> T.pack srcDir]
             }
 
--- | Generate -i flag for a Haskell dependency (points to hi/o directory)
+-- | Generate -i flag for a Haskell dependency
+-- Returns both the source path (for module lookup) and hi path (for interface reuse)
 haskellDepFlag :: FilePath -> FilePath -> Dep -> [String]
 haskellDepFlag projectRoot outDir = \case
   DepLocal name ->
@@ -756,11 +757,12 @@ haskellDepFlag projectRoot outDir = \case
      in case maybePkg of
           Just pkgPath ->
             -- Cross-package dep: //pkg/path:target
-            let depOutDir = projectRoot </> "sensenet-out" </> T.unpack pkgPath
+            let srcDir = projectRoot </> T.unpack pkgPath
+                depOutDir = projectRoot </> "sensenet-out" </> T.unpack pkgPath
                 hiDir = depOutDir </> depName <> "-hi"
-             in ["-i" <> hiDir]
+             in ["-i" <> srcDir, "-i" <> hiDir]
           Nothing ->
-            -- Local dep: :target
+            -- Local dep: :target (same package, source is already in -i)
             let hiDir = outDir </> depName <> "-hi"
              in ["-i" <> hiDir]
   DepFlake _ -> [] -- TODO: handle flake deps
@@ -780,10 +782,14 @@ haskellLibraryAction tc projectRoot pkgPath outDir lib = do
           pkgFlags = concatMap (\p -> ["-package", T.unpack p]) lib.packages
           extFlags = map (\e -> "-X" <> T.unpack e) lib.languageExtensions
 
+          -- Build -i flags for library dependencies
+          depFlags = concatMap (haskellDepFlag projectRoot outDir) lib.deps
+
           -- Compile to interface files and object files
-          -- -c = compile only, -hidir/odir for output locations
+          -- --make mode allows GHC to reuse existing .hi files and handle deps
           cmd =
-            [T.unpack ghcPath, "-c", "-hidir", hiDir, "-odir", hiDir, "-i" <> srcDir]
+            [T.unpack ghcPath, "--make", "-c", "-hidir", hiDir, "-odir", hiDir, "-i" <> srcDir]
+              ++ depFlags
               ++ pkgFlags
               ++ extFlags
               ++ map T.unpack lib.ghcOptions

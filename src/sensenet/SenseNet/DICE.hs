@@ -151,11 +151,12 @@ data ActionResult = ActionResult
 actionToCanonical :: Action -> Text
 actionToCanonical Action {..} =
   T.unlines
-    [ "action:1", -- version tag for future compatibility
+    [ "action:2", -- version tag (bumped: aInputKeys no longer in hash)
       "name:" <> aName,
       "command:" <> T.intercalate "\0" aCommand,
       "inputs:" <> T.intercalate "\0" (map escapeText aInputs),
-      "input_keys:" <> T.intercalate "\0" (map actionKeyText aInputKeys),
+      -- NOTE: aInputKeys not included - dependency info is in aInputs (file hashes)
+      -- Including aInputKeys caused circular key computation issues
       "outputs:" <> T.intercalate "\0" aOutputs,
       "env:" <> serializeEnv aEnv,
       "coeffects:" <> T.intercalate "," aCoeffects
