@@ -1,3 +1,4 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -40,6 +41,11 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock (getCurrentTime)
+import Data.Word (Word64)
+import Foreign.C.Types (CInt (..), CLong (..))
+import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Ptr (Ptr)
+import Foreign.Storable (peekByteOff)
 import SenseNet.DICE
   ( Action (..),
     ActionCache,
@@ -904,6 +910,40 @@ genruleAction projectRoot pkgPath outDir gen = do
             }
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- Memory Profiling via getrusage(2)
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | RUSAGE_CHILDREN = -1 (wait for terminated children)
+foreign import capi "sys/resource.h value RUSAGE_CHILDREN"
+  c_RUSAGE_CHILDREN :: CInt
+
+-- | struct rusage size (conservatively large, actual is ~144 bytes on Linux x86_64)
+rusageSize :: Int
+rusageSize = 256
+
+-- | Offset of ru_maxrss in struct rusage
+-- On Linux x86_64: ru_maxrss is at offset 32 (after ru_utime and ru_stime, each 16 bytes)
+-- struct timeval ru_utime (16), struct timeval ru_stime (16), long ru_maxrss
+ruMaxrssOffset :: Int
+ruMaxrssOffset = 32
+
+-- | FFI import for getrusage(2)
+foreign import capi "sys/resource.h getrusage"
+  c_getrusage :: CInt -> Ptr () -> IO CInt
+
+-- | Get peak memory (ru_maxrss) of all waited-for child processes in kilobytes
+-- Returns 0 on error
+getChildrenMaxRss :: IO Word64
+getChildrenMaxRss = allocaBytes rusageSize $ \ptr -> do
+  rc <- c_getrusage c_RUSAGE_CHILDREN ptr
+  if rc == 0
+    then do
+      -- ru_maxrss is a long, in kilobytes on Linux
+      maxrss <- peekByteOff ptr ruMaxrssOffset :: IO CLong
+      pure $ fromIntegral maxrss
+    else pure 0
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- Action Execution
 -- ════════════════════════════════════════════════════════════════════════════
 
@@ -918,6 +958,9 @@ runAction Action {..} = do
 
   -- Ensure output directories exist (for all outputs)
   mapM_ (createDirectoryIfMissing True . takeDirectory . T.unpack) aOutputs
+
+  -- Track peak memory before execution
+  startMaxRss <- getChildrenMaxRss
 
   result <-
     if null exe
@@ -948,6 +991,10 @@ runAction Action {..} = do
           Left ioErr -> pure $ Left (show ioErr)
           Right res -> pure $ Right res
 
+  -- Track peak memory after execution
+  endMaxRss <- getChildrenMaxRss
+  let peakMemoryKB = if endMaxRss > startMaxRss then endMaxRss - startMaxRss else endMaxRss
+
   endTime <- getCurrentTime
 
   case result of
@@ -959,7 +1006,8 @@ runAction Action {..} = do
             arStdout = "",
             arStderr = T.pack errMsg,
             arStartTime = startTime,
-            arEndTime = endTime
+            arEndTime = endTime,
+            arPeakMemoryKB = peakMemoryKB
           }
     Right (exitCode, stdout, stderr) ->
       pure
@@ -971,7 +1019,8 @@ runAction Action {..} = do
             arStdout = T.pack stdout,
             arStderr = T.pack stderr,
             arStartTime = startTime,
-            arEndTime = endTime
+            arEndTime = endTime,
+            arPeakMemoryKB = peakMemoryKB
           }
 
 -- ════════════════════════════════════════════════════════════════════════════

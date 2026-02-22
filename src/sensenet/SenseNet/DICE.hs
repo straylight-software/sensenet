@@ -74,6 +74,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Word (Word64)
 import GHC.Generics (Generic)
 import System.Directory
   ( XdgDirectory (..),
@@ -138,7 +139,9 @@ data ActionResult = ActionResult
     -- | When execution started
     arStartTime :: !UTCTime,
     -- | When execution finished
-    arEndTime :: !UTCTime
+    arEndTime :: !UTCTime,
+    -- | Peak memory usage in kilobytes (from getrusage RUSAGE_CHILDREN)
+    arPeakMemoryKB :: !Word64
   }
   deriving stock (Show, Eq, Generic)
 
@@ -279,6 +282,12 @@ executeGraph cache runner graph = do
             then do
               -- Success - cache and continue
               storeCache cache key result
+              -- Show completion with memory usage if available
+              let memInfo =
+                    if arPeakMemoryKB result > 0
+                      then " [" <> formatMemory (arPeakMemoryKB result) <> "]"
+                      else ""
+              TIO.putStrLn $ "  ✓ " <> aName action <> memInfo
               go (Map.insert key result results) hits (executed + 1) failed rest
             else do
               -- Failure
@@ -407,6 +416,12 @@ processWaves semMaybe total progressVar cache runner graph resultsVar hitsVar ex
           if arExitCode result == 0
             then do
               storeCache cache key result
+              -- Show completion with memory usage if available
+              let memInfo =
+                    if arPeakMemoryKB result > 0
+                      then " [" <> formatMemory (arPeakMemoryKB result) <> "]"
+                      else ""
+              TIO.putStrLn $ progress <> "✓ " <> aName action <> memInfo
               modifyMVar_ resultsVar $ pure . Map.insert key result
               modifyMVar_ executedVar $ pure . (+ 1)
               modifyMVar_ completedVar $ pure . Set.insert key
@@ -486,7 +501,8 @@ checkCache (ActionCache dir) key = do
                   arStdout = "",
                   arStderr = "",
                   arStartTime = now,
-                  arEndTime = now
+                  arEndTime = now,
+                  arPeakMemoryKB = 0 -- Unknown for cached results
                 }
 
 -- | Store result in cache
@@ -495,6 +511,18 @@ storeCache (ActionCache dir) key result = do
   let path = dir </> T.unpack (actionKeyText key)
       content = T.intercalate "\0" (arOutputs result)
   TIO.writeFile path content
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Formatting Utilities
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Format memory in human-readable form (KB -> MB/GB)
+formatMemory :: Word64 -> Text
+formatMemory kb
+  | kb >= 1048576 = T.pack (show (kb `div` 1048576)) <> "GB"
+  | kb >= 1024 = T.pack (show (kb `div` 1024)) <> "MB"
+  | kb > 0 = T.pack (show kb) <> "KB"
+  | otherwise = ""
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Hashing Utilities
