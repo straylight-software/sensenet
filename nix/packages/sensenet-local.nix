@@ -1,6 +1,6 @@
-# sensenet - SENSE // NET build system
-# Pure Haskell implementation - no FFI dependencies
-# Full build with all optional features (remote execution, etc.)
+# sensenet-local - Local build without heavy remote execution deps
+# Same as bootstrap for now, but separate package for future expansion
+# (e.g., could add local-only features that don't need gRPC/protobuf)
 {
   mkDerivation,
   lib,
@@ -40,17 +40,15 @@ mkDerivation {
     time
     unix
   ];
-  # No FFI dependencies - pure Haskell
   executableSystemDepends = [ ];
   doCheck = false;
-  # Parallel GHC compilation + threaded runtime
   configureFlags = [
     "--ghc-options=-j"
     "--ghc-options=-threaded"
     "--ghc-options=-rtsopts"
     "--ghc-options=-with-rtsopts=-N"
   ];
-  description = "SENSE // NET - Pure Haskell build system with content-addressed caching";
+  description = "SENSE // NET - Local build (no remote execution deps)";
   license = lib.licenses.mit;
   mainProgram = "sensenet";
   patchPhase = ":";

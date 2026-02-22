@@ -54,7 +54,6 @@ import SenseNet.DICE
     ActionResult (..),
     ExecutionResult (..),
     actionKey,
-    actionKeyText,
     addAction,
     checkCache,
     emptyGraph,
@@ -62,7 +61,6 @@ import SenseNet.DICE
     hashFile,
     newCache,
     storeCache,
-    topoSort,
   )
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.IR
@@ -72,6 +70,7 @@ import SenseNet.IR
     Dep (..),
     Genrule (..),
     HaskellBinary (..),
+    HaskellFFIBinary (..),
     HaskellLibrary (..),
     LeanBinary (..),
     Package (..),
@@ -369,8 +368,8 @@ loadCrossPackageDeps projectRoot cache deps = go cache [] deps
         Nothing -> go c' rules rest -- Skip missing (will error later)
 
 -- | Collect deps for local-only case (backward compat)
-collectDeps :: Map Text Rule -> Rule -> [Rule]
-collectDeps ruleMap rootRule = go [] [rootRule]
+_collectDeps :: Map Text Rule -> Rule -> [Rule]
+_collectDeps ruleMap rootRule = go [] [rootRule]
   where
     go visited [] = visited
     go visited (r : rest)
@@ -507,6 +506,7 @@ ruleToAction tc projectRoot pkgPath outDir = \case
   RRustLibrary lib -> rustLibraryAction tc projectRoot pkgPath outDir lib
   RHaskellBinary bin -> haskellBinaryAction tc projectRoot pkgPath outDir bin
   RHaskellLibrary lib -> haskellLibraryAction tc projectRoot pkgPath outDir lib
+  RHaskellFFIBinary bin -> haskellFFIBinaryAction tc projectRoot pkgPath outDir bin
   RLeanBinary bin -> leanBinaryAction tc projectRoot pkgPath outDir bin
   RGenrule gen -> genruleAction projectRoot pkgPath outDir gen
   _ -> pure $ Left $ CommandFailed "unsupported" 1 "Rule type not yet implemented"
@@ -828,6 +828,111 @@ haskellLibraryAction tc projectRoot pkgPath outDir lib = do
               aEnv = Map.empty,
               aCoeffects = ["fs:" <> T.pack srcDir]
             }
+
+-- | Build a Haskell binary with C++ FFI
+-- This compiles C++ sources to object files, then links them with GHC
+haskellFFIBinaryAction :: Toolchains -> FilePath -> FilePath -> FilePath -> HaskellFFIBinary -> IO (Either BuildError Action)
+haskellFFIBinaryAction tc projectRoot pkgPath outDir bin = do
+  let srcDir = projectRoot </> pkgPath
+      output = outDir </> T.unpack bin.name
+      hsSrcPaths = map (\s -> srcDir </> T.unpack s) bin.hsSrcs
+      cxxSrcPaths = map (\s -> srcDir </> T.unpack s) bin.cxxSrcs
+      cxxHeaderPaths = map (\s -> srcDir </> T.unpack s) bin.cxxHeaders
+
+  -- Hash all source files (Haskell + C++ sources + headers)
+  inputHashes <- hashSourceFiles (hsSrcPaths ++ cxxSrcPaths ++ cxxHeaderPaths)
+  case inputHashes of
+    Left err -> pure $ Left err
+    Right hashes -> do
+      let TC.Haskell {ghc = TC.Tool ghcPath} = tc.haskell
+          TC.Cxx {cxx = TC.Tool cxxPath, paths = TC.Paths incPaths _} = tc.cxx
+
+          -- Haskell flags
+          -- Find Main.hs in sources, or use the first source if no Main.hs
+          mainSrcFile = case filter (\s -> T.isSuffixOf "Main.hs" s) bin.hsSrcs of
+            (m : _) -> m
+            [] -> headOr "Main.hs" bin.hsSrcs
+          mainSrc = srcDir </> T.unpack mainSrcFile
+          pkgFlags = concatMap (\p -> ["-package", T.unpack p]) bin.packages
+          extFlags = map (\e -> "-X" <> T.unpack e) bin.languageExtensions
+          depFlags = concatMap (haskellDepFlag projectRoot outDir) bin.deps
+
+          -- C++ compilation flags
+          cxxIncludeFlags = concatMap (\i -> ["-isystem", i]) (map T.unpack incPaths)
+          localIncludeFlags = concatMap (\i -> ["-I", srcDir </> T.unpack i]) bin.includeDirs
+          -- Always include srcDir for headers
+          allIncludeFlags = ["-I", srcDir] ++ localIncludeFlags ++ cxxIncludeFlags
+
+          -- Extra library flags for linking
+          extraLibFlags = concatMap (\l -> ["-l" <> T.unpack l]) bin.extraLibs
+          extraLibDirFlags = concatMap (\d -> ["-L" <> T.unpack d]) bin.extraLibDirs
+          linkerFlagsStr = map T.unpack bin.linkerFlags
+
+          -- Temporary directory for intermediate files
+          tmpDir = outDir </> T.unpack bin.name <> "-tmp"
+
+          -- Generate object file paths (in tmpDir)
+          cxxObjFiles = map (\s -> tmpDir </> takeBaseName s <> ".o") cxxSrcPaths
+
+          -- Step 1: Compile each C++ source to object file
+          -- We create a shell command that:
+          --   1. mkdir -p tmpDir
+          --   2. Compile each .cpp to .o
+          --   3. Link with GHC
+          mkCxxCompileCmd src obj =
+            unwords $
+              [T.unpack cxxPath, "-c", "-fPIC", "-o", obj]
+                ++ allIncludeFlags
+                ++ [src]
+
+          cxxCompileCmds = zipWith mkCxxCompileCmd cxxSrcPaths cxxObjFiles
+
+          -- Step 2: GHC linking command
+          -- GHC needs: -optl to pass linker flags, object files, and C++ stdlib
+          ghcCmd =
+            unwords $
+              [T.unpack ghcPath, "-o", output, "-hidir", tmpDir, "-odir", tmpDir, "-i" <> srcDir]
+                ++ depFlags
+                ++ pkgFlags
+                ++ extFlags
+                ++ map T.unpack bin.ghcOptions
+                ++ [mainSrc]
+                ++ cxxObjFiles
+                ++ extraLibDirFlags
+                ++ extraLibFlags
+                ++ concatMap (\f -> ["-optl", f]) linkerFlagsStr
+                ++ ["-lstdc++"] -- Link C++ standard library
+
+          -- Combined shell command
+          shellCmd =
+            "mkdir -p "
+              <> tmpDir
+              <> " && "
+              <> intercalate " && " cxxCompileCmds
+              <> " && "
+              <> ghcCmd
+
+          cmd = ["sh", "-c", shellCmd]
+
+      pure $
+        Right
+          Action
+            { aName = "//" <> T.pack pkgPath <> ":" <> bin.name,
+              aCommand = map T.pack cmd,
+              aInputs = hashes,
+              aInputKeys = [],
+              aOutputs = [T.pack output, T.pack (tmpDir </> ".keep")],
+              aEnv = Map.empty,
+              aCoeffects = ["fs:" <> T.pack srcDir]
+            }
+  where
+    takeBaseName :: FilePath -> String
+    takeBaseName path = case reverse (takeWhile (/= '/') (reverse path)) of
+      name -> case break (== '.') name of
+        (base, _) -> base
+
+    intercalate :: String -> [String] -> String
+    intercalate sep = foldr1 (\a b -> a <> sep <> b)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Lean Actions

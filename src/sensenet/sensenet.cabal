@@ -22,6 +22,7 @@ executable sensenet
         SenseNet.IR
         SenseNet.Toolchains
     build-depends:
+        async,
         base >= 4.18 && < 5,
         bytestring,
         containers,
@@ -32,7 +33,8 @@ executable sensenet
         memory,
         process,
         text,
-        time
+        time,
+        unix
     default-language: GHC2024
     default-extensions:
         LambdaCase

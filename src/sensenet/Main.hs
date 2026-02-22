@@ -11,7 +11,6 @@ module Main where
 
 -- SenseNet.DICE used by Build module
 
-import Control.Concurrent.Async (forConcurrently)
 import Data.Char (isDigit)
 import Data.Text (Text)
 import Data.Text qualified as T

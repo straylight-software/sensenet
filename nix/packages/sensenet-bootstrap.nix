@@ -1,6 +1,6 @@
-# sensenet - SENSE // NET build system
-# Pure Haskell implementation - no FFI dependencies
-# Full build with all optional features (remote execution, etc.)
+# sensenet-bootstrap - Minimal bootstrap build
+# Only the essential dependencies from sensenet.cabal
+# Fast to build, used for initial bootstrap before self-hosting
 {
   mkDerivation,
   lib,
@@ -40,17 +40,15 @@ mkDerivation {
     time
     unix
   ];
-  # No FFI dependencies - pure Haskell
   executableSystemDepends = [ ];
   doCheck = false;
-  # Parallel GHC compilation + threaded runtime
   configureFlags = [
     "--ghc-options=-j"
     "--ghc-options=-threaded"
     "--ghc-options=-rtsopts"
     "--ghc-options=-with-rtsopts=-N"
   ];
-  description = "SENSE // NET - Pure Haskell build system with content-addressed caching";
+  description = "SENSE // NET - Bootstrap build (minimal deps)";
   license = lib.licenses.mit;
   mainProgram = "sensenet";
   patchPhase = ":";

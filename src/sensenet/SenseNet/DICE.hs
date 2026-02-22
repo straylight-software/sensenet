@@ -60,7 +60,6 @@ import Control.Concurrent.Async (forConcurrently)
 import Control.Concurrent.MVar
 import Control.Concurrent.QSem
 import Control.Exception (bracket_)
-import Control.Monad (forM_, when)
 import Crypto.Hash (SHA256 (..), hashWith)
 import Data.ByteArray.Encoding qualified as BA
 import Data.ByteString (ByteString)

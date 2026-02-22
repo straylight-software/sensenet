@@ -115,53 +115,44 @@
           # GHC 9.12 with haskell overlay applied (via std.nix)
           inherit (pkgs.haskell.packages) ghc912;
 
-          # Build sensenet CLI - pure Haskell, no FFI
-          sensenet = pkgs.callPackage ./nix/packages/sensenet.nix {
+          # Minimal deps required by sensenet.cabal
+          sensenetDeps = {
             inherit (ghc912)
               mkDerivation
               async
               base
               bytestring
               containers
+              crypton
               dhall
               directory
               filepath
+              memory
               process
               text
-              # Scheduler deps
-              stm
               time
               unix
-              # TUI deps (Brick)
-              brick
-              microlens-mtl
-              microlens-th
-              vty
-              vty-crossplatform
-              # Test deps
-              tasty
-              tasty-hunit
-              tasty-quickcheck
-              QuickCheck
-              # NativeLink/gRPC deps
-              aeson
-              conduit
-              crypton
-              grapesy
-              grpc-spec
-              memory
-              microlens
-              network
-              proto-lens
-              proto-lens-runtime
-              vector
-              # Shell commands
-              shelly
               ;
           };
+
+          # Stage 1: Bootstrap - minimal deps, fast build
+          sensenet-bootstrap = pkgs.callPackage ./nix/packages/sensenet-bootstrap.nix sensenetDeps;
+
+          # Stage 2: Local - same as bootstrap (no remote execution deps)
+          sensenet-local = pkgs.callPackage ./nix/packages/sensenet-local.nix sensenetDeps;
+
+          # Stage 3: Full - all features (currently same as local)
+          sensenet = pkgs.callPackage ./nix/packages/sensenet.nix sensenetDeps;
         in
         {
           packages.sense-lint = pkgs.callPackage ./nix/packages/sense-lint.nix { };
+
+          # 3-stage bootstrap flow:
+          # 1. nix build .#sensenet-bootstrap  (minimal, fast)
+          # 2. nix build .#sensenet-local      (local-only features)
+          # 3. nix build .#sensenet            (full, all features)
+          packages.sensenet-bootstrap = sensenet-bootstrap;
+          packages.sensenet-local = sensenet-local;
           packages.sensenet = sensenet;
 
           # Static binary using pkgsStatic (musl-based)

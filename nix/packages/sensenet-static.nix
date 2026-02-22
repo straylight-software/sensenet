@@ -22,7 +22,7 @@ let
   # Build sensenet with static linking flags
   sensenet = haskellPackages.mkDerivation {
     pname = "sensenet";
-    version = "0.3.0";
+    version = "0.4.0";
 
     # Source is the src/sensenet directory
     src = lib.cleanSource ../../src/sensenet;
@@ -31,6 +31,7 @@ let
     isExecutable = true;
 
     executableHaskellDepends = with haskellPackages; [
+      async
       base
       bytestring
       containers
@@ -39,9 +40,10 @@ let
       directory
       filepath
       memory
-      shelly
+      process
       text
       time
+      unix
     ];
 
     # Static linking flags
