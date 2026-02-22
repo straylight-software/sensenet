@@ -65,6 +65,7 @@ import SenseNet.IR
     Dep (..),
     Genrule (..),
     HaskellBinary (..),
+    HaskellLibrary (..),
     LeanBinary (..),
     Package (..),
     Rule (..),
@@ -495,6 +496,7 @@ ruleToAction tc projectRoot pkgPath outDir = \case
   RRustBinary bin -> rustBinaryAction tc projectRoot pkgPath outDir bin
   RRustLibrary lib -> rustLibraryAction tc projectRoot pkgPath outDir lib
   RHaskellBinary bin -> haskellBinaryAction tc projectRoot pkgPath outDir bin
+  RHaskellLibrary lib -> haskellLibraryAction tc projectRoot pkgPath outDir lib
   RLeanBinary bin -> leanBinaryAction tc projectRoot pkgPath outDir bin
   RGenrule gen -> genruleAction projectRoot pkgPath outDir gen
   _ -> pure $ Left $ CommandFailed "unsupported" 1 "Rule type not yet implemented"
@@ -722,8 +724,12 @@ haskellBinaryAction tc projectRoot pkgPath outDir bin = do
           pkgFlags = concatMap (\p -> ["-package", T.unpack p]) bin.packages
           extFlags = map (\e -> "-X" <> T.unpack e) bin.languageExtensions
 
+          -- Build -i flags for library dependencies
+          depFlags = concatMap (haskellDepFlag projectRoot outDir) bin.deps
+
           cmd =
             [T.unpack ghcPath, "-o", output, "-i" <> srcDir]
+              ++ depFlags
               ++ pkgFlags
               ++ extFlags
               ++ map T.unpack bin.ghcOptions
@@ -737,6 +743,60 @@ haskellBinaryAction tc projectRoot pkgPath outDir bin = do
               aInputs = hashes,
               aInputKeys = [],
               aOutputs = [T.pack output],
+              aEnv = Map.empty,
+              aCoeffects = ["fs:" <> T.pack srcDir]
+            }
+
+-- | Generate -i flag for a Haskell dependency (points to hi/o directory)
+haskellDepFlag :: FilePath -> FilePath -> Dep -> [String]
+haskellDepFlag projectRoot outDir = \case
+  DepLocal name ->
+    let (maybePkg, targetName) = parseDep name
+        depName = T.unpack targetName
+     in case maybePkg of
+          Just pkgPath ->
+            -- Cross-package dep: //pkg/path:target
+            let depOutDir = projectRoot </> "sensenet-out" </> T.unpack pkgPath
+                hiDir = depOutDir </> depName <> "-hi"
+             in ["-i" <> hiDir]
+          Nothing ->
+            -- Local dep: :target
+            let hiDir = outDir </> depName <> "-hi"
+             in ["-i" <> hiDir]
+  DepFlake _ -> [] -- TODO: handle flake deps
+
+haskellLibraryAction :: Toolchains -> FilePath -> FilePath -> FilePath -> HaskellLibrary -> IO (Either BuildError Action)
+haskellLibraryAction tc projectRoot pkgPath outDir lib = do
+  let srcDir = projectRoot </> pkgPath
+      -- Output is a .hi/.o directory (we use package name as dir)
+      hiDir = outDir </> T.unpack lib.name <> "-hi"
+      srcPaths = map (\s -> srcDir </> T.unpack s) lib.srcs
+
+  inputHashes <- hashSourceFiles srcPaths
+  case inputHashes of
+    Left err -> pure $ Left err
+    Right hashes -> do
+      let TC.Haskell {ghc = TC.Tool ghcPath} = tc.haskell
+          pkgFlags = concatMap (\p -> ["-package", T.unpack p]) lib.packages
+          extFlags = map (\e -> "-X" <> T.unpack e) lib.languageExtensions
+
+          -- Compile to interface files and object files
+          -- -c = compile only, -hidir/odir for output locations
+          cmd =
+            [T.unpack ghcPath, "-c", "-hidir", hiDir, "-odir", hiDir, "-i" <> srcDir]
+              ++ pkgFlags
+              ++ extFlags
+              ++ map T.unpack lib.ghcOptions
+              ++ srcPaths
+
+      pure $
+        Right
+          Action
+            { aName = "//" <> T.pack pkgPath <> ":" <> lib.name,
+              aCommand = map T.pack cmd,
+              aInputs = hashes,
+              aInputKeys = [],
+              aOutputs = [T.pack hiDir],
               aEnv = Map.empty,
               aCoeffects = ["fs:" <> T.pack srcDir]
             }

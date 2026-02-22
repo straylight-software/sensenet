@@ -53,3 +53,9 @@ src/vendor/*/target/
 # PureScript spago cache
 .spago/
 **/.spago/
+
+# Node modules (never track)
+**/node_modules/
+
+# PureScript output (generated)
+**/output/
