@@ -80,6 +80,7 @@ import SenseNet.Toolchains qualified as TC
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
+import System.IO.Error (tryIOError)
 import System.Process (readProcessWithExitCode)
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -519,7 +520,14 @@ cxxBinaryAction tc projectRoot pkgPath outDir bin = do
       let TC.Cxx {cxx = TC.Tool cxxPath, ld = TC.Tool ldPath, paths = TC.Paths incPaths libPaths} = tc.cxx
           includeFlags = concatMap (\i -> ["-isystem", i]) (map T.unpack incPaths)
           libFlags = concatMap (\l -> ["-B" <> l, "-L" <> l]) (map T.unpack libPaths)
-          ldFlag = ["-fuse-ld=" <> T.unpack ldPath]
+          -- Only use -fuse-ld= if ldPath is a known linker name (lld, gold, mold, etc.)
+          -- Skip if it's a compiler path like "c++" or contains slashes
+          ldFlag = case T.unpack ldPath of
+            "lld" -> ["-fuse-ld=lld"]
+            "gold" -> ["-fuse-ld=gold"]
+            "mold" -> ["-fuse-ld=mold"]
+            "bfd" -> ["-fuse-ld=bfd"]
+            _ -> [] -- Use default linker (compiler's built-in)
           stdFlag = cxxStdFlag bin.std
 
           -- Build include and link flags for local deps
@@ -898,24 +906,40 @@ runAction Action {..} = do
     (out : _) -> createDirectoryIfMissing True (takeDirectory $ T.unpack out)
     [] -> pure ()
 
-  (exitCode, stdout, stderr) <-
+  result <-
     if null exe
-      then pure (ExitFailure 1, "", "Empty command")
-      else readProcessWithExitCode exe args ""
+      then pure $ Left "Empty command"
+      else do
+        r <- tryIOError (readProcessWithExitCode exe args "")
+        case r of
+          Left ioErr -> pure $ Left (show ioErr)
+          Right res -> pure $ Right res
 
   endTime <- getCurrentTime
 
-  pure
-    ActionResult
-      { arOutputs = aOutputs,
-        arExitCode = case exitCode of
-          ExitSuccess -> 0
-          ExitFailure n -> n,
-        arStdout = T.pack stdout,
-        arStderr = T.pack stderr,
-        arStartTime = startTime,
-        arEndTime = endTime
-      }
+  case result of
+    Left errMsg ->
+      pure
+        ActionResult
+          { arOutputs = aOutputs,
+            arExitCode = 127, -- Command not found
+            arStdout = "",
+            arStderr = T.pack errMsg,
+            arStartTime = startTime,
+            arEndTime = endTime
+          }
+    Right (exitCode, stdout, stderr) ->
+      pure
+        ActionResult
+          { arOutputs = aOutputs,
+            arExitCode = case exitCode of
+              ExitSuccess -> 0
+              ExitFailure n -> n,
+            arStdout = T.pack stdout,
+            arStderr = T.pack stderr,
+            arStartTime = startTime,
+            arEndTime = endTime
+          }
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Command Execution (low-level)
