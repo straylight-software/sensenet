@@ -75,7 +75,12 @@ usage = do
         "  #rdeps                 Reverse dependencies (what depends on this)",
         "  #inputs                Source files",
         "  #kind/<type>           Filter by rule kind (e.g. #kind/rust_binary)",
-        "  #attrs                 All attributes (JSON)",
+        "  #attrs                 All attributes",
+        "",
+        "Query options:",
+        "  --limit N              Limit dependency traversal depth",
+        "  --json                 Output as JSON",
+        "  --dot                  Output as GraphViz dot (for #deps, #rdeps)",
         "",
         "Target patterns:",
         "  //path/to/pkg:target   Single target",
@@ -83,7 +88,7 @@ usage = do
         "  //path/...             All targets recursively",
         "  //...                  All targets in project",
         "",
-        "Options:",
+        "Build options:",
         "  -j N, --jobs=N         Limit parallel jobs (default: " <> T.pack (show defaultJobs) <> ", 80% of cores)",
         "  --all-cores            Use all cores (unlimited parallelism)",
         "  --stub                 Dry run: show what would be built",
@@ -363,11 +368,12 @@ data QuerySelector
 -- | Query options
 data QueryOpts = QueryOpts
   { qoLimit :: Maybe Int,
-    qoJson :: Bool
+    qoJson :: Bool,
+    qoDot :: Bool
   }
 
 defaultQueryOpts :: QueryOpts
-defaultQueryOpts = QueryOpts {qoLimit = Nothing, qoJson = False}
+defaultQueryOpts = QueryOpts {qoLimit = Nothing, qoJson = False, qoDot = False}
 
 -- | Parse query options from args
 parseQueryOpts :: [String] -> (QueryOpts, [String])
@@ -375,6 +381,7 @@ parseQueryOpts = go defaultQueryOpts
   where
     go opts [] = (opts, [])
     go opts ("--json" : rest) = go opts {qoJson = True} rest
+    go opts ("--dot" : rest) = go opts {qoDot = True} rest
     go opts ("--limit" : n : rest)
       | all isDigit n = go opts {qoLimit = Just (read n)} rest
     go opts (arg : rest) =
@@ -402,10 +409,11 @@ parseSelector t = case T.breakOn "/" t of
   ("kind", rest) -> Just $ QKind (T.drop 1 rest) -- drop the /
   _ -> Nothing
 
--- | Query result can be strings or structured JSON values
+-- | Query result can be strings, structured JSON values, or graph edges
 data QueryResult
   = QRStrings [Text]
   | QRValues [Value]
+  | QRGraph [(Text, Text)] -- (from, to) edges for dot output
 
 cmdQuery :: [String] -> IO ()
 cmdQuery [] = do
@@ -434,6 +442,7 @@ cmdQuery args = do
 mergeQueryResults :: [QueryResult] -> QueryResult
 mergeQueryResults rs = case rs of
   [] -> QRStrings []
+  (QRGraph _ : _) -> QRGraph [(f, t) | QRGraph es <- rs, (f, t) <- es]
   (QRValues _ : _) -> QRValues [v | QRValues vs <- rs, v <- vs]
   _ -> QRStrings [s | QRStrings ss <- rs, s <- ss]
 
@@ -447,6 +456,15 @@ outputQueryResult opts = \case
     if qoJson opts
       then TIO.putStrLn $ TE.decodeUtf8 $ BL.toStrict $ Aeson.encode vals
       else mapM_ (TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . Aeson.encode) vals
+  QRGraph edges -> do
+    TIO.putStrLn "digraph deps {"
+    TIO.putStrLn "  rankdir=LR;"
+    TIO.putStrLn "  node [shape=box];"
+    mapM_ (\(f, t) -> TIO.putStrLn $ "  \"" <> sanitize f <> "\" -> \"" <> sanitize t <> "\";") edges
+    TIO.putStrLn "}"
+  where
+    -- Sanitize label for graphviz
+    sanitize = T.replace "\"" "\\\""
 
 runQuery :: QueryOpts -> [Package] -> String -> IO QueryResult
 runQuery opts pkgs queryStr = do
@@ -491,18 +509,33 @@ formatTarget _ (pkg, rule) = "//" <> T.pack pkg.path <> ":" <> ruleName rule
 -- | Execute a query selector
 executeSelector :: QueryOpts -> [Package] -> [(Package, Rule)] -> QuerySelector -> IO QueryResult
 executeSelector opts pkgs targets = \case
-  QDeps -> do
-    let limit = qoLimit opts
-    pure $ QRStrings $ concatMap (getDeps limit pkgs) targets
-  QRdeps -> do
-    let targetLabels = map (\(p, r) -> "//" <> T.pack p.path <> ":" <> ruleName r) targets
-    pure $
-      QRStrings
-        [ formatTarget pkgs (pkg, rule)
-        | pkg <- pkgs,
-          rule <- pkg.rules,
-          any (depMatchesAny targetLabels (T.pack pkg.path)) (ruleDeps rule)
-        ]
+  QDeps
+    | qoDot opts -> do
+        let limit = qoLimit opts
+        pure $ QRGraph $ concatMap (getDepEdges limit pkgs) targets
+    | otherwise -> do
+        let limit = qoLimit opts
+        pure $ QRStrings $ concatMap (getDeps limit pkgs) targets
+  QRdeps
+    | qoDot opts -> do
+        let targetLabels = map (\(p, r) -> "//" <> T.pack p.path <> ":" <> ruleName r) targets
+        pure $
+          QRGraph
+            [ (formatTarget pkgs (pkg, rule), targetLabel)
+            | pkg <- pkgs,
+              rule <- pkg.rules,
+              targetLabel <- targetLabels,
+              any (depMatches targetLabel (T.pack pkg.path)) (ruleDeps rule)
+            ]
+    | otherwise -> do
+        let targetLabels = map (\(p, r) -> "//" <> T.pack p.path <> ":" <> ruleName r) targets
+        pure $
+          QRStrings
+            [ formatTarget pkgs (pkg, rule)
+            | pkg <- pkgs,
+              rule <- pkg.rules,
+              any (depMatchesAny targetLabels (T.pack pkg.path)) (ruleDeps rule)
+            ]
   QInputs ->
     pure $ QRStrings $ concatMap (\(pkg, rule) -> map (\s -> T.pack pkg.path <> "/" <> s) (ruleSrcs rule)) targets
   QKind kindPattern ->
@@ -547,6 +580,28 @@ getDeps limit pkgs (pkg, rule) = go 0 [] (ruleDeps rule)
                 ]
            in go (depth + 1) newAcc transDeps
 
+-- | Get dependency edges for a target as (from, to) pairs for graphviz
+getDepEdges :: Maybe Int -> [Package] -> (Package, Rule) -> [(Text, Text)]
+getDepEdges limit pkgs (pkg, rule) = go 0 [] (formatTarget [] (pkg, rule)) (ruleDeps rule)
+  where
+    go _ acc _ [] = acc
+    go depth acc fromLabel deps
+      | Just l <- limit, depth >= l = acc
+      | otherwise =
+          let depLabels = map (depToLabel (T.pack pkg.path)) deps
+              newEdges = map (fromLabel,) depLabels
+              newAcc = acc ++ newEdges
+              -- Find transitive deps
+              transitiveEdges =
+                [ (depLabel, transDepLabel)
+                | depLabel <- depLabels,
+                  (p, r) <- findTargetByLabel pkgs depLabel,
+                  transDep <- ruleDeps r,
+                  let transDepLabel = depToLabel (T.pack p.path) transDep,
+                  (depLabel, transDepLabel) `notElem` newAcc
+                ]
+           in go (depth + 1) (newAcc ++ transitiveEdges) fromLabel []
+
 -- | Convert a Dep to a label
 depToLabel :: Text -> Dep -> Text
 depToLabel pkgPath = \case
@@ -559,6 +614,10 @@ depToLabel pkgPath = \case
 -- | Check if a dep matches any of the target labels
 depMatchesAny :: [Text] -> Text -> Dep -> Bool
 depMatchesAny labels pkgPath dep = depToLabel pkgPath dep `elem` labels
+
+-- | Check if a dep matches a specific target label
+depMatches :: Text -> Text -> Dep -> Bool
+depMatches label pkgPath dep = depToLabel pkgPath dep == label
 
 -- | Find a target by label
 findTargetByLabel :: [Package] -> Text -> [(Package, Rule)]
