@@ -1,27 +1,27 @@
---| Haskell examples (new format)
+--| Haskell examples
 
-let A = ../../../dhall/prelude/package.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
 -- Simple binary (no deps)
-let hello = A.haskellBinary "hello-hs" ["Main.hs"]
+let hello = E.haskell_binary "hello-hs" ["Main.hs"]
 
 -- Library
-let greetlib = A.haskellLibrary "greetlib" ["Greet.hs"]
+let greetlib = E.haskell_library "greetlib" ["Greet.hs"]
 
 -- Binary depending on library
 let greeter =
-      (A.haskellBinary "greeter" ["Main.hs"])
-        with deps = [A.local ":greetlib"]
+      (E.haskell_binary "greeter" ["Main.hs"])
+        with deps = [E.local ":greetlib"]
 
 let json_demo =
-      (A.haskellBinary "json_demo" ["JsonDemo.hs"])
+      (E.haskell_binary "json_demo" ["JsonDemo.hs"])
         with packages = ["base", "aeson", "text", "bytestring"]
         with language_extensions = ["DeriveGeneric", "OverloadedStrings"]
 
 in  { targets =
-        [ A.rule.haskellBinary hello
-        , A.rule.haskellLibrary greetlib
-        , A.rule.haskellBinary greeter
-        , A.rule.haskellBinary json_demo
+        [ E.rule.haskellBinary hello
+        , E.rule.haskellLibrary greetlib
+        , E.rule.haskellBinary greeter
+        , E.rule.haskellBinary json_demo
         ]
     }

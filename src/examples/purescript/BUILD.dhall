@@ -1,7 +1,7 @@
---| PureScript Halogen Todo App (new format)
+--| PureScript Halogen Todo App
 --  No spago required - sensenet fetches packages directly from the registry
 
-let A = ../../../dhall/prelude/package.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
 -- Direct dependencies - sensenet resolves transitive deps automatically
 let deps =
@@ -20,9 +20,9 @@ let deps =
       ]
 
 let halogenTodo =
-      (A.purescriptApp "halogen-todo" (A.SrcSpec.Glob "src/**/*.purs") deps)
+      (E.purescript_app "halogen-todo" (E.SrcSpec.Glob "src/**/*.purs") deps)
         with main = "Main"
         with index_html = Some "index.html"
         with style_css = Some "style.css"
 
-in  { targets = [ A.rule.purescriptApp halogenTodo ] }
+in  { targets = [ E.rule.purescriptApp halogenTodo ] }

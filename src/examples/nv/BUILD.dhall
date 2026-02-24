@@ -1,14 +1,14 @@
---| NVIDIA examples (new format)
+--| NVIDIA CUDA examples
 
-let A = ../../../dhall/prelude/package.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
-let hello = A.nvBinary "hello" ["hello.cpp"]
-let mdspan = A.nvBinary "mdspan_device_test" ["mdspan_device_test.cpp"]
-let tensor_core = A.nvBinary "tensor_core" ["tensor_core.cpp"]
+let hello = E.nv_binary "hello" ["hello.cpp"]
+let mdspan = E.nv_binary "mdspan_device_test" ["mdspan_device_test.cpp"]
+let tensor_core = E.nv_binary "tensor_core" ["tensor_core.cpp"]
 
 in  { targets =
-        [ A.rule.nvBinary hello
-        , A.rule.nvBinary mdspan
-        , A.rule.nvBinary tensor_core
+        [ E.rule.nvBinary hello
+        , E.rule.nvBinary mdspan
+        , E.rule.nvBinary tensor_core
         ]
     }

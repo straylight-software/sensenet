@@ -1,4 +1,4 @@
---| Multi-file Lean 4 project (new format)
+--| Multi-file Lean 4 project
 --|
 --| Demonstrates:
 --|   - Hierarchical module imports (Straylight.Derivation, etc.)
@@ -6,10 +6,10 @@
 --|   - Proof-carrying code (compile-time verified theorems)
 --|   - Hermetic build via Buck2 + Nix toolchain
 
-let A = ../../../dhall/prelude/package.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
 let straylight =
-      (A.leanBinary "straylight"
+      (E.lean_binary "straylight"
         -- Order matters: dependencies first, Main.lean last
         [ "Derivation.lean"  -- Core types (no deps)
         , "Proofs.lean"      -- Theorems (imports Derivation)
@@ -18,4 +18,4 @@ let straylight =
         ])
         with root_module = Some "Straylight"
 
-in  { targets = [ A.rule.leanBinary straylight ] }
+in  { targets = [ E.rule.leanBinary straylight ] }

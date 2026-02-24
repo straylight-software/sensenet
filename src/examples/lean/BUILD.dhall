@@ -1,12 +1,12 @@
---| Lean 4 examples (new format)
+--| Lean 4 examples
 
-let A = ../../../dhall/prelude/package.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
-let hello = A.leanBinary "hello-lean" ["Hello.lean"]
-let hashmap = A.leanBinary "hashmap" ["HashMap.lean"]
+let hello = E.lean_binary "hello-lean" ["Hello.lean"]
+let hashmap = E.lean_binary "hashmap" ["HashMap.lean"]
 
 in  { targets =
-        [ A.rule.leanBinary hello
-        , A.rule.leanBinary hashmap
+        [ E.rule.leanBinary hello
+        , E.rule.leanBinary hashmap
         ]
     }

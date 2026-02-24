@@ -1,9 +1,9 @@
---| zlib test with Nix-resolved dependencies (new format)
+--| zlib test with Nix-resolved dependencies
 
-let A = ../../../dhall/prelude/package.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
 let zlibTest =
-      (A.nixCxxBinary "zlib-test" ["main.cpp"] ["nixpkgs#zlib"])
+      (E.nix_cxx_binary "zlib-test" ["main.cpp"] ["nixpkgs#zlib"])
         with compiler_flags = ["-O2", "-Wall"]
 
-in  { targets = [ A.rule.nixCxxBinary zlibTest ] }
+in  { targets = [ E.rule.nixCxxBinary zlibTest ] }

@@ -1,14 +1,14 @@
---| Rust examples (new format)
+--| Rust examples
 
-let A = ../../../dhall/prelude/package.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
-let hello = A.rustBinary "hello-rs" ["hello.rs"] ([] : List A.Dep)
-let mathlib = A.rustLibrary "mathlib" ["mathlib.rs"] ([] : List A.Dep)
-let math_demo = A.rustBinary "math_demo" ["math_demo.rs"] [A.local ":mathlib"]
+let hello = E.rust_binary "hello-rs" ["hello.rs"]
+let mathlib = E.rust_library "mathlib" ["mathlib.rs"]
+let math_demo = (E.rust_binary "math_demo" ["math_demo.rs"]) with deps = [E.local ":mathlib"]
 
 in  { targets =
-        [ A.rule.rustBinary hello
-        , A.rule.rustLibrary mathlib
-        , A.rule.rustBinary math_demo
+        [ E.rule.rustBinary hello
+        , E.rule.rustLibrary mathlib
+        , E.rule.rustBinary math_demo
         ]
     }

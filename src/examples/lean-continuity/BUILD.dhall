@@ -1,4 +1,4 @@
---| Continuity: The Straylight Build Formalization (new format)
+--| Continuity: The Straylight Build Formalization
 --|
 --| A formal proof that the Continuity build system maintains correctness
 --| across content-addressed derivations, typed toolchains, and isolation
@@ -11,10 +11,10 @@
 --|     cd src/examples/lean-continuity
 --|     lake build
 
-let A = ../../../dhall/prelude/package.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
 let placeholder =
-      A.genrule "continuity" "README.txt"
+      E.genrule "continuity" "README.txt"
         "echo 'This target requires Mathlib (Lake dependency).' > \$OUT && echo 'Lake builds are non-hermetic and disabled in Buck2.' >> \$OUT && echo '' >> \$OUT && echo 'Build with: cd src/examples/lean-continuity && lake build' >> \$OUT"
 
-in  { targets = [ A.rule.genrule placeholder ] }
+in  { targets = [ E.rule.genrule placeholder ] }

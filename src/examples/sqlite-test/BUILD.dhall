@@ -1,9 +1,9 @@
---| SQLite3 example with Nix-resolved dependencies (new format)
+--| SQLite3 example with Nix-resolved dependencies
 
-let A = ../../../dhall/prelude/package.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
 let sqliteTest =
-      (A.nixCxxBinary "sqlite-test" ["main.cpp"] ["nixpkgs#sqlite"])
+      (E.nix_cxx_binary "sqlite-test" ["main.cpp"] ["nixpkgs#sqlite"])
         with compiler_flags = ["-O2", "-Wall"]
 
-in  { targets = [ A.rule.nixCxxBinary sqliteTest ] }
+in  { targets = [ E.rule.nixCxxBinary sqliteTest ] }
