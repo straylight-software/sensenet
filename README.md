@@ -289,6 +289,54 @@ ghc -o sensenet -isrc/sensenet src/sensenet/Main.hs -threaded
 ./sensenet build //src/examples/...
 ```
 
+## Bootstrap Sequence
+
+sensenet uses a 3-stage bootstrap to minimize initial build time:
+
+```
+Stage 1: sensenet-bootstrap  →  Stage 2: sensenet-local  →  Stage 3: sensenet
+        (minimal deps)              (local features)           (full build)
+```
+
+| Stage | Package | Purpose | Build Time |
+|-------|---------|---------|------------|
+| 1 | `sensenet-bootstrap` | Minimal deps, fast build for initial bootstrap | ~30s |
+| 2 | `sensenet-local` | Local-only features (no gRPC/protobuf) | ~30s |
+| 3 | `sensenet` | Full build with all features (remote execution) | ~45s |
+
+```bash
+# Stage 1: Bootstrap (fastest, minimal)
+nix build .#sensenet-bootstrap
+
+# Stage 2: Local development (no RE deps)
+nix build .#sensenet-local
+
+# Stage 3: Full build (production)
+nix build .#sensenet
+```
+
+The bootstrap stage enables self-hosting: sensenet can build itself using only the minimal bootstrap binary, avoiding circular dependencies on heavy libraries.
+
+### DhallFast Optimization
+
+Dhall evaluation was the primary bottleneck (4x slower than Buck2's Starlark parsing). DhallFast provides a drop-in replacement normalizer with 2-7x speedup:
+
+| Component | Optimization |
+|-----------|--------------|
+| Variables | De Bruijn indices (O(1) representation) |
+| Environment | Strict spine list (O(1) cons, small O(i) lookup) |
+| Lists | `Seq` for lazy evaluation |
+| Fields | Sorted `Vector` with binary search |
+
+```haskell
+-- Drop-in replacement for Dhall.inputFile
+import DhallFast.Input (inputFile, auto)
+
+config <- inputFile auto "BUILD.dhall"
+```
+
+See [doc/PERFORMANCE.md](doc/PERFORMANCE.md) for detailed benchmarks.
+
 ## What's Next: FFI to DICE
 
 The current architecture generates BUCK files as text, then runs Buck2. The next step is direct FFI to Buck2's DICE engine:

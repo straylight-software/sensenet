@@ -15,7 +15,7 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race)
 import Control.Exception (ErrorCall, SomeException, bracket, evaluate, try)
 import Control.Monad (forM, forM_, replicateM, unless, when)
-import Crypto.Hash (SHA256 (..), hashWith)
+import Crypto.Hash (Blake2b_256 (..), hashWith)
 import Data.Bits (xor)
 import Data.ByteArray.Encoding qualified as BA
 import Data.ByteString (ByteString)
@@ -547,7 +547,7 @@ addAction action graph =
 actionKey :: Action -> ActionKey
 actionKey action =
   let content = actionToCanonical action
-      hash = hashWith SHA256 (TE.encodeUtf8 content)
+      hash = hashWith Blake2b_256 (TE.encodeUtf8 content)
    in ActionKey (BA.convertToBase BA.Base16 hash)
 
 actionToCanonical :: Action -> Text
@@ -596,9 +596,9 @@ mkAction cmd inputs deps =
       aCoeffects = []
     }
 
--- Real SHA256 hash using crypton
+-- Real Blake2b_256 hash using crypton
 hashText :: Text -> Text
 hashText t =
-  let hash = hashWith SHA256 (TE.encodeUtf8 t)
+  let hash = hashWith Blake2b_256 (TE.encodeUtf8 t)
       hex = BA.convertToBase BA.Base16 hash :: ByteString
    in TE.decodeUtf8 hex

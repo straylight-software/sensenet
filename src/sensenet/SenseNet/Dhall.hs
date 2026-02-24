@@ -24,7 +24,8 @@ module SenseNet.Dhall
 where
 
 import Data.Text (Text)
-import Dhall (FromDhall, auto, inputFile)
+import Dhall (FromDhall)
+import DhallFast.Input (auto, inputFile)
 import GHC.Generics (Generic)
 import SenseNet.IR qualified as IR
 import System.FilePath (makeRelative, takeDirectory)

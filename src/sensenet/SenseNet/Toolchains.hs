@@ -37,7 +37,8 @@ where
 
 import Data.Aeson (FromJSON, ToJSON, eitherDecodeFileStrict', encodeFile)
 import Data.Text (Text)
-import Dhall (FromDhall, auto, inputFile)
+import Dhall (FromDhall)
+import DhallFast.Input (auto, inputFile)
 import GHC.Generics (Generic)
 import System.Directory (doesFileExist, getModificationTime)
 import System.FilePath (replaceExtension, (</>))

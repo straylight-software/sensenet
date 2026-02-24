@@ -18,7 +18,7 @@ import Control.Concurrent.Async (async, race, wait)
 import Control.DeepSeq (NFData (..), deepseq, force)
 import Control.Exception (ErrorCall, SomeException, evaluate, try)
 import Control.Monad (forM, forM_, replicateM, when)
-import Crypto.Hash (SHA256 (..), hashWith)
+import Crypto.Hash (Blake2b_256 (..), hashWith)
 import Data.ByteArray.Encoding qualified as BA
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -446,8 +446,8 @@ bound_emptyStringHash :: Assertion
 bound_emptyStringHash = do
   let hash = hashText ""
   T.length hash @?= 64
-  -- SHA256 of empty string
-  hash @?= "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  -- BLAKE2b-256 of empty string
+  hash @?= "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
 
 bound_singleByteHash :: Assertion
 bound_singleByteHash = do
@@ -750,7 +750,7 @@ addAction action graph =
 actionKey :: Action -> ActionKey
 actionKey action =
   let content = actionToCanonical action
-      hash = hashWith SHA256 (TE.encodeUtf8 content)
+      hash = hashWith Blake2b_256 (TE.encodeUtf8 content)
    in ActionKey (BA.convertToBase BA.Base16 hash)
 
 actionToCanonical :: Action -> Text
@@ -787,9 +787,9 @@ topoSort ActionGraph {..} = reverse $ go Set.empty [] (Map.keys agActions)
                   (v', s') = foldl' visitDep (Set.insert dep v, s) deps
                in (v', dep : s')
 
--- Real SHA256 hash using crypton
+-- Real Blake2b_256 hash using crypton
 hashText :: Text -> Text
 hashText t =
-  let hash = hashWith SHA256 (TE.encodeUtf8 t)
+  let hash = hashWith Blake2b_256 (TE.encodeUtf8 t)
       hex = BA.convertToBase BA.Base16 hash :: ByteString
    in TE.decodeUtf8 hex

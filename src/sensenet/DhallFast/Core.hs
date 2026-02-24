@@ -166,7 +166,9 @@ singletonFields k v = Fields (V.singleton (k, v))
 insertField :: Name -> a -> Fields a -> Fields a
 insertField k v (Fields pairs) = Fields (V.fromList sorted)
   where
-    sorted = sortOn fst ((k, v) : V.toList pairs)
+    -- Remove any existing entry with the same key, then insert the new one
+    filtered = filter (\(k', _) -> k' /= k) (V.toList pairs)
+    sorted = sortOn fst ((k, v) : filtered)
 {-# INLINE insertField #-}
 
 -- | Binary search lookup O(log n)
