@@ -411,7 +411,7 @@ ruleDeps = \case
   RPureScriptLibrary _ -> []
   RGenrule _ -> []
   RNixCxxBinary _ -> [] -- Nix deps are Text, not Dep
-  RCratesIo _ -> [] -- deps are Text, not Dep
+  RCratesIo r -> map DepLocal r.deps -- Convert Text deps to DepLocal
   RHttpArchive _ -> []
 
 -- ════════════════════════════════════════════════════════════════════════════

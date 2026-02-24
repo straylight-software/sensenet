@@ -21,8 +21,10 @@ executable sensenet
         SenseNet.Discover
         SenseNet.IR
         SenseNet.PureScript
+        SenseNet.RustCrate
         SenseNet.Toolchains
     build-depends:
+        aeson,
         async,
         base >= 4.18 && < 5,
         bytestring,
@@ -49,3 +51,74 @@ executable sensenet
         -rtsopts
         "-with-rtsopts=-N"
     hs-source-dirs:   .
+
+test-suite sensenet-test
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    other-modules:
+        Test.SenseNet.Adversarial
+        Test.SenseNet.Build
+        Test.SenseNet.Crashers
+        Test.SenseNet.DICE
+        Test.SenseNet.Integration
+        Test.SenseNet.Psychotic
+        Test.SenseNet.Savage
+        Test.SenseNet.TUI
+    build-depends:
+        aeson,
+        async,
+        base >= 4.18 && < 5,
+        bytestring,
+        containers,
+        crypton,
+        deepseq,
+        directory,
+        filepath,
+        memory,
+        process,
+        random,
+        tasty,
+        tasty-hunit,
+        tasty-quickcheck,
+        text,
+        time,
+        unix,
+        sensenet
+    default-language: GHC2024
+    default-extensions:
+        LambdaCase
+        OverloadedStrings
+        OverloadedRecordDot
+        RecordWildCards
+        ScopedTypeVariables
+    ghc-options:
+        -Wall
+        -Werror
+        -threaded
+        -rtsopts
+        "-with-rtsopts=-N"
+    hs-source-dirs:   ../../test
+
+benchmark sensenet-bench
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    build-depends:
+        base >= 4.18 && < 5,
+        containers,
+        criterion,
+        deepseq,
+        random,
+        text
+    default-language: GHC2024
+    default-extensions:
+        LambdaCase
+        OverloadedStrings
+        RecordWildCards
+        ScopedTypeVariables
+    ghc-options:
+        -Wall
+        -O2
+        -threaded
+        -rtsopts
+        "-with-rtsopts=-N"
+    hs-source-dirs:   ../../bench

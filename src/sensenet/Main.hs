@@ -46,7 +46,7 @@ main = do
 
 version :: IO ()
 version = do
-  TIO.putStrLn "sensenet 0.3.0"
+  TIO.putStrLn "sensenet 0.4.0"
   TIO.putStrLn "Pure Haskell • Content-addressed • Coeffect-tracked"
 
 usage :: IO ()

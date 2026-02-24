@@ -11,9 +11,10 @@
 
 let A = ../../../dhall/prelude/package.dhall
 
+-- deps from spago.yaml: halogen, halogen-vdom, effect, prelude, etc.
 let straylightWeb =
-      (A.purescriptApp "straylight-web" (A.SrcSpec.Globs ["src/**/*.purs", "src/**/*.js"]) "spago.yaml")
-        with spago_lock = Some "spago.lock"
+      (A.purescriptApp "straylight-web" (A.SrcSpec.Globs ["src/**/*.purs", "src/**/*.js"]) 
+        ["halogen", "halogen-vdom", "effect", "prelude", "aff", "web-html", "web-dom"])
         with main = "Main"
         with index_html = None Text
         with style_css = None Text

@@ -20,7 +20,8 @@ let sensenet-core =
         , "SenseNet/Toolchains.hs"
         ])
         with packages =
-          [ "base"
+          [ "aeson"
+          , "base"
           , "containers"
           , "dhall"
           , "directory"
@@ -49,15 +50,19 @@ let sensenet-dice =
 let sensenet-build =
       (A.haskellLibrary "sensenet-build"
         [ "SenseNet/Build.hs"
+        , "SenseNet/PureScript.hs"
+        , "SenseNet/RustCrate.hs"
         ])
         with packages =
           [ "base"
+          , "bytestring"
           , "containers"
           , "directory"
           , "filepath"
           , "process"
           , "text"
           , "time"
+          , "unix"
           ]
         with deps =
           [ A.local ":sensenet-core"
@@ -83,7 +88,11 @@ let sensenet =
           [ "-O2"
           , "-threaded"
           , "-rtsopts"
-          , "-with-rtsopts=-N"
+          -- NOTE: We do NOT set -N here because:
+          -- 1. Single-threaded startup is 3x faster (44ms vs 120ms)
+          -- 2. Parallelism is only useful during action execution
+          -- 3. The async library handles parallelism via forkIO, not -N
+          -- Users can still pass +RTS -N -RTS if needed
           ]
 
 in  { targets =

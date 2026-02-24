@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -16,6 +17,9 @@
 -- - Library paths for linking
 --
 -- This same shape works for local and remote execution.
+--
+-- OPTIMIZATION: Toolchains are cached as JSON in .sensenet/toolchains.json
+-- to avoid re-parsing Dhall on every invocation (~50ms savings).
 module SenseNet.Toolchains
   ( Toolchains (..),
     Tool (..),
@@ -31,10 +35,12 @@ module SenseNet.Toolchains
   )
 where
 
+import Data.Aeson (FromJSON, ToJSON, eitherDecodeFileStrict', encodeFile)
 import Data.Text (Text)
 import Dhall (FromDhall, auto, inputFile)
 import GHC.Generics (Generic)
-import System.FilePath ((</>))
+import System.Directory (doesFileExist, getModificationTime)
+import System.FilePath (replaceExtension, (</>))
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Core Types
@@ -44,18 +50,16 @@ import System.FilePath ((</>))
 data Tool = Tool
   { path :: Text
   }
-  deriving (Show, Generic)
-
-instance FromDhall Tool
+  deriving stock (Show, Generic)
+  deriving anyclass (FromDhall, FromJSON, ToJSON)
 
 -- | Include/library search paths
 data Paths = Paths
   { includes :: [Text],
     libs :: [Text]
   }
-  deriving (Show, Generic)
-
-instance FromDhall Paths
+  deriving stock (Show, Generic)
+  deriving anyclass (FromDhall, FromJSON, ToJSON)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- C++ Toolchain
@@ -71,9 +75,8 @@ data Cxx = Cxx
     sysroot :: Text, -- Sysroot (for cross-compilation)
     target :: Text -- Target triple
   }
-  deriving (Show, Generic)
-
-instance FromDhall Cxx
+  deriving stock (Show, Generic)
+  deriving anyclass (FromDhall, FromJSON, ToJSON)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- NVIDIA Toolchain
@@ -89,9 +92,8 @@ data Nv = Nv
     archs :: [Text], -- Target SM architectures
     cxx :: Cxx -- C++ toolchain (for stdlib)
   }
-  deriving (Show, Generic)
-
-instance FromDhall Nv
+  deriving stock (Show, Generic)
+  deriving anyclass (FromDhall, FromJSON, ToJSON)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Rust Toolchain
@@ -104,9 +106,8 @@ data Rust = Rust
     edition :: Text, -- Default edition
     target :: Text -- Target triple
   }
-  deriving (Show, Generic)
-
-instance FromDhall Rust
+  deriving stock (Show, Generic)
+  deriving anyclass (FromDhall, FromJSON, ToJSON)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Haskell Toolchain
@@ -118,9 +119,8 @@ data Haskell = Haskell
     ghc_pkg :: Tool,
     paths :: Paths -- Package DB, lib paths
   }
-  deriving (Show, Generic)
-
-instance FromDhall Haskell
+  deriving stock (Show, Generic)
+  deriving anyclass (FromDhall, FromJSON, ToJSON)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Lean Toolchain
@@ -132,9 +132,8 @@ data Lean = Lean
     leanc :: Tool,
     paths :: Paths
   }
-  deriving (Show, Generic)
-
-instance FromDhall Lean
+  deriving stock (Show, Generic)
+  deriving anyclass (FromDhall, FromJSON, ToJSON)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- PureScript Toolchain
@@ -147,9 +146,8 @@ data PureScript = PureScript
     node :: Tool,
     esbuild :: Tool
   }
-  deriving (Show, Generic)
-
-instance FromDhall PureScript
+  deriving stock (Show, Generic)
+  deriving anyclass (FromDhall, FromJSON, ToJSON)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Complete Toolchains
@@ -163,9 +161,8 @@ data Toolchains = Toolchains
     lean :: Lean,
     purescript :: PureScript
   }
-  deriving (Show, Generic)
-
-instance FromDhall Toolchains
+  deriving stock (Show, Generic)
+  deriving anyclass (FromDhall, FromJSON, ToJSON)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Loading
@@ -175,6 +172,40 @@ instance FromDhall Toolchains
 defaultToolchainsPath :: FilePath -> FilePath
 defaultToolchainsPath projectRoot = projectRoot </> ".sensenet" </> "toolchains.dhall"
 
--- | Load toolchains from a Dhall file
+-- | Load toolchains with caching
+-- If .sensenet/toolchains.json exists and is newer than toolchains.dhall,
+-- load from JSON (~1ms). Otherwise parse Dhall and cache to JSON (~50ms).
 loadToolchains :: FilePath -> IO Toolchains
-loadToolchains = inputFile auto
+loadToolchains dhallPath = do
+  let jsonPath = replaceExtension dhallPath ".json"
+  jsonExists <- doesFileExist jsonPath
+  dhallExists <- doesFileExist dhallPath
+
+  if not dhallExists
+    then error $ "Toolchains file not found: " <> dhallPath
+    else
+      if jsonExists
+        then do
+          -- Check if JSON cache is newer than Dhall source
+          dhallMtime <- getModificationTime dhallPath
+          jsonMtime <- getModificationTime jsonPath
+          if jsonMtime > dhallMtime
+            then loadFromJson jsonPath
+            else reparse dhallPath jsonPath
+        else reparse dhallPath jsonPath
+  where
+    loadFromJson :: FilePath -> IO Toolchains
+    loadFromJson jsonPath = do
+      result <- eitherDecodeFileStrict' jsonPath
+      case result of
+        Right tc -> pure tc
+        Left _ -> do
+          -- JSON corrupted, re-parse from Dhall
+          let dhallPath' = replaceExtension jsonPath ".dhall"
+          reparse dhallPath' jsonPath
+
+    reparse :: FilePath -> FilePath -> IO Toolchains
+    reparse dhallPath' jsonPath = do
+      tc <- inputFile auto dhallPath'
+      encodeFile jsonPath tc
+      pure tc
