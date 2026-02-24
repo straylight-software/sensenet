@@ -74,6 +74,7 @@ let sensenet-dice =
 let sensenet-build =
       (A.haskellLibrary "sensenet-build"
         [ "SenseNet/Build.hs"
+        , "SenseNet/Nix.hs"
         , "SenseNet/PureScript.hs"
         , "SenseNet/RustCrate.hs"
         ])
@@ -95,7 +96,7 @@ let sensenet-build =
 
 -- The sensenet CLI binary
 let sensenet =
-      (A.haskellBinary "sensenet" [ "Main.hs" ])
+      (A.haskellBinary "sensenet" [ "app/Main.hs" ])
         with packages =
           [ "base"
           , "containers"

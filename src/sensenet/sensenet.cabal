@@ -37,6 +37,7 @@ library
         SenseNet.Dhall
         SenseNet.Discover
         SenseNet.IR
+        SenseNet.Nix
         SenseNet.PureScript
         SenseNet.RustCrate
         SenseNet.Toolchains

@@ -35,7 +35,7 @@ module SenseNet.Build
 where
 
 import Control.Exception (evaluate)
-import Control.Monad (filterM, forM)
+import Control.Monad (forM)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -84,6 +84,7 @@ import SenseNet.IR
     ruleDeps,
     ruleName,
   )
+import SenseNet.Nix qualified as Nix
 import SenseNet.PureScript qualified as PS
 import SenseNet.RustCrate qualified as RC
 import SenseNet.Toolchains (Toolchains (..))
@@ -692,41 +693,13 @@ nixCxxBinaryAction tc projectRoot pkgPath outDir bin = do
                 }
 
 -- | Resolve Nix flake dependencies to compiler/linker flags
--- Calls nix-analyze for each dependency
+-- Uses SenseNet.Nix directly instead of an external binary
 resolveNixDeps :: [Text] -> IO (Either BuildError [String])
 resolveNixDeps deps = do
-  results <- mapM resolveNixDep deps
-  case [e | Left e <- results] of
-    (err : _) -> pure $ Left err
-    [] -> pure $ Right $ concat [flags | Right flags <- results]
-
--- | Resolve a single Nix flake dependency
-resolveNixDep :: Text -> IO (Either BuildError [String])
-resolveNixDep flakeRef = do
-  -- Try to find nix-analyze in sensenet-out or PATH
-  let nixAnalyzePaths =
-        [ "sensenet-out/src/nix-analyze/nix-analyze",
-          "result/bin/nix-analyze"
-        ]
-
-  -- Find first existing nix-analyze binary
-  existingPaths <- filterM doesFileExist nixAnalyzePaths
-  case existingPaths of
-    [] -> do
-      -- Try PATH
-      result <- tryIOError $ readProcessWithExitCode "nix-analyze" ["resolve", T.unpack flakeRef] ""
-      case result of
-        Left _ -> pure $ Left $ CommandFailed "nix-analyze" 127 "nix-analyze not found. Build //src/nix-analyze:nix-analyze first."
-        Right (ExitSuccess, stdout, _) -> pure $ Right $ words stdout
-        Right (ExitFailure code, _, stderr) ->
-          pure $ Left $ CommandFailed "nix-analyze" code (T.pack stderr)
-    (nixAnalyze : _) -> do
-      result <- tryIOError $ readProcessWithExitCode nixAnalyze ["resolve", T.unpack flakeRef] ""
-      case result of
-        Left ioErr -> pure $ Left $ CommandFailed "nix-analyze" 1 (T.pack $ show ioErr)
-        Right (ExitSuccess, stdout, _) -> pure $ Right $ words stdout
-        Right (ExitFailure code, _, stderr) ->
-          pure $ Left $ CommandFailed "nix-analyze" code (T.pack stderr)
+  result <- Nix.resolveNixDeps deps
+  case result of
+    Left err -> pure $ Left $ CommandFailed "nix" 1 err
+    Right flags -> pure $ Right flags
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Rust Actions
