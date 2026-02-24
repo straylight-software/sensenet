@@ -20,10 +20,11 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import GHC.Conc (getNumProcessors)
-import SenseNet.Build (BuildError (..), BuildResult (..), buildAllTargetsJ, buildWithDepsJ, packageDeps, sortPackagesByDeps)
+import SenseNet.Build (BuildError (..), BuildLog, BuildResult (..), buildAllTargetsJ, buildWithDepsJ, noLog, packageDeps, sortPackagesByDeps, withLogging)
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
 import SenseNet.IR (Dep (..), Package (..), Rule (..), ruleDeps, ruleKind, ruleName, ruleSrcs)
+import SenseNet.Log qualified as Log
 import SenseNet.Toolchains qualified as TC
 import System.Directory (XdgDirectory (..), doesDirectoryExist, getCurrentDirectory, getXdgDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
@@ -96,6 +97,7 @@ usage = do
         "  --all-cores            Use all cores (unlimited parallelism)",
         "  --stub                 Dry run: show what would be built",
         "  --no-tui               Disable TUI output (plain text only)",
+        "  -v, --verbose          Enable structured logging (Katip JSON output)",
         "",
         "Examples:",
         "  sensenet build //src/examples/cxx:hello",
@@ -119,7 +121,8 @@ data JobsSpec
 data BuildOpts = BuildOpts
   { boJobs :: !JobsSpec,
     boStub :: !Bool, -- --stub: dry run, don't actually build
-    boNoTui :: !Bool -- --no-tui: disable TUI (currently no-op, no TUI yet)
+    boNoTui :: !Bool, -- --no-tui: disable TUI (currently no-op, no TUI yet)
+    boVerbose :: !Bool -- --verbose/-v: enable structured logging
   }
 
 defaultBuildOpts :: BuildOpts
@@ -127,7 +130,8 @@ defaultBuildOpts =
   BuildOpts
     { boJobs = JobsDefault,
       boStub = False,
-      boNoTui = False
+      boNoTui = False,
+      boVerbose = False
     }
 
 -- | Parse build options from args
@@ -139,6 +143,8 @@ parseBuildOpts = go defaultBuildOpts
     go opts ("--all-cores" : rest) = go opts {boJobs = JobsUnlimited} rest
     go opts ("--stub" : rest) = go opts {boStub = True} rest
     go opts ("--no-tui" : rest) = go opts {boNoTui = True} rest
+    go opts ("--verbose" : rest) = go opts {boVerbose = True} rest
+    go opts ("-v" : rest) = go opts {boVerbose = True} rest
     go opts ("-j" : n : rest)
       | all isDigit n = go opts {boJobs = JobsExact (read n)} rest
     go opts (arg : rest)
@@ -160,6 +166,13 @@ resolveJobs JobsDefault = do
 resolveJobs JobsUnlimited = pure Nothing
 resolveJobs (JobsExact n) = pure $ Just n
 
+-- | Create BuildLog from verbose flag
+-- When verbose is True, initialize Katip logging
+-- When False, use noLog (no structured logging output)
+resolveLogging :: Bool -> IO BuildLog
+resolveLogging False = pure noLog
+resolveLogging True = withLogging <$> Log.initLogging
+
 cmdBuild :: [String] -> IO ()
 cmdBuild [] = do
   TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
@@ -167,6 +180,7 @@ cmdBuild [] = do
 cmdBuild args = do
   let (opts, rest) = parseBuildOpts args
   mJobs <- resolveJobs opts.boJobs
+  blog <- resolveLogging opts.boVerbose
   case rest of
     [] -> do
       TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
@@ -188,18 +202,18 @@ cmdBuild args = do
               TIO.putStrLn $ "[stub] Would build " <> T.pack (show (length validTargets)) <> " target(s):"
               mapM_ (TIO.putStrLn . ("[stub]   " <>) . showPattern) validTargets
               exitSuccess
-            else buildTargets mJobs validTargets
+            else buildTargets mJobs blog validTargets
 
-buildTargets :: Maybe Int -> [TargetPattern] -> IO ()
-buildTargets mJobs patterns = case patterns of
+buildTargets :: Maybe Int -> BuildLog -> [TargetPattern] -> IO ()
+buildTargets mJobs blog patterns = case patterns of
   [] -> exitSuccess
-  [pattern] -> buildSinglePattern mJobs pattern
+  [pattern] -> buildSinglePattern mJobs blog pattern
   _ -> do
     -- Multiple targets: build each one
     projectRoot <- getCurrentDirectory
     tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
     TIO.putStrLn $ "Building " <> T.pack (show (length patterns)) <> " targets"
-    results <- mapM (buildPatternResult mJobs tc projectRoot) patterns
+    results <- mapM (buildPatternResult mJobs blog tc projectRoot) patterns
     let failures = length [() | Left _ <- results]
         successes = length [() | Right _ <- results]
     if failures > 0
@@ -210,24 +224,24 @@ buildTargets mJobs patterns = case patterns of
         TIO.putStrLn $ "✓ Built " <> T.pack (show successes) <> " targets"
         exitSuccess
 
-buildPatternResult :: Maybe Int -> TC.Toolchains -> FilePath -> TargetPattern -> IO (Either BuildError BuildResult)
-buildPatternResult mJobs tc projectRoot = \case
+buildPatternResult :: Maybe Int -> BuildLog -> TC.Toolchains -> FilePath -> TargetPattern -> IO (Either BuildError BuildResult)
+buildPatternResult mJobs blog tc projectRoot = \case
   SingleTarget pkgPath targetName -> do
     let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
     pkg <- Dhall.parsePackageFile projectRoot dhallPath
-    buildWithDepsJ mJobs tc projectRoot pkg targetName
+    buildWithDepsJ mJobs blog tc projectRoot pkg targetName
   AllInPackage pkgPath -> do
     let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
     pkg <- Dhall.parsePackageFile projectRoot dhallPath
-    result <- buildAllTargetsJ mJobs tc projectRoot pkg
+    result <- buildAllTargetsJ mJobs blog tc projectRoot pkg
     pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
   Recursive _ -> do
     -- For recursive, just return success for now
     -- TODO: implement properly
     pure $ Right $ BuildSuccess ["recursive build"]
 
-buildSinglePattern :: Maybe Int -> TargetPattern -> IO ()
-buildSinglePattern mJobs pat = do
+buildSinglePattern :: Maybe Int -> BuildLog -> TargetPattern -> IO ()
+buildSinglePattern mJobs blog pat = do
   projectRoot <- getCurrentDirectory
   tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
   case pat of
@@ -235,7 +249,7 @@ buildSinglePattern mJobs pat = do
       let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
       pkg <- Dhall.parsePackageFile projectRoot dhallPath
       TIO.putStrLn $ "Building //" <> pkgPath <> ":" <> targetName
-      result <- buildWithDepsJ mJobs tc projectRoot pkg targetName
+      result <- buildWithDepsJ mJobs blog tc projectRoot pkg targetName
       case result of
         Left err -> do
           TIO.putStrLn $ "✗ " <> showError err
@@ -247,10 +261,10 @@ buildSinglePattern mJobs pat = do
           TIO.putStrLn $ "✓ Cached: " <> T.intercalate ", " (map T.pack outputs)
           exitSuccess
     AllInPackage pkgPath -> do
-      let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
-      pkg <- Dhall.parsePackageFile projectRoot dhallPath
+      let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+      pkg <- Dhall.parsePackageFile projectRoot dhallPath'
       TIO.putStrLn $ "Building //" <> pkgPath <> ":all (" <> T.pack (show (length pkg.rules)) <> " targets)"
-      result <- buildAllTargetsJ mJobs tc projectRoot pkg
+      result <- buildAllTargetsJ mJobs blog tc projectRoot pkg
       case result of
         Left err -> do
           TIO.putStrLn $ "✗ " <> showError err
@@ -272,7 +286,7 @@ buildSinglePattern mJobs pat = do
           TIO.putStrLn $ "Building " <> pathPrefix <> "... (" <> T.pack (show (length pkgs)) <> " packages, " <> T.pack (show totalTargets) <> " targets)"
           let sortedPkgs = sortPackagesByDeps pkgs
               pkgPaths = map (T.pack . (.path)) pkgs
-          results <- buildPackageWaves mJobs tc projectRoot pkgPaths sortedPkgs
+          results <- buildPackageWaves mJobs blog tc projectRoot pkgPaths sortedPkgs
           let failures = [(p, e) | (p, Left e) <- results]
               successes = [n | (_, Right n) <- results]
           if null failures
@@ -288,12 +302,13 @@ buildSinglePattern mJobs pat = do
 -- Packages are executed in parallel within each wave, but waves are sequential
 buildPackageWaves ::
   Maybe Int ->
+  BuildLog ->
   TC.Toolchains ->
   FilePath ->
   [Text] -> -- All package paths in our build set
   [Package] -> -- Packages sorted by deps (deps first)
   IO [(FilePath, Either BuildError Int)]
-buildPackageWaves mJobs tc projectRoot allPkgPaths pkgs = go [] [] pkgs
+buildPackageWaves mJobs blog tc projectRoot allPkgPaths pkgs = go [] [] pkgs
   where
     go results _ [] = pure results
     go results completed (pkg : rest) = do
@@ -304,7 +319,7 @@ buildPackageWaves mJobs tc projectRoot allPkgPaths pkgs = go [] [] pkgs
       if depsReady
         then do
           -- Build this package
-          result <- buildAllTargetsJ mJobs tc projectRoot pkg
+          result <- buildAllTargetsJ mJobs blog tc projectRoot pkg
           case result of
             Left err -> do
               -- Package failed, but continue with others
@@ -342,7 +357,7 @@ cmdRun args = do
           let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
           pkg <- Dhall.parsePackageFile projectRoot dhallPath'
           -- Build the target first
-          result <- buildWithDepsJ Nothing tc projectRoot pkg targetName
+          result <- buildWithDepsJ Nothing noLog tc projectRoot pkg targetName
           case result of
             Left err -> do
               TIO.putStrLn $ "✗ Build failed: " <> showError err

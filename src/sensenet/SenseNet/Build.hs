@@ -30,6 +30,11 @@ module SenseNet.Build
     packageDeps,
     sortPackagesByDeps,
 
+    -- * Logging
+    BuildLog (..),
+    noLog,
+    withLogging,
+
     -- * Low-level
     runCommand,
   )
@@ -97,6 +102,7 @@ import SenseNet.IR.Triple
     gpuToArch,
     textToGpu,
   )
+import SenseNet.Log qualified as Log
 import SenseNet.Nix qualified as Nix
 import SenseNet.PureScript qualified as PS
 import SenseNet.RustCrate qualified as RC
@@ -140,6 +146,24 @@ data BuildError
   deriving stock (Show, Eq)
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- Logging
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Optional build logging context
+--
+-- When 'Just', structured logs are emitted via Katip.
+-- When 'Nothing', no logging occurs (default behavior).
+newtype BuildLog = BuildLog {unBuildLog :: Maybe Log.LogEnv}
+
+-- | No logging (default)
+noLog :: BuildLog
+noLog = BuildLog Nothing
+
+-- | Create logging context from LogEnv
+withLogging :: Log.LogEnv -> BuildLog
+withLogging = BuildLog . Just
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- Build Entry Point
 -- ════════════════════════════════════════════════════════════════════════════
 
@@ -170,12 +194,14 @@ buildWithDeps ::
   -- | Target name
   Text ->
   IO (Either BuildError BuildResult)
-buildWithDeps = buildWithDepsJ Nothing
+buildWithDeps = buildWithDepsJ Nothing noLog
 
 -- | Build a target with job limit
 buildWithDepsJ ::
   -- | Max concurrent jobs (Nothing = unlimited)
   Maybe Int ->
+  -- | Logging context
+  BuildLog ->
   Toolchains ->
   -- | Project root
   FilePath ->
@@ -184,13 +210,20 @@ buildWithDepsJ ::
   -- | Target name
   Text ->
   IO (Either BuildError BuildResult)
-buildWithDepsJ mJobs tc projectRoot pkg targetName
+buildWithDepsJ mJobs blog tc projectRoot pkg targetName
   | Nothing <- findRule targetName pkg.rules = pure $ Left $ TargetNotFound targetName
   | Just rootRule <- findRule targetName pkg.rules = do
+      -- Log build start
+      logMaybe blog $ \env -> Log.logBuildStart env targetName 1
       let outDir = projectRoot </> "sensenet-out" </> pkg.path
       createDirectoryIfMissing True outDir
       graphResult <- buildActionGraph tc projectRoot pkg outDir rootRule
-      either (pure . Left) (executeAndExtract mJobs) graphResult
+      result <- either (pure . Left) (executeAndExtract mJobs) graphResult
+      -- Log completion or failure
+      case result of
+        Left err -> logMaybe blog $ \env -> Log.logBuildFailed env targetName (T.pack (show err))
+        Right _ -> logMaybe blog $ \env -> Log.logBuildComplete env targetName 0 -- TODO: track actual duration
+      pure result
   where
     executeAndExtract :: Maybe Int -> ActionGraph -> IO (Either BuildError BuildResult)
     executeAndExtract jobs graph = do
@@ -212,36 +245,54 @@ buildWithDepsJ mJobs tc projectRoot pkg targetName
             (Right . BuildSuccess . map T.unpack . arOutputs)
             (Map.lookup rootKey results)
 
+-- | Helper to conditionally log
+logMaybe :: BuildLog -> (Log.LogEnv -> IO ()) -> IO ()
+logMaybe (BuildLog Nothing) _ = pure ()
+logMaybe (BuildLog (Just env)) action = action env
+
 -- | Build all targets in a package in parallel
 buildAllTargets ::
   Toolchains ->
   FilePath ->
   Package ->
   IO (Either BuildError Int)
-buildAllTargets = buildAllTargetsJ Nothing
+buildAllTargets = buildAllTargetsJ Nothing noLog
 
 -- | Build all targets with job limit
 buildAllTargetsJ ::
   -- | Max concurrent jobs (Nothing = unlimited)
   Maybe Int ->
+  -- | Logging context
+  BuildLog ->
   Toolchains ->
   FilePath ->
   Package ->
   IO (Either BuildError Int)
-buildAllTargetsJ mJobs tc projectRoot pkg = do
+buildAllTargetsJ mJobs blog tc projectRoot pkg = do
+  let pkgName = T.pack pkg.path
+      targetCount = length pkg.rules
+  logMaybe blog $ \env -> Log.logBuildStart env pkgName targetCount
+
   let outDir = projectRoot </> "sensenet-out" </> pkg.path
   createDirectoryIfMissing True outDir
 
   -- Build graph for ALL rules (no filtering)
   graphResult <- buildAllActionGraph tc projectRoot pkg outDir
   case graphResult of
-    Left err -> pure $ Left err
+    Left err -> do
+      logMaybe blog $ \env -> Log.logBuildFailed env pkgName (T.pack (show err))
+      pure $ Left err
     Right graph -> do
       cache <- newCache
       execResult <- executeGraphWithJobs mJobs cache runAction graph
       case erFailed execResult of
-        ((_, err) : _) -> pure $ Left $ CommandFailed "graph" 1 err
-        [] -> pure $ Right (erExecuted execResult + erCacheHits execResult)
+        ((_, err) : _) -> do
+          logMaybe blog $ \env -> Log.logBuildFailed env pkgName err
+          pure $ Left $ CommandFailed "graph" 1 err
+        [] -> do
+          let total = erExecuted execResult + erCacheHits execResult
+          logMaybe blog $ \env -> Log.logBuildComplete env pkgName 0 -- TODO: track duration
+          pure $ Right total
 
 -- | Build action graph for ALL rules in a package
 buildAllActionGraph ::
