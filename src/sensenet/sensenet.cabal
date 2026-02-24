@@ -68,7 +68,9 @@ executable sensenet
     import:           sensenet-common
     main-is:          Main.hs
     build-depends:
+        aeson,
         base >= 4.18 && < 5,
+        bytestring,
         directory,
         text,
         sensenet

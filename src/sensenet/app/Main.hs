@@ -11,9 +11,13 @@ module Main where
 
 -- SenseNet.DICE used by Build module
 
+import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson qualified as Aeson
+import Data.ByteString.Lazy qualified as BL
 import Data.Char (isDigit)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import GHC.Conc (getNumProcessors)
 import SenseNet.Build (BuildError (..), BuildResult (..), buildAllTargetsJ, buildWithDepsJ, packageDeps, sortPackagesByDeps)
@@ -398,6 +402,11 @@ parseSelector t = case T.breakOn "/" t of
   ("kind", rest) -> Just $ QKind (T.drop 1 rest) -- drop the /
   _ -> Nothing
 
+-- | Query result can be strings or structured JSON values
+data QueryResult
+  = QRStrings [Text]
+  | QRValues [Value]
+
 cmdQuery :: [String] -> IO ()
 cmdQuery [] = do
   TIO.putStrLn "Usage: sensenet query //path/to/pkg:target#selector"
@@ -416,21 +425,40 @@ cmdQuery args = do
       files <- discover projectRoot
       pkgs <- mapM (\f -> Dhall.parsePackageFile projectRoot (dhallPath f)) files
       -- Process each query
-      results <- concat <$> mapM (runQuery opts pkgs) queries
+      results <- mapM (runQuery opts pkgs) queries
+      -- Merge results
+      let merged = mergeQueryResults results
       -- Output
-      mapM_ TIO.putStrLn results
+      outputQueryResult opts merged
 
-runQuery :: QueryOpts -> [Package] -> String -> IO [Text]
+mergeQueryResults :: [QueryResult] -> QueryResult
+mergeQueryResults rs = case rs of
+  [] -> QRStrings []
+  (QRValues _ : _) -> QRValues [v | QRValues vs <- rs, v <- vs]
+  _ -> QRStrings [s | QRStrings ss <- rs, s <- ss]
+
+outputQueryResult :: QueryOpts -> QueryResult -> IO ()
+outputQueryResult opts = \case
+  QRStrings strs ->
+    if qoJson opts
+      then TIO.putStrLn $ TE.decodeUtf8 $ BL.toStrict $ Aeson.encode strs
+      else mapM_ TIO.putStrLn strs
+  QRValues vals ->
+    if qoJson opts
+      then TIO.putStrLn $ TE.decodeUtf8 $ BL.toStrict $ Aeson.encode vals
+      else mapM_ (TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . Aeson.encode) vals
+
+runQuery :: QueryOpts -> [Package] -> String -> IO QueryResult
 runQuery opts pkgs queryStr = do
   case parseQueryExpr (T.pack queryStr) of
     Nothing -> do
       TIO.putStrLn $ "Invalid query: " <> T.pack queryStr
-      pure []
+      pure $ QRStrings []
     Just (pat, mSel) -> do
       -- Find matching targets
       let targets = findTargets pkgs pat
       case mSel of
-        Nothing -> pure $ map (formatTarget pkgs) targets
+        Nothing -> pure $ QRStrings $ map (formatTarget pkgs) targets
         Just sel -> executeSelector opts pkgs targets sel
 
 -- | Find targets matching a pattern
@@ -461,29 +489,43 @@ formatTarget :: [Package] -> (Package, Rule) -> Text
 formatTarget _ (pkg, rule) = "//" <> T.pack pkg.path <> ":" <> ruleName rule
 
 -- | Execute a query selector
-executeSelector :: QueryOpts -> [Package] -> [(Package, Rule)] -> QuerySelector -> IO [Text]
+executeSelector :: QueryOpts -> [Package] -> [(Package, Rule)] -> QuerySelector -> IO QueryResult
 executeSelector opts pkgs targets = \case
   QDeps -> do
     let limit = qoLimit opts
-    pure $ concatMap (getDeps limit pkgs) targets
+    pure $ QRStrings $ concatMap (getDeps limit pkgs) targets
   QRdeps -> do
     let targetLabels = map (\(p, r) -> "//" <> T.pack p.path <> ":" <> ruleName r) targets
-    pure
-      [ formatTarget pkgs (pkg, rule)
-      | pkg <- pkgs,
-        rule <- pkg.rules,
-        any (depMatchesAny targetLabels (T.pack pkg.path)) (ruleDeps rule)
-      ]
+    pure $
+      QRStrings
+        [ formatTarget pkgs (pkg, rule)
+        | pkg <- pkgs,
+          rule <- pkg.rules,
+          any (depMatchesAny targetLabels (T.pack pkg.path)) (ruleDeps rule)
+        ]
   QInputs ->
-    pure $ concatMap (\(pkg, rule) -> map (\s -> T.pack pkg.path <> "/" <> s) (ruleSrcs rule)) targets
+    pure $ QRStrings $ concatMap (\(pkg, rule) -> map (\s -> T.pack pkg.path <> "/" <> s) (ruleSrcs rule)) targets
   QKind kindPattern ->
-    pure
-      [ formatTarget pkgs t
-      | t@(_, rule) <- targets,
-        kindPattern `T.isInfixOf` ruleKind rule
-      ]
+    pure $
+      QRStrings
+        [ formatTarget pkgs t
+        | t@(_, rule) <- targets,
+          kindPattern `T.isInfixOf` ruleKind rule
+        ]
   QAttrs ->
-    pure $ map (\(_, rule) -> T.pack (show rule)) targets
+    if qoJson opts
+      then pure $ QRValues $ map ruleToJson targets
+      else pure $ QRStrings $ map (\(_, rule) -> T.pack (show rule)) targets
+
+-- | Convert a rule to JSON-encodable representation
+ruleToJson :: (Package, Rule) -> Value
+ruleToJson (pkg, rule) =
+  object
+    [ "label" .= formatTarget [] (pkg, rule),
+      "kind" .= ruleKind rule,
+      "srcs" .= ruleSrcs rule,
+      "deps" .= map (depToLabel (T.pack pkg.path)) (ruleDeps rule)
+    ]
 
 -- | Get dependencies for a target (with optional depth limit)
 getDeps :: Maybe Int -> [Package] -> (Package, Rule) -> [Text]
