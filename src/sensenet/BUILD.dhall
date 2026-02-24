@@ -98,7 +98,10 @@ let sensenet-build =
 let sensenet =
       (A.haskellBinary "sensenet" [ "app/Main.hs" ])
         with packages =
-          [ "base"
+          [ "aeson"
+          , "async"
+          , "base"
+          , "bytestring"
           , "containers"
           , "directory"
           , "filepath"

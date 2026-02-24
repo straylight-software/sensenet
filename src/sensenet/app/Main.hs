@@ -11,6 +11,7 @@ module Main where
 
 -- SenseNet.DICE used by Build module
 
+import Control.Concurrent.Async (forConcurrently)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy qualified as BL
@@ -280,7 +281,8 @@ buildSinglePattern mJobs blog pat = do
           TIO.putStrLn $ "No BUILD.dhall files found under //" <> subPath <> "..."
           exitFailure
         else do
-          pkgs <- mapM (\f -> Dhall.parsePackageFile projectRoot (dhallPath f)) files
+          -- Parse all BUILD.dhall files in parallel for better performance
+          pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
           let totalTargets = sum [length pkg.rules | pkg <- pkgs]
               pathPrefix = if T.null subPath then "//" else "//" <> subPath <> "/"
           TIO.putStrLn $ "Building " <> pathPrefix <> "... (" <> T.pack (show (length pkgs)) <> " packages, " <> T.pack (show totalTargets) <> " targets)"
@@ -496,9 +498,9 @@ cmdQuery args = do
       exitFailure
     queries -> do
       projectRoot <- getCurrentDirectory
-      -- Parse all packages
+      -- Parse all packages in parallel for better performance
       files <- discover projectRoot
-      pkgs <- mapM (\f -> Dhall.parsePackageFile projectRoot (dhallPath f)) files
+      pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
       -- Process each query
       results <- mapM (runQuery opts pkgs) queries
       -- Merge results
