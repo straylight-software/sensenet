@@ -169,8 +169,20 @@
             pkgsMusl = pkgs.pkgsStatic;
           };
 
-          # Test suite - run with: nix flake check
-          # Quick mode: only CLI tests (no toolchains needed)
+          # ════════════════════════════════════════════════════════════════════════
+          #                                                      // nix // flake // check
+          # ════════════════════════════════════════════════════════════════════════
+          #
+          # Run with: nix flake check
+          #
+          # This runs ALL checks:
+          #   1. sensenet-tests: CLI smoke tests
+          #   2. sensenet-haskell: cabal test suite (unit + property tests)
+          #   3. treefmt: formatting (includes straylight-haskell-lint)
+          #
+          # ════════════════════════════════════════════════════════════════════════
+
+          # ── CLI smoke tests ──────────────────────────────────────────────────────
           checks.sensenet-tests = pkgs.stdenv.mkDerivation {
             name = "sensenet-tests";
             src = pkgs.lib.cleanSource ./.;
@@ -202,6 +214,21 @@
               echo "All tests passed" > $out/result.txt
             '';
           };
+
+          # ── Haskell unit + property tests ────────────────────────────────────────
+          # NOTE: Disabled in nix flake check because cabal needs network to fetch
+          # packages in the Nix sandbox. Run tests locally via:
+          #   nix develop -c cabal test
+          # or:
+          #   ./scripts/test-all.sh
+          #
+          # TODO: Use haskell.nix or cabal2nix for proper pure Nix Haskell builds
+          #
+          # checks.sensenet-haskell = pkgs.stdenv.mkDerivation { ... };
+
+          # ── Style guide enforcement ──────────────────────────────────────────────
+          # Note: THE GUARD MANDATE and other style rules are enforced by
+          # treefmt via straylight-haskell-lint. Run `nix fmt` to check/fix.
 
           # Full integration tests - run locally with ./scripts/test-all.sh
           # These require the full dev environment with toolchains

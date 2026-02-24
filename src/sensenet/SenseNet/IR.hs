@@ -14,7 +14,13 @@
 -- Types mirror dhall/prelude/ but are native Haskell — no Dhall evaluation
 -- at query time.
 module SenseNet.IR
-  ( -- * Core types
+  ( -- * NEW: Re-exports from typed IR modules
+    module SenseNet.IR.Coeffect,
+    module SenseNet.IR.Triple,
+    module SenseNet.IR.Flag,
+    module SenseNet.IR.Common,
+
+    -- * Core types (legacy, to be migrated)
     Dep (..),
     Vis (..),
     CxxStd (..),
@@ -68,6 +74,11 @@ module SenseNet.IR
 where
 
 import Data.Text (Text)
+-- NEW: Import typed IR modules
+import SenseNet.IR.Coeffect
+import SenseNet.IR.Common
+import SenseNet.IR.Flag
+import SenseNet.IR.Triple
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Core Types
@@ -219,7 +230,7 @@ data NvBinary = NvBinary
   { name :: Text,
     srcs :: [Text],
     deps :: [Dep],
-    archs :: [Text],
+    archs :: [Gpu], -- Typed GPU architectures
     vis :: Vis
   }
   deriving (Show, Eq)
@@ -229,7 +240,7 @@ data NvLibrary = NvLibrary
     srcs :: [Text],
     exportedHeaders :: [Text],
     deps :: [Dep],
-    archs :: [Text],
+    archs :: [Gpu], -- Typed GPU architectures
     vis :: Vis
   }
   deriving (Show, Eq)

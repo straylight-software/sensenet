@@ -75,6 +75,21 @@ in
     };
 
     # ──────────────────────────────────────────────────────────────────────────
+    #                                                    // haskell // options
+    # ──────────────────────────────────────────────────────────────────────────
+
+    haskell = {
+      enable-style-lint = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Enable straylight Haskell style linting.
+          Enforces THE GUARD MANDATE and other conventions from HASKELL_STYLE_GUIDE.md
+        '';
+      };
+    };
+
+    # ──────────────────────────────────────────────────────────────────────────
     #                                                        // cpp // options
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -173,6 +188,26 @@ in
             export AST_GREP_BIN="${pkgs.ast-grep}/bin/ast-grep"
             ${builtins.readFile ./scripts/sense-grep-cpp.sh}
           '';
+        };
+
+        # ────────────────────────────────────────────────────────────────────────
+        #                                                  // haskell // lint // wrapper
+        # ────────────────────────────────────────────────────────────────────────
+        #
+        # Enforces THE GUARD MANDATE and other straylight Haskell conventions.
+        # See: HASKELL_STYLE_GUIDE.md
+        #
+        # ────────────────────────────────────────────────────────────────────────
+
+        haskell-lint-wrapper = pkgs.writeShellApplication {
+          name = "straylight-haskell-lint";
+          runtimeInputs = [
+            pkgs.bash
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.coreutils
+          ];
+          text = builtins.readFile ./scripts/haskell-lint.sh;
         };
 
       in
@@ -293,8 +328,13 @@ in
           # qualified imports (`import Data.Text qualified as T`), a GHC2024 default.
           # See: https://github.com/fourmolu/fourmolu/issues/438
           programs.fourmolu.enable = false;
-          # n.b. hlint disabled — it's a linter, not a formatter, and treefmt-nix
-          # doesn't support the config file needed to suppress suggestions
+
+          # NOTE: hlint disabled — it's a linter, not a formatter, and treefmt-nix
+          # doesn't support the config file needed to suppress suggestions.
+          # We use our own straylight-haskell-lint instead which enforces:
+          #   - THE GUARD MANDATE (no nested case/if)
+          #   - DerivingStrategies required
+          #   - Proper naming conventions
 
           # ────────────────────────────────────────────────────────────────────────
           #                                                          // other // lint
@@ -367,6 +407,33 @@ in
             sense-grep-cpp = lib.mkIf cfg.cpp.enable-sense-grep {
               command = sense-grep-cpp-wrapper;
               includes = cpp-includes;
+            };
+
+            # ── haskell // straylight-lint ───────────────────────────────────────
+            #
+            # Enforces THE GUARD MANDATE:
+            #   - No nested case expressions (max 2 per function)
+            #   - No nested if-then-else
+            #   - DerivingStrategies must be explicit
+            #
+            # See: HASKELL_STYLE_GUIDE.md
+            #
+            # ─────────────────────────────────────────────────────────────────────
+
+            straylight-haskell-lint = lib.mkIf cfg.haskell.enable-style-lint {
+              command = haskell-lint-wrapper;
+              includes = [ "*.hs" ];
+              excludes = [
+                # vendored code
+                "vendor/*"
+                # test files may have intentional violations
+                "test/*"
+                # benchmarks prioritize performance measurement over style
+                "bench/*"
+                # generated code
+                "dist-newstyle/*"
+                "sensenet-out/*"
+              ];
             };
           };
 

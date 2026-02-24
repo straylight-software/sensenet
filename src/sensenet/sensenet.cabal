@@ -37,6 +37,10 @@ library
         SenseNet.Dhall
         SenseNet.Discover
         SenseNet.IR
+        SenseNet.IR.Coeffect
+        SenseNet.IR.Common
+        SenseNet.IR.Flag
+        SenseNet.IR.Triple
         SenseNet.Nix
         SenseNet.PureScript
         SenseNet.RustCrate

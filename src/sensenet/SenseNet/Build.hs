@@ -1,4 +1,5 @@
 {-# LANGUAGE CApiFFI #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -39,9 +40,11 @@ import Control.Monad (forM)
 import Data.List (intercalate, isSuffixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock qualified as Time
 import Data.Word (Word64)
 import Foreign.C.Types (CInt (..), CLong (..))
 import Foreign.Marshal.Alloc (allocaBytes)
@@ -86,6 +89,14 @@ import SenseNet.IR
     ruleDeps,
     ruleName,
   )
+import SenseNet.IR.Coeffect
+  ( Coeffect (..),
+  )
+import SenseNet.IR.Triple
+  ( Gpu,
+    gpuToArch,
+    textToGpu,
+  )
 import SenseNet.Nix qualified as Nix
 import SenseNet.PureScript qualified as PS
 import SenseNet.RustCrate qualified as RC
@@ -117,7 +128,7 @@ headOr _ (x : _) = x
 data BuildResult
   = BuildSuccess [FilePath]
   | BuildCached [FilePath]
-  deriving (Show, Eq)
+  deriving stock (Show, Eq)
 
 -- | Build errors
 data BuildError
@@ -126,7 +137,7 @@ data BuildError
   | DependencyFailed Text Text
   | SourceNotFound FilePath
   | PackageError Text -- PureScript package fetch/resolve errors
-  deriving (Show, Eq)
+  deriving stock (Show, Eq)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Build Entry Point
@@ -173,33 +184,33 @@ buildWithDepsJ ::
   -- | Target name
   Text ->
   IO (Either BuildError BuildResult)
-buildWithDepsJ mJobs tc projectRoot pkg targetName = do
-  case findRule targetName pkg.rules of
-    Nothing -> pure $ Left $ TargetNotFound targetName
-    Just rootRule -> do
+buildWithDepsJ mJobs tc projectRoot pkg targetName
+  | Nothing <- findRule targetName pkg.rules = pure $ Left $ TargetNotFound targetName
+  | Just rootRule <- findRule targetName pkg.rules = do
       let outDir = projectRoot </> "sensenet-out" </> pkg.path
       createDirectoryIfMissing True outDir
-
-      -- Build action graph with dependencies
       graphResult <- buildActionGraph tc projectRoot pkg outDir rootRule
-      case graphResult of
-        Left err -> pure $ Left err
-        Right graph -> do
-          cache <- newCache
+      either (pure . Left) (executeAndExtract mJobs) graphResult
+  where
+    executeAndExtract :: Maybe Int -> ActionGraph -> IO (Either BuildError BuildResult)
+    executeAndExtract jobs graph = do
+      cache <- newCache
+      execResult <- executeGraphWithJobs jobs cache runAction graph
+      pure $ extractResult graph execResult
 
-          -- Execute graph in parallel (actions run as soon as deps complete)
-          execResult <- executeGraphWithJobs mJobs cache runAction graph
+    extractResult :: ActionGraph -> ExecutionResult -> Either BuildError BuildResult
+    extractResult graph execResult
+      | ((_, err) : _) <- erFailed execResult = Left $ CommandFailed "graph" 1 err
+      | [] <- erFailed execResult = extractRootOutput graph (erResults execResult)
 
-          -- Check for failures
-          case erFailed execResult of
-            ((_, err) : _) -> pure $ Left $ CommandFailed "graph" 1 err
-            [] -> do
-              -- Find the root action's outputs
-              case agRoots graph of
-                [] -> pure $ Left $ CommandFailed "graph" 1 "no root action"
-                (rootKey : _) -> case Map.lookup rootKey (erResults execResult) of
-                  Just result -> pure $ Right $ BuildSuccess (map T.unpack $ arOutputs result)
-                  Nothing -> pure $ Left $ CommandFailed "graph" 1 "root action not in results"
+    extractRootOutput :: ActionGraph -> Map ActionKey ActionResult -> Either BuildError BuildResult
+    extractRootOutput graph results
+      | [] <- agRoots graph = Left $ CommandFailed "graph" 1 "no root action"
+      | (rootKey : _) <- agRoots graph =
+          maybe
+            (Left $ CommandFailed "graph" 1 "root action not in results")
+            (Right . BuildSuccess . map T.unpack . arOutputs)
+            (Map.lookup rootKey results)
 
 -- | Build all targets in a package in parallel
 buildAllTargets ::
@@ -267,33 +278,28 @@ buildActionGraph ::
 buildActionGraph tc projectRoot pkg _outDir rootRule = do
   -- Collect rules needed (root + transitive deps), including cross-package
   (_, neededRules) <- collectDepsWithPackages projectRoot Map.empty pkg rootRule
-
   -- Build actions for all needed rules (paired with package+rule for dep resolution)
-  -- Each rule builds into its own package's output dir
   actionsResult <- buildActionsWithPackages tc projectRoot neededRules
-  case actionsResult of
-    Left err -> pure $ Left err
-    Right pkgRuleActionTriples -> do
-      -- Two-pass resolution:
-      -- Pass 1: Build name -> ActionKey mapping using actions WITHOUT deps
-      --         (needed because deps refer to names, not keys)
-      let nameToKey = Map.fromList [(aName a, actionKey a) | (_, _, a) <- pkgRuleActionTriples]
+  pure $ buildGraph pkg rootRule =<< actionsResult
+  where
+    buildGraph :: Package -> Rule -> [(Package, Rule, Action)] -> Either BuildError ActionGraph
+    buildGraph p rule pkgRuleActionTriples = Right graphWithRoot
+      where
+        -- Pass 1: Build name -> ActionKey mapping
+        nameToKey = Map.fromList [(aName a, actionKey a) | (_, _, a) <- pkgRuleActionTriples]
+        -- Pass 2: Resolve dependencies
+        resolvedActions = [resolveDepsForRule nameToKey pkg' r a | (pkg', r, a) <- pkgRuleActionTriples]
+        -- Build graph with resolved actions
+        graph = foldl (\g a -> addAction a g) emptyGraph resolvedActions
+        rootName = "//" <> T.pack p.path <> ":" <> ruleName rule
+        rootKey = findRootKey resolvedActions rootName
+        graphWithRoot = graph {agRoots = [rootKey]}
 
-      -- Pass 2: Resolve dependencies - update aInputKeys for each action
-      let resolvedActions = [resolveDepsForRule nameToKey p r a | (p, r, a) <- pkgRuleActionTriples]
-
-      -- Build graph with RESOLVED actions (keys will be recalculated by addAction)
-      let graph = foldl (\g a -> addAction a g) emptyGraph resolvedActions
-          -- Find root action (matches rootRule name)
-          rootName = "//" <> T.pack pkg.path <> ":" <> ruleName rootRule
-          rootKey = case [actionKey a | a <- resolvedActions, aName a == rootName] of
-            (k : _) -> k
-            [] -> case resolvedActions of
-              (a : _) -> actionKey a
-              [] -> error "buildActionGraph: no actions" -- should never happen
-          graphWithRoot = graph {agRoots = [rootKey]}
-
-      pure $ Right graphWithRoot
+    findRootKey :: [Action] -> Text -> ActionKey
+    findRootKey actions rootName
+      | (k : _) <- [actionKey a | a <- actions, aName a == rootName] = k
+      | (a : _) <- actions = actionKey a
+      | otherwise = error "buildActionGraph: no actions" -- should never happen
 
 -- | Parse a dependency reference
 -- Returns (Maybe pkgPath, targetName)
@@ -574,7 +580,7 @@ cxxBinaryAction tc projectRoot pkgPath outDir bin = do
               aInputKeys = [],
               aOutputs = [T.pack output],
               aEnv = Map.empty,
-              aCoeffects = ["fs:" <> T.pack srcDir]
+              aCoeffects = [Filesystem (T.pack srcDir)]
             }
 
 cxxLibraryAction :: Toolchains -> FilePath -> FilePath -> FilePath -> CxxLibrary -> IO (Either BuildError Action)
@@ -607,7 +613,7 @@ cxxLibraryAction tc projectRoot pkgPath outDir lib = do
               aInputKeys = [],
               aOutputs = [T.pack output],
               aEnv = Map.singleton "AR" (T.pack $ T.unpack arPath),
-              aCoeffects = ["fs:" <> T.pack srcDir]
+              aCoeffects = [Filesystem (T.pack srcDir)]
             }
 
 cxxStdFlag :: CxxStd -> String
@@ -648,52 +654,47 @@ cxxDepFlag projectRoot outDir = \case
 -- Resolves nixDeps using nix-analyze at planning time
 nixCxxBinaryAction :: Toolchains -> FilePath -> FilePath -> FilePath -> NixCxxBinary -> IO (Either BuildError Action)
 nixCxxBinaryAction tc projectRoot pkgPath outDir bin = do
-  let srcDir = projectRoot </> pkgPath
-      output = outDir </> T.unpack bin.name
-      srcPaths = map (\s -> srcDir </> T.unpack s) bin.srcs
-
-  -- Hash source files for cache key
   inputHashes <- hashSourceFiles srcPaths
-  case inputHashes of
-    Left err -> pure $ Left err
-    Right hashes -> do
-      -- Resolve nix dependencies using nix-analyze
-      -- Each nixDep is a flake ref like "nixpkgs#zlib"
-      nixFlags <- resolveNixDeps bin.nixDeps
-      case nixFlags of
-        Left err -> pure $ Left err
-        Right flags -> do
-          let TC.Cxx {cxx = TC.Tool cxxPath, ld = TC.Tool ldPath, paths = TC.Paths incPaths libPaths} = tc.cxx
-              includeFlags = concatMap (\i -> ["-isystem", i]) (map T.unpack incPaths)
-              libFlags = concatMap (\l -> ["-B" <> l, "-L" <> l]) (map T.unpack libPaths)
-              ldFlag = case T.unpack ldPath of
-                "lld" -> ["-fuse-ld=lld"]
-                "gold" -> ["-fuse-ld=gold"]
-                "mold" -> ["-fuse-ld=mold"]
-                "bfd" -> ["-fuse-ld=bfd"]
-                _ -> []
+  nixFlags <- resolveNixDeps bin.nixDeps
+  pure $ mkAction <$> inputHashes <*> nixFlags
+  where
+    srcDir = projectRoot </> pkgPath
+    output = outDir </> T.unpack bin.name
+    srcPaths = map (\s -> srcDir </> T.unpack s) bin.srcs
+    TC.Cxx {cxx = TC.Tool cxxPath, ld = TC.Tool ldPath, paths = TC.Paths incPaths libPaths} = tc.cxx
+    includeFlags = concatMap (\i -> ["-isystem", i]) (map T.unpack incPaths)
+    libFlags = concatMap (\l -> ["-B" <> l, "-L" <> l]) (map T.unpack libPaths)
+    ldFlag = linkerFlag (T.unpack ldPath)
 
-              cmd =
-                [T.unpack cxxPath, "-o", output]
-                  ++ includeFlags
-                  ++ flags -- Nix-resolved flags
-                  ++ map T.unpack bin.compilerFlags
-                  ++ srcPaths
-                  ++ libFlags
-                  ++ ldFlag
-                  ++ map T.unpack bin.linkerFlags
+    mkAction :: [Text] -> [String] -> Action
+    mkAction hashes flags =
+      Action
+        { aName = "//" <> T.pack pkgPath <> ":" <> bin.name,
+          aCommand = map T.pack cmd,
+          aInputs = hashes,
+          aInputKeys = [],
+          aOutputs = [T.pack output],
+          aEnv = Map.empty,
+          aCoeffects = [Filesystem (T.pack srcDir), Environment "NIX_PATH"]
+        }
+      where
+        cmd =
+          [T.unpack cxxPath, "-o", output]
+            ++ includeFlags
+            ++ flags
+            ++ map T.unpack bin.compilerFlags
+            ++ srcPaths
+            ++ libFlags
+            ++ ldFlag
+            ++ map T.unpack bin.linkerFlags
 
-          pure $
-            Right
-              Action
-                { aName = "//" <> T.pack pkgPath <> ":" <> bin.name,
-                  aCommand = map T.pack cmd,
-                  aInputs = hashes,
-                  aInputKeys = [],
-                  aOutputs = [T.pack output],
-                  aEnv = Map.empty,
-                  aCoeffects = ["fs:" <> T.pack srcDir, "nix:" <> T.intercalate "," bin.nixDeps]
-                }
+    linkerFlag :: String -> [String]
+    linkerFlag ld
+      | ld == "lld" = ["-fuse-ld=lld"]
+      | ld == "gold" = ["-fuse-ld=gold"]
+      | ld == "mold" = ["-fuse-ld=mold"]
+      | ld == "bfd" = ["-fuse-ld=bfd"]
+      | otherwise = []
 
 -- | Resolve Nix flake dependencies to compiler/linker flags
 -- Uses SenseNet.Nix directly instead of an external binary
@@ -729,7 +730,10 @@ nvBinaryAction tc projectRoot pkgPath outDir bin = do
               sdkPath = T.unpack nv.sdk_path
 
               -- Use archs from the rule if specified, otherwise from toolchain
-              targetArchs = if null bin.archs then nv.archs else bin.archs
+              -- nv.archs is [Text], bin.archs is [Gpu], so convert nv.archs
+              nvArchsTyped = mapMaybe textToGpu nv.archs
+              targetArchs :: [Gpu]
+              targetArchs = if null bin.archs then nvArchsTyped else bin.archs
 
               -- CUDA flags for clang
               cudaFlags =
@@ -739,7 +743,7 @@ nvBinaryAction tc projectRoot pkgPath outDir bin = do
                 ]
 
               -- Architecture flags: --cuda-gpu-arch=sm_XX for each arch
-              archFlags = concatMap (\arch -> ["--cuda-gpu-arch=" <> T.unpack arch]) targetArchs
+              archFlags = concatMap (\gpu -> ["--cuda-gpu-arch=" <> T.unpack (gpuToArch gpu)]) targetArchs
 
               -- CUDA SDK include paths (including CCCL for cuda::std::mdspan etc.)
               ccclPath = sdkPath </> "include" </> "cccl"
@@ -780,7 +784,7 @@ nvBinaryAction tc projectRoot pkgPath outDir bin = do
                   aInputKeys = [],
                   aOutputs = [T.pack output],
                   aEnv = Map.empty,
-                  aCoeffects = ["fs:" <> T.pack srcDir, "cuda:" <> T.intercalate "," targetArchs]
+                  aCoeffects = [Filesystem (T.pack srcDir), CoeffectGpu (T.intercalate "," (map gpuToArch targetArchs))]
                 }
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -818,7 +822,7 @@ rustBinaryAction tc projectRoot pkgPath outDir bin = do
               aInputKeys = [],
               aOutputs = [T.pack output],
               aEnv = Map.empty,
-              aCoeffects = ["fs:" <> T.pack srcDir]
+              aCoeffects = [Filesystem (T.pack srcDir)]
             }
 
 -- | Generate --extern flag for a Rust dependency
@@ -865,7 +869,7 @@ rustLibraryAction tc projectRoot pkgPath outDir lib = do
               aInputKeys = [],
               aOutputs = [T.pack output],
               aEnv = Map.empty,
-              aCoeffects = ["fs:" <> T.pack srcDir]
+              aCoeffects = [Filesystem (T.pack srcDir)]
             }
 
 rustEdition :: RustEdition -> String
@@ -921,7 +925,7 @@ haskellBinaryAction tc projectRoot pkgPath outDir bin = do
               -- Include tmpDir/.keep to ensure the temp directory is created
               aOutputs = [T.pack output, T.pack (tmpDir </> ".keep")],
               aEnv = Map.empty,
-              aCoeffects = ["fs:" <> T.pack srcDir]
+              aCoeffects = [Filesystem (T.pack srcDir)]
             }
 
 -- | Generate -i flag for a Haskell dependency
@@ -983,113 +987,80 @@ haskellLibraryAction tc projectRoot pkgPath outDir lib = do
               aInputKeys = [],
               aOutputs = [T.pack hiDir],
               aEnv = Map.empty,
-              aCoeffects = ["fs:" <> T.pack srcDir]
+              aCoeffects = [Filesystem (T.pack srcDir)]
             }
 
 -- | Build a Haskell binary with C++ FFI
 -- This compiles C++ sources to object files, then links them with GHC
 haskellFFIBinaryAction :: Toolchains -> FilePath -> FilePath -> FilePath -> HaskellFFIBinary -> IO (Either BuildError Action)
 haskellFFIBinaryAction tc projectRoot pkgPath outDir bin = do
-  let srcDir = projectRoot </> pkgPath
-      output = outDir </> T.unpack bin.name
-      hsSrcPaths = map (\s -> srcDir </> T.unpack s) bin.hsSrcs
-      cxxSrcPaths = map (\s -> srcDir </> T.unpack s) bin.cxxSrcs
-      cxxHeaderPaths = map (\s -> srcDir </> T.unpack s) bin.cxxHeaders
-
-  -- Hash all source files (Haskell + C++ sources + headers)
   inputHashes <- hashSourceFiles (hsSrcPaths ++ cxxSrcPaths ++ cxxHeaderPaths)
-  case inputHashes of
-    Left err -> pure $ Left err
-    Right hashes -> do
-      let TC.Haskell {ghc = TC.Tool ghcPath, ghc_pkg = TC.Tool ghcPkgPath} = tc.haskell
-          TC.Cxx {cxx = TC.Tool cxxPath, paths = TC.Paths incPaths _} = tc.cxx
-
-          -- Haskell flags
-          -- Find Main.hs in sources, or use the first source if no Main.hs
-          mainSrcFile = case filter (\s -> T.isSuffixOf "Main.hs" s) bin.hsSrcs of
-            (m : _) -> m
-            [] -> headOr "Main.hs" bin.hsSrcs
-          mainSrc = srcDir </> T.unpack mainSrcFile
-          extFlags = map (\e -> "-X" <> T.unpack e) bin.languageExtensions
-
-      -- Resolve package names to IDs (fixes vector-benchmarks conflict)
-      pkgFlags <- resolvePackageIds (T.unpack ghcPkgPath) bin.packages
-
-      let depFlags = concatMap (haskellDepFlag projectRoot outDir) bin.deps
-
-          -- C++ compilation flags
-          cxxIncludeFlags = concatMap (\i -> ["-isystem", i]) (map T.unpack incPaths)
-          localIncludeFlags = concatMap (\i -> ["-I", srcDir </> T.unpack i]) bin.includeDirs
-          -- Always include srcDir for headers
-          allIncludeFlags = ["-I", srcDir] ++ localIncludeFlags ++ cxxIncludeFlags
-
-          -- Extra library flags for linking
-          extraLibFlags = concatMap (\l -> ["-l" <> T.unpack l]) bin.extraLibs
-          extraLibDirFlags = concatMap (\d -> ["-L" <> T.unpack d]) bin.extraLibDirs
-          linkerFlagsStr = map T.unpack bin.linkerFlags
-
-          -- Temporary directory for intermediate files
-          tmpDir = outDir </> T.unpack bin.name <> "-tmp"
-
-          -- Generate object file paths (in tmpDir)
-          cxxObjFiles = map (\s -> tmpDir </> takeBaseName s <> ".o") cxxSrcPaths
-
-          -- Step 1: Compile each C++ source to object file
-          -- We create a shell command that:
-          --   1. mkdir -p tmpDir
-          --   2. Compile each .cpp to .o
-          --   3. Link with GHC
-          mkCxxCompileCmd src obj =
-            unwords $
-              [T.unpack cxxPath, "-c", "-fPIC", "-o", obj]
-                ++ allIncludeFlags
-                ++ [src]
-
-          cxxCompileCmds = zipWith mkCxxCompileCmd cxxSrcPaths cxxObjFiles
-
-          -- Step 2: GHC linking command
-          -- GHC needs: -optl to pass linker flags, object files, and C++ stdlib
-          ghcCmd =
-            unwords $
-              [T.unpack ghcPath, "-o", output, "-hidir", tmpDir, "-odir", tmpDir, "-i" <> srcDir]
-                ++ depFlags
-                ++ pkgFlags
-                ++ extFlags
-                ++ map T.unpack bin.ghcOptions
-                ++ [mainSrc]
-                ++ cxxObjFiles
-                ++ extraLibDirFlags
-                ++ extraLibFlags
-                ++ concatMap (\f -> ["-optl", f]) linkerFlagsStr
-                ++ ["-lstdc++"] -- Link C++ standard library
-
-          -- Combined shell command
-          shellCmd =
-            "mkdir -p "
-              <> tmpDir
-              <> " && "
-              <> intercalate " && " cxxCompileCmds
-              <> " && "
-              <> ghcCmd
-
-          cmd = ["sh", "-c", shellCmd]
-
-      pure $
-        Right
-          Action
-            { aName = "//" <> T.pack pkgPath <> ":" <> bin.name,
-              aCommand = map T.pack cmd,
-              aInputs = hashes,
-              aInputKeys = [],
-              aOutputs = [T.pack output, T.pack (tmpDir </> ".keep")],
-              aEnv = Map.empty,
-              aCoeffects = ["fs:" <> T.pack srcDir]
-            }
+  pkgFlags <- resolvePackageIds (T.unpack ghcPkgPath) bin.packages
+  pure $ mkAction pkgFlags <$> inputHashes
   where
+    srcDir = projectRoot </> pkgPath
+    output = outDir </> T.unpack bin.name
+    hsSrcPaths = map (\s -> srcDir </> T.unpack s) bin.hsSrcs
+    cxxSrcPaths = map (\s -> srcDir </> T.unpack s) bin.cxxSrcs
+    cxxHeaderPaths = map (\s -> srcDir </> T.unpack s) bin.cxxHeaders
+    tmpDir = outDir </> T.unpack bin.name <> "-tmp"
+
+    TC.Haskell {ghc = TC.Tool ghcPath, ghc_pkg = TC.Tool ghcPkgPath} = tc.haskell
+    TC.Cxx {cxx = TC.Tool cxxPath, paths = TC.Paths incPaths _} = tc.cxx
+
+    -- Find Main.hs in sources, or use the first source if no Main.hs
+    mainSrcFile = headOr "Main.hs" $ filter (T.isSuffixOf "Main.hs") bin.hsSrcs ++ bin.hsSrcs
+    mainSrc = srcDir </> T.unpack mainSrcFile
+    extFlags = map (\e -> "-X" <> T.unpack e) bin.languageExtensions
+    depFlags = concatMap (haskellDepFlag projectRoot outDir) bin.deps
+
+    -- C++ compilation flags
+    cxxIncludeFlags = concatMap (\i -> ["-isystem", i]) (map T.unpack incPaths)
+    localIncludeFlags = concatMap (\i -> ["-I", srcDir </> T.unpack i]) bin.includeDirs
+    allIncludeFlags = ["-I", srcDir] ++ localIncludeFlags ++ cxxIncludeFlags
+
+    -- Extra library flags
+    extraLibFlags = concatMap (\l -> ["-l" <> T.unpack l]) bin.extraLibs
+    extraLibDirFlags = concatMap (\d -> ["-L" <> T.unpack d]) bin.extraLibDirs
+    linkerFlagsStr = map T.unpack bin.linkerFlags
+
+    -- Object file paths
+    cxxObjFiles = map (\s -> tmpDir </> takeBaseName s <> ".o") cxxSrcPaths
+
+    mkAction :: [String] -> [Text] -> Action
+    mkAction pkgFlags hashes =
+      Action
+        { aName = "//" <> T.pack pkgPath <> ":" <> bin.name,
+          aCommand = map T.pack cmd,
+          aInputs = hashes,
+          aInputKeys = [],
+          aOutputs = [T.pack output, T.pack (tmpDir </> ".keep")],
+          aEnv = Map.empty,
+          aCoeffects = [Filesystem (T.pack srcDir)]
+        }
+      where
+        mkCxxCompileCmd src obj =
+          unwords $
+            [T.unpack cxxPath, "-c", "-fPIC", "-o", obj] ++ allIncludeFlags ++ [src]
+        cxxCompileCmds = zipWith mkCxxCompileCmd cxxSrcPaths cxxObjFiles
+        ghcCmd =
+          unwords $
+            [T.unpack ghcPath, "-o", output, "-hidir", tmpDir, "-odir", tmpDir, "-i" <> srcDir]
+              ++ depFlags
+              ++ pkgFlags
+              ++ extFlags
+              ++ map T.unpack bin.ghcOptions
+              ++ [mainSrc]
+              ++ cxxObjFiles
+              ++ extraLibDirFlags
+              ++ extraLibFlags
+              ++ concatMap (\f -> ["-optl", f]) linkerFlagsStr
+              ++ ["-lstdc++"]
+        shellCmd = "mkdir -p " <> tmpDir <> " && " <> intercalate " && " cxxCompileCmds <> " && " <> ghcCmd
+        cmd = ["sh", "-c", shellCmd]
+
     takeBaseName :: FilePath -> String
-    takeBaseName path = case reverse (takeWhile (/= '/') (reverse path)) of
-      name -> case break (== '.') name of
-        (base, _) -> base
+    takeBaseName path = fst $ break (== '.') $ reverse $ takeWhile (/= '/') $ reverse path
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Lean Actions
@@ -1188,7 +1159,7 @@ leanBinaryAction tc projectRoot pkgPath outDir bin = do
               aInputKeys = [],
               aOutputs = [T.pack output],
               aEnv = Map.empty,
-              aCoeffects = ["fs:" <> T.pack srcDir]
+              aCoeffects = [Filesystem (T.pack srcDir)]
             }
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -1223,7 +1194,7 @@ genruleAction projectRoot pkgPath outDir gen = do
               aInputKeys = [],
               aOutputs = [T.pack output],
               aEnv = env,
-              aCoeffects = ["fs:" <> T.pack srcDir, "shell"]
+              aCoeffects = [Filesystem (T.pack srcDir), Sandbox "shell"]
             }
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -1234,95 +1205,78 @@ genruleAction projectRoot pkgPath outDir gen = do
 -- Uses spago to compile and bundle, then copies assets to output
 pureScriptAppAction :: Toolchains -> FilePath -> FilePath -> FilePath -> PureScriptApp -> IO (Either BuildError Action)
 pureScriptAppAction tc projectRoot pkgPath outDir app = do
-  let srcDir = projectRoot </> pkgPath
-      appDir = outDir </> T.unpack app.name
-      pursOutputDir = srcDir </> "output"
-      mainModule = T.unpack app.main
-
-      -- Get source globs based on SrcSpec
-      srcGlobs = case app.srcs of
-        SrcExplicit files -> map T.unpack files
-        SrcGlob pattern -> [T.unpack pattern]
-        SrcGlobs patterns -> map T.unpack patterns
-
-  -- Fetch package set and resolve dependencies
   pkgSetResult <- PS.fetchPackageSet app.packageSet
-  case pkgSetResult of
-    Left err -> pure $ Left $ PackageError $ "//" <> T.pack pkgPath <> ":" <> app.name <> ": " <> T.pack (show err)
-    Right pkgSet -> do
-      case PS.resolveDeps pkgSet app.deps of
-        Left err -> pure $ Left $ PackageError $ "//" <> T.pack pkgPath <> ":" <> app.name <> ": " <> T.pack (show err)
-        Right allDeps -> do
-          -- Fetch all packages to cache
+  either (pure . Left . toPkgError) (buildWithPkgSet app) pkgSetResult
+  where
+    srcDir = projectRoot </> pkgPath
+    appDir = outDir </> T.unpack app.name
+    pursOutputDir = srcDir </> "output"
+    mainModule = T.unpack app.main
+    TC.PureScript {purs = TC.Tool pursPath, esbuild = TC.Tool esbuildPath} = tc.purescript
+
+    toPkgError :: PS.PureScriptError -> BuildError
+    toPkgError err = PackageError $ "//" <> T.pack pkgPath <> ":" <> app.name <> ": " <> T.pack (show err)
+
+    srcGlobs :: [String]
+    srcGlobs = srcSpecToGlobs app.srcs
+      where
+        srcSpecToGlobs (SrcExplicit files) = map T.unpack files
+        srcSpecToGlobs (SrcGlob pattern) = [T.unpack pattern]
+        srcSpecToGlobs (SrcGlobs patterns) = map T.unpack patterns
+
+    buildWithPkgSet :: PureScriptApp -> PS.PackageSet -> IO (Either BuildError Action)
+    buildWithPkgSet app' pkgSet
+      | Left err <- PS.resolveDeps pkgSet app'.deps = pure $ Left $ toPkgError err
+      | Right allDeps <- PS.resolveDeps pkgSet app'.deps = do
           fetchResult <- PS.fetchPackages pkgSet allDeps
-          case fetchResult of
-            Left err -> pure $ Left $ PackageError $ "//" <> T.pack pkgPath <> ":" <> app.name <> ": " <> T.pack (show err)
-            Right pkgCacheDir -> do
-              -- Build dep globs from cached packages
-              -- Each package is at: {cache}/packages/{name}-{version}/src/**/*.purs
-              pkgDirs <- listDirectory pkgCacheDir
-              let depGlobs = map (\d -> pkgCacheDir </> d </> "src/**/*.purs") pkgDirs
+          either (pure . Left . toPkgError) buildWithCache fetchResult
 
-              -- Only pass .purs files to purs compile (JS files are handled as FFI automatically)
-              -- Filter srcGlobs to only include .purs patterns
-              let pursGlobs = filter (".purs" `isSuffixOf`) srcGlobs ++ depGlobs
+    buildWithCache :: FilePath -> IO (Either BuildError Action)
+    buildWithCache pkgCacheDir = do
+      pkgDirs <- listDirectory pkgCacheDir
+      let depGlobs = map (\d -> pkgCacheDir </> d </> "src/**/*.purs") pkgDirs
+          pursGlobs = filter (".purs" `isSuffixOf`) srcGlobs ++ depGlobs
+          configFiles =
+            maybe [] (\h -> [srcDir </> T.unpack h]) app.indexHtml
+              ++ maybe [] (\c -> [srcDir </> T.unpack c]) app.styleCss
+      inputHashes <- hashSourceFiles configFiles
+      pure $ mkAction pursGlobs <$> inputHashes
 
-              -- Hash source files and config
-              let configFiles =
-                    maybe [] (\h -> [srcDir </> T.unpack h]) app.indexHtml
-                      ++ maybe [] (\c -> [srcDir </> T.unpack c]) app.styleCss
-
-              inputHashes <- hashSourceFiles configFiles
-              case inputHashes of
-                Left err -> pure $ Left err
-                Right hashes -> do
-                  let TC.PureScript {purs = TC.Tool pursPath, esbuild = TC.Tool esbuildPath} = tc.purescript
-
-                      -- Quote globs for shell (single quotes prevent expansion before purs sees them)
-                      quotedGlobs = unwords $ map (\g -> "'" <> g <> "'") pursGlobs
-
-                      -- Build command:
-                      -- 1. mkdir output directory
-                      -- 2. cd to srcDir (for local sources)
-                      -- 3. purs compile with all source globs -> output/
-                      -- 4. esbuild bundle output/Main/index.js -> appDir/app.js
-                      -- 5. Copy assets to appDir
-                      shellCmd =
-                        unwords
-                          [ "mkdir -p",
-                            appDir,
-                            "&&",
-                            "cd",
-                            srcDir,
-                            "&&",
-                            T.unpack pursPath,
-                            "compile",
-                            quotedGlobs,
-                            "-o",
-                            pursOutputDir,
-                            "&&",
-                            T.unpack esbuildPath,
-                            pursOutputDir </> mainModule </> "index.js",
-                            "--bundle",
-                            "--outfile=" <> appDir </> "app.js"
-                          ]
-                          -- Copy assets after cd to srcDir
-                          ++ maybe "" (\h -> " && cp " <> T.unpack h <> " " <> appDir </> T.unpack h) app.indexHtml
-                          ++ maybe "" (\c -> " && cp " <> T.unpack c <> " " <> appDir </> T.unpack c) app.styleCss
-
-                      cmd = ["sh", "-c", shellCmd]
-
-                  pure $
-                    Right
-                      Action
-                        { aName = "//" <> T.pack pkgPath <> ":" <> app.name,
-                          aCommand = map T.pack cmd,
-                          aInputs = hashes,
-                          aInputKeys = [],
-                          aOutputs = [T.pack appDir],
-                          aEnv = Map.empty,
-                          aCoeffects = ["fs:" <> T.pack srcDir] -- Deps already fetched before build
-                        }
+    mkAction :: [String] -> [Text] -> Action
+    mkAction pursGlobs hashes =
+      Action
+        { aName = "//" <> T.pack pkgPath <> ":" <> app.name,
+          aCommand = map T.pack cmd,
+          aInputs = hashes,
+          aInputKeys = [],
+          aOutputs = [T.pack appDir],
+          aEnv = Map.empty,
+          aCoeffects = [Filesystem (T.pack srcDir)]
+        }
+      where
+        quotedGlobs = unwords $ map (\g -> "'" <> g <> "'") pursGlobs
+        shellCmd =
+          unwords
+            [ "mkdir -p",
+              appDir,
+              "&&",
+              "cd",
+              srcDir,
+              "&&",
+              T.unpack pursPath,
+              "compile",
+              quotedGlobs,
+              "-o",
+              pursOutputDir,
+              "&&",
+              T.unpack esbuildPath,
+              pursOutputDir </> mainModule </> "index.js",
+              "--bundle",
+              "--outfile=" <> appDir </> "app.js"
+            ]
+            ++ maybe "" (\h -> " && cp " <> T.unpack h <> " " <> appDir </> T.unpack h) app.indexHtml
+            ++ maybe "" (\c -> " && cp " <> T.unpack c <> " " <> appDir </> T.unpack c) app.styleCss
+        cmd = ["sh", "-c", shellCmd]
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Rust Crates.io Actions
@@ -1454,78 +1408,59 @@ getChildrenMaxRss = allocaBytes rusageSize $ \ptr -> do
 runAction :: Action -> IO ActionResult
 runAction Action {..} = do
   startTime <- getCurrentTime
-
-  let (exe, args) = case map T.unpack aCommand of
-        [] -> ("", [])
-        (e : as) -> (e, as)
-
-  -- Ensure output directories exist (for all outputs)
   mapM_ (createDirectoryIfMissing True . takeDirectory . T.unpack) aOutputs
-
-  -- Track peak memory before execution
   startMaxRss <- getChildrenMaxRss
-
-  result <-
-    if null exe
-      then pure $ Left "Empty command"
-      else do
-        -- Merge action env with inherited environment
-        baseEnv <- getEnvironment
-        let actionEnv = [(T.unpack k, T.unpack v) | (k, v) <- Map.toList aEnv]
-            fullEnv = actionEnv ++ baseEnv -- Action env takes precedence
-        let cp =
-              (proc exe args)
-                { std_in = NoStream,
-                  std_out = CreatePipe,
-                  std_err = CreatePipe,
-                  env = Just fullEnv
-                }
-
-        r <- tryIOError $ do
-          (_, Just hOut, Just hErr, ph) <- createProcess cp
-          stdout <- hGetContents hOut
-          stderr <- hGetContents hErr
-          -- Force evaluation before waiting
-          _ <- evaluate (length stdout)
-          _ <- evaluate (length stderr)
-          exitCode <- waitForProcess ph
-          pure (exitCode, stdout, stderr)
-
-        case r of
-          Left ioErr -> pure $ Left (show ioErr)
-          Right res -> pure $ Right res
-
-  -- Track peak memory after execution
+  result <- executeCommand (parseCommand aCommand) aEnv
   endMaxRss <- getChildrenMaxRss
-  let peakMemoryKB = if endMaxRss > startMaxRss then endMaxRss - startMaxRss else endMaxRss
-
   endTime <- getCurrentTime
+  let peakMemoryKB = if endMaxRss > startMaxRss then endMaxRss - startMaxRss else endMaxRss
+  pure $ mkResult aOutputs startTime endTime peakMemoryKB result
+  where
+    parseCommand :: [Text] -> (String, [String])
+    parseCommand cmds
+      | [] <- map T.unpack cmds = ("", [])
+      | (e : as) <- map T.unpack cmds = (e, as)
 
-  case result of
-    Left errMsg ->
-      pure
-        ActionResult
-          { arOutputs = aOutputs,
-            arExitCode = 127, -- Command not found
-            arStdout = "",
-            arStderr = T.pack errMsg,
-            arStartTime = startTime,
-            arEndTime = endTime,
-            arPeakMemoryKB = peakMemoryKB
-          }
-    Right (exitCode, stdout, stderr) ->
-      pure
-        ActionResult
-          { arOutputs = aOutputs,
-            arExitCode = case exitCode of
-              ExitSuccess -> 0
-              ExitFailure n -> n,
-            arStdout = T.pack stdout,
-            arStderr = T.pack stderr,
-            arStartTime = startTime,
-            arEndTime = endTime,
-            arPeakMemoryKB = peakMemoryKB
-          }
+    executeCommand :: (String, [String]) -> Map Text Text -> IO (Either String (ExitCode, String, String))
+    executeCommand (exe, _) _
+      | null exe = pure $ Left "Empty command"
+    executeCommand (exe, args) envMap = do
+      baseEnv <- getEnvironment
+      let actionEnv = [(T.unpack k, T.unpack v) | (k, v) <- Map.toList envMap]
+          fullEnv = actionEnv ++ baseEnv
+          cp =
+            (proc exe args)
+              { std_in = NoStream,
+                std_out = CreatePipe,
+                std_err = CreatePipe,
+                env = Just fullEnv
+              }
+      r <- tryIOError $ do
+        (_, Just hOut, Just hErr, ph) <- createProcess cp
+        stdout <- hGetContents hOut
+        stderr <- hGetContents hErr
+        _ <- evaluate (length stdout)
+        _ <- evaluate (length stderr)
+        exitCode <- waitForProcess ph
+        pure (exitCode, stdout, stderr)
+      pure $ either (Left . show) Right r
+
+    mkResult :: [Text] -> Time.UTCTime -> Time.UTCTime -> Word64 -> Either String (ExitCode, String, String) -> ActionResult
+    mkResult outputs start end peakMem result =
+      ActionResult
+        { arOutputs = outputs,
+          arExitCode = exitCodeInt result,
+          arStdout = either (const "") (\(_, o, _) -> T.pack o) result,
+          arStderr = either T.pack (\(_, _, e) -> T.pack e) result,
+          arStartTime = start,
+          arEndTime = end,
+          arPeakMemoryKB = peakMem
+        }
+
+    exitCodeInt :: Either String (ExitCode, String, String) -> Int
+    exitCodeInt (Left _) = 127
+    exitCodeInt (Right (ExitSuccess, _, _)) = 0
+    exitCodeInt (Right (ExitFailure n, _, _)) = n
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Command Execution (low-level)
