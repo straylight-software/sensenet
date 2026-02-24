@@ -74,16 +74,20 @@ let sensenet-dice =
 let sensenet-build =
       (A.haskellLibrary "sensenet-build"
         [ "SenseNet/Build.hs"
+        , "SenseNet/Log.hs"
         , "SenseNet/Nix.hs"
         , "SenseNet/PureScript.hs"
         , "SenseNet/RustCrate.hs"
         ])
         with packages =
-          [ "base"
+          [ "aeson"
+          , "base"
           , "bytestring"
           , "containers"
           , "directory"
           , "filepath"
+          , "hostname"
+          , "katip"
           , "process"
           , "text"
           , "time"

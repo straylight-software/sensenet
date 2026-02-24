@@ -395,11 +395,15 @@ in
             haskell-packages.crypton
             haskell-packages.dhall
             haskell-packages.foldl
+            haskell-packages.hostname
+            haskell-packages.katip
             haskell-packages.megaparsec
             haskell-packages.memory
+            haskell-packages.microlens
             haskell-packages.optparse-applicative
             haskell-packages.shelly
             haskell-packages.temporary
+            haskell-packages.text-short
             haskell-packages.unordered-containers
             haskell-packages.vector
 
