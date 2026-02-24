@@ -36,6 +36,7 @@ where
 
 import Control.Exception (evaluate)
 import Control.Monad (forM)
+import Data.List (intercalate, isSuffixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -74,6 +75,7 @@ import SenseNet.IR
     HaskellLibrary (..),
     LeanBinary (..),
     NixCxxBinary (..),
+    NvBinary (..),
     Package (..),
     PureScriptApp (..),
     Rule (..),
@@ -517,6 +519,7 @@ ruleToAction tc projectRoot pkgPath outDir = \case
   RHaskellFFIBinary bin -> haskellFFIBinaryAction tc projectRoot pkgPath outDir bin
   RLeanBinary bin -> leanBinaryAction tc projectRoot pkgPath outDir bin
   RNixCxxBinary bin -> nixCxxBinaryAction tc projectRoot pkgPath outDir bin
+  RNvBinary bin -> nvBinaryAction tc projectRoot pkgPath outDir bin
   RPureScriptApp app -> pureScriptAppAction tc projectRoot pkgPath outDir app
   RGenrule gen -> genruleAction projectRoot pkgPath outDir gen
   RCratesIo crate -> cratesIoAction tc projectRoot pkgPath outDir crate
@@ -700,6 +703,82 @@ resolveNixDeps deps = do
   case result of
     Left err -> pure $ Left $ CommandFailed "nix" 1 err
     Right flags -> pure $ Right flags
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- NVIDIA/CUDA Actions
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Build an NVIDIA/CUDA binary using clang with CUDA support
+-- Uses the Nv toolchain which provides clang with --cuda-gpu-arch flags
+nvBinaryAction :: Toolchains -> FilePath -> FilePath -> FilePath -> NvBinary -> IO (Either BuildError Action)
+nvBinaryAction tc projectRoot pkgPath outDir bin = do
+  case tc.nv of
+    Nothing ->
+      pure $ Left $ CommandFailed "nv" 1 "NVIDIA toolchain not configured in .sensenet/toolchains.dhall"
+    Just nv -> do
+      let srcDir = projectRoot </> pkgPath
+          output = outDir </> T.unpack bin.name
+          srcPaths = map (\s -> srcDir </> T.unpack s) bin.srcs
+
+      inputHashes <- hashSourceFiles srcPaths
+      case inputHashes of
+        Left err -> pure $ Left err
+        Right hashes -> do
+          let TC.Tool clangPath = nv.clang
+              TC.Paths sdkIncludes sdkLibs = nv.sdk
+              sdkPath = T.unpack nv.sdk_path
+
+              -- Use archs from the rule if specified, otherwise from toolchain
+              targetArchs = if null bin.archs then nv.archs else bin.archs
+
+              -- CUDA flags for clang
+              cudaFlags =
+                [ "--cuda-path=" <> sdkPath,
+                  "-x",
+                  "cuda" -- Treat input as CUDA
+                ]
+
+              -- Architecture flags: --cuda-gpu-arch=sm_XX for each arch
+              archFlags = concatMap (\arch -> ["--cuda-gpu-arch=" <> T.unpack arch]) targetArchs
+
+              -- CUDA SDK include paths
+              cudaIncludes = concatMap (\i -> ["-isystem", T.unpack i]) sdkIncludes
+
+              -- CUDA SDK library paths (need -B for crt files, -L for libs)
+              cudaLibs = concatMap (\l -> ["-B" <> T.unpack l, "-L" <> T.unpack l]) sdkLibs
+
+              -- Link against CUDA runtime
+              linkFlags = ["-lcudart"]
+
+              -- Get C++ stdlib paths from the cxx toolchain embedded in nv
+              -- Use -B for crt startup files (Scrt1.o, crti.o, etc.) and -L for libraries
+              TC.Paths cxxIncludes cxxLibs = nv.cxx.paths
+              cxxIncludeFlags = concatMap (\i -> ["-isystem", T.unpack i]) cxxIncludes
+              cxxLibFlags = concatMap (\l -> ["-B" <> T.unpack l, "-L" <> T.unpack l]) cxxLibs
+
+              cmd =
+                [T.unpack clangPath]
+                  ++ cudaFlags
+                  ++ archFlags
+                  ++ cudaIncludes
+                  ++ cxxIncludeFlags
+                  ++ srcPaths
+                  ++ cudaLibs
+                  ++ cxxLibFlags
+                  ++ linkFlags
+                  ++ ["-o", output]
+
+          pure $
+            Right
+              Action
+                { aName = "//" <> T.pack pkgPath <> ":" <> bin.name,
+                  aCommand = map T.pack cmd,
+                  aInputs = hashes,
+                  aInputKeys = [],
+                  aOutputs = [T.pack output],
+                  aEnv = Map.empty,
+                  aCoeffects = ["fs:" <> T.pack srcDir, "cuda:" <> T.intercalate "," targetArchs]
+                }
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Rust Actions
@@ -1009,9 +1088,6 @@ haskellFFIBinaryAction tc projectRoot pkgPath outDir bin = do
       name -> case break (== '.') name of
         (base, _) -> base
 
-    intercalate :: String -> [String] -> String
-    intercalate sep = foldr1 (\a b -> a <> sep <> b)
-
 -- ════════════════════════════════════════════════════════════════════════════
 -- Lean Actions
 -- ════════════════════════════════════════════════════════════════════════════
@@ -1027,21 +1103,76 @@ leanBinaryAction tc projectRoot pkgPath outDir bin = do
     Left err -> pure $ Left err
     Right hashes -> do
       let TC.Lean {lean = TC.Tool leanPath, leanc = TC.Tool leancPath} = tc.lean
-          mainSrc = srcDir </> T.unpack (headOr "Main.lean" bin.srcs)
-          cFile = output <> ".c"
-          -- Lean requires two steps: lean -c file.c file.lean && leanc -o binary file.c
-          shellCmd =
-            T.unpack leanPath
-              <> " -c "
-              <> cFile
-              <> " "
-              <> mainSrc
-              <> " && "
-              <> T.unpack leancPath
-              <> " -o "
-              <> output
-              <> " "
-              <> cFile
+          buildDir = outDir </> "build"
+
+          -- For multi-file projects with a root module, we need to:
+          -- 1. Create a directory structure matching the module hierarchy
+          -- 2. Symlink source files into that structure
+          -- 3. Compile each module to .olean AND .c in dependency order
+          -- 4. Link all .c files together
+          shellCmd = case bin.rootModule of
+            Nothing ->
+              -- Single file: simple compile
+              let mainSrc = srcDir </> T.unpack (headOr "Main.lean" bin.srcs)
+                  cFile = output <> ".c"
+               in T.unpack leanPath
+                    <> " -c "
+                    <> cFile
+                    <> " "
+                    <> mainSrc
+                    <> " && "
+                    <> T.unpack leancPath
+                    <> " -o "
+                    <> output
+                    <> " "
+                    <> cFile
+            Just rootMod ->
+              -- Multi-file: create module structure, compile, link
+              let rootModStr = T.unpack rootMod
+                  moduleDir = buildDir </> rootModStr
+
+                  -- Copy source file into the module directory structure
+                  -- Derivation.lean -> build/Straylight/Derivation.lean
+                  copyFile src =
+                    let srcFile = srcDir </> T.unpack src
+                        targetFile = moduleDir </> T.unpack src
+                     in "cp -f " <> srcFile <> " " <> targetFile
+
+                  -- Compile each source file (now in proper location)
+                  -- Produces both .olean and .c
+                  compileModule src =
+                    let baseName = takeWhile (/= '.') (T.unpack src)
+                        targetFile = moduleDir </> T.unpack src
+                        oleanFile = moduleDir </> baseName <> ".olean"
+                        cFile = moduleDir </> baseName <> ".c"
+                     in "LEAN_PATH="
+                          <> buildDir
+                          <> " "
+                          <> T.unpack leanPath
+                          <> " -o "
+                          <> oleanFile
+                          <> " -c "
+                          <> cFile
+                          <> " -R "
+                          <> buildDir
+                          <> " "
+                          <> targetFile
+
+                  -- Get C file path for each source
+                  getCFile src =
+                    let baseName = takeWhile (/= '.') (T.unpack src)
+                     in moduleDir </> baseName <> ".c"
+
+                  -- Build commands
+                  mkdirCmd = "mkdir -p " <> moduleDir
+                  copyCmds = map copyFile bin.srcs
+                  compileCmds = map compileModule bin.srcs
+                  cFiles = map getCFile bin.srcs
+                  linkCmd = T.unpack leancPath <> " -o " <> output <> " " <> unwords cFiles
+
+                  -- Chain all commands
+                  allCmds = [mkdirCmd] ++ copyCmds ++ compileCmds ++ [linkCmd]
+               in intercalate " && " allCmds
 
           cmd = ["sh", "-c", shellCmd]
 
@@ -1129,8 +1260,9 @@ pureScriptAppAction tc projectRoot pkgPath outDir app = do
               pkgDirs <- listDirectory pkgCacheDir
               let depGlobs = map (\d -> pkgCacheDir </> d </> "src/**/*.purs") pkgDirs
 
-              -- All source globs (app + deps)
-              let allGlobs = srcGlobs ++ depGlobs
+              -- Only pass .purs files to purs compile (JS files are handled as FFI automatically)
+              -- Filter srcGlobs to only include .purs patterns
+              let pursGlobs = filter (".purs" `isSuffixOf`) srcGlobs ++ depGlobs
 
               -- Hash source files and config
               let configFiles =
@@ -1144,7 +1276,7 @@ pureScriptAppAction tc projectRoot pkgPath outDir app = do
                   let TC.PureScript {purs = TC.Tool pursPath, esbuild = TC.Tool esbuildPath} = tc.purescript
 
                       -- Quote globs for shell (single quotes prevent expansion before purs sees them)
-                      quotedGlobs = unwords $ map (\g -> "'" <> g <> "'") allGlobs
+                      quotedGlobs = unwords $ map (\g -> "'" <> g <> "'") pursGlobs
 
                       -- Build command:
                       -- 1. mkdir output directory
