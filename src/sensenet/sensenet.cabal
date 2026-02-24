@@ -15,6 +15,10 @@ build-type:         Simple
 executable sensenet
     main-is:          Main.hs
     other-modules:
+        DhallFast.Core
+        DhallFast.Convert
+        DhallFast.Eval
+        DhallFast.Input
         SenseNet.Build
         SenseNet.DICE
         SenseNet.Dhall
@@ -30,14 +34,21 @@ executable sensenet
         bytestring,
         containers,
         crypton,
+        deepseq,
         dhall,
         directory,
+        either,
         filepath,
+        hashable,
         memory,
+        microlens,
         process,
         text,
+        text-short,
         time,
-        unix
+        unix,
+        unordered-containers,
+        vector
     default-language: GHC2024
     default-extensions:
         LambdaCase

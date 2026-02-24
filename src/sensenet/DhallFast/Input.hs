@@ -74,24 +74,24 @@ import System.FilePath (takeDirectory)
 -- >>> input auto "True" :: IO Bool
 -- True
 input ::
+  -- | The decoder for the Dhall value
   Dhall.Decoder a ->
-  -- ^ The decoder for the Dhall value
+  -- | The Dhall program
   Text ->
-  -- ^ The Dhall program
+  -- | The decoded value in Haskell
   IO a
-  -- ^ The decoded value in Haskell
 input = inputWithSettings Dhall.defaultInputSettings
 
 -- | Extend 'input' with custom settings
 inputWithSettings ::
   Dhall.InputSettings ->
+  -- | The decoder for the Dhall value
   Dhall.Decoder a ->
-  -- ^ The decoder for the Dhall value
+  -- | The Dhall program
   Text ->
-  -- ^ The Dhall program
+  -- | The decoded value in Haskell
   IO a
-  -- ^ The decoded value in Haskell
-inputWithSettings settings decoder@Decoder {..} text = do
+inputWithSettings settings Decoder {..} text = do
   -- Parse
   let sourceName = view Dhall.sourceName settings
   parsed <- case Parser.exprFromText sourceName text of
@@ -120,23 +120,23 @@ inputWithSettings settings decoder@Decoder {..} text = do
 --
 -- Uses DhallFast's optimized normalizer for 2-7x faster evaluation.
 inputFile ::
+  -- | The decoder for the Dhall value
   Dhall.Decoder a ->
-  -- ^ The decoder for the Dhall value
+  -- | The path to the Dhall program
   FilePath ->
-  -- ^ The path to the Dhall program
+  -- | The decoded value in Haskell
   IO a
-  -- ^ The decoded value in Haskell
 inputFile = inputFileWithSettings Dhall.defaultEvaluateSettings
 
 -- | Extend 'inputFile' with custom settings
 inputFileWithSettings ::
   Dhall.EvaluateSettings ->
+  -- | The decoder for the Dhall value
   Dhall.Decoder a ->
-  -- ^ The decoder for the Dhall value
+  -- | The path to the Dhall program
   FilePath ->
-  -- ^ The path to the Dhall program
+  -- | The decoded value in Haskell
   IO a
-  -- ^ The decoded value in Haskell
 inputFileWithSettings settings decoder path = do
   text <- Text.IO.readFile path
   -- Build InputSettings using lenses since the constructor isn't exported
@@ -151,19 +151,19 @@ inputFileWithSettings settings decoder path = do
 --
 -- Returns the fully normalized AST.
 inputExpr ::
+  -- | The Dhall program
   Text ->
-  -- ^ The Dhall program
+  -- | The fully normalized AST
   IO (Expr Src Void)
-  -- ^ The fully normalized AST
 inputExpr = inputExprWithSettings Dhall.defaultInputSettings
 
 -- | Extend 'inputExpr' with custom settings
 inputExprWithSettings ::
   Dhall.InputSettings ->
+  -- | The Dhall program
   Text ->
-  -- ^ The Dhall program
+  -- | The fully normalized AST
   IO (Expr Src Void)
-  -- ^ The fully normalized AST
 inputExprWithSettings settings text = do
   -- Parse
   let sourceName = view Dhall.sourceName settings

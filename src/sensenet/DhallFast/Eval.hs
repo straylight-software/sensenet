@@ -39,16 +39,11 @@ module DhallFast.Eval
   )
 where
 
-import qualified Data.Array as A
 import Data.Int (Int64)
 import Data.List (sortOn)
 import Data.Sequence (Seq, ViewL (..))
-import qualified Data.Sequence as Seq
-import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Short as TS
-import Data.Vector (Vector)
-import qualified Data.Vector as V
+import Data.Sequence qualified as Seq
+import Data.Text.Short qualified as TS
 import Data.Word (Word64)
 import DhallFast.Core
 
@@ -184,7 +179,7 @@ eval !env = \case
     let !vf = eval env f
         !vx = eval env x
      in vApp vf vx
-  ELet name _mty val body ->
+  ELet _name _mty val body ->
     let !vval = eval env val
         !env' = extendEnv vval env
      in eval env' body
@@ -353,7 +348,7 @@ evalMerge handlers union mty = case union of
 -- | Apply a value to an argument
 vApp :: Val -> Val -> Val
 vApp !f !x = case f of
-  VLam _ _ (VClosure name env body) ->
+  VLam _ _ (VClosure _name env body) ->
     let !env' = extendEnv x env
      in eval env' body
   VPrimFun _ pf -> pf x
@@ -384,7 +379,7 @@ vProject !v names
 
 -- | With expression
 vWith :: Val -> [Name] -> Val -> Val
-vWith !v [] !val = val
+vWith !_v [] !val = val
 vWith !v (name : rest) !val = case v of
   VRecordLit fields ->
     let existing = maybe (VRecordLit emptyFields) id (lookupField name fields)
@@ -433,15 +428,15 @@ evalBuiltin = \case
   BBytes -> error "Bytes type not yet supported"
   BNaturalFold -> VPrimFun (internName "Natural/fold") $ \n ->
     VPrimFun (internName "Natural/fold/1") $ \ty ->
-      VPrimFun (internName "Natural/fold/2") $ \succ ->
+      VPrimFun (internName "Natural/fold/2") $ \succFn ->
         VPrimFun (internName "Natural/fold/3") $ \zero ->
           case n of
             VNaturalLit 0 -> zero
-            VNaturalLit m -> go (m - 1) (vApp succ zero)
+            VNaturalLit m -> go (m - 1) (vApp succFn zero)
               where
                 go 0 !acc = acc
-                go k !acc = go (k - 1) (vApp succ acc)
-            _ -> VApp (VApp (VApp (VApp (VBuiltin BNaturalFold) n) ty) succ) zero
+                go k !acc = go (k - 1) (vApp succFn acc)
+            _ -> VApp (VApp (VApp (VApp (VBuiltin BNaturalFold) n) ty) succFn) zero
   BNaturalBuild -> VPrimFun (internName "Natural/build") $ \f ->
     vApp
       ( vApp

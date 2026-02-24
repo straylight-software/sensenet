@@ -834,9 +834,8 @@ haskellBinaryAction tc projectRoot pkgPath outDir bin = do
   case inputHashes of
     Left err -> pure $ Left err
     Right hashes -> do
-      let TC.Haskell {ghc = TC.Tool ghcPath} = tc.haskell
+      let TC.Haskell {ghc = TC.Tool ghcPath, ghc_pkg = TC.Tool ghcPkgPath} = tc.haskell
           mainSrc = srcDir </> T.unpack (headOr "Main.hs" bin.srcs)
-          pkgFlags = concatMap (\p -> ["-package", T.unpack p]) bin.packages
           extFlags = map (\e -> "-X" <> T.unpack e) bin.languageExtensions
 
           -- Build -i flags for library dependencies
@@ -846,7 +845,10 @@ haskellBinaryAction tc projectRoot pkgPath outDir bin = do
           -- This prevents polluting the source tree
           tmpDir = outDir </> T.unpack bin.name <> "-tmp"
 
-          cmd =
+      -- Resolve package names to IDs (fixes vector-benchmarks conflict)
+      pkgFlags <- resolvePackageIds (T.unpack ghcPkgPath) bin.packages
+
+      let cmd =
             [T.unpack ghcPath, "-o", output, "-hidir", tmpDir, "-odir", tmpDir, "-i" <> srcDir]
               ++ depFlags
               ++ pkgFlags
@@ -898,14 +900,16 @@ haskellLibraryAction tc projectRoot pkgPath outDir lib = do
   case inputHashes of
     Left err -> pure $ Left err
     Right hashes -> do
-      let TC.Haskell {ghc = TC.Tool ghcPath} = tc.haskell
-          pkgFlags = concatMap (\p -> ["-package", T.unpack p]) lib.packages
+      let TC.Haskell {ghc = TC.Tool ghcPath, ghc_pkg = TC.Tool ghcPkgPath} = tc.haskell
           extFlags = map (\e -> "-X" <> T.unpack e) lib.languageExtensions
 
           -- Build -i flags for library dependencies
           depFlags = concatMap (haskellDepFlag projectRoot outDir) lib.deps
 
-          -- Compile to interface files and object files
+      -- Resolve package names to IDs (fixes vector-benchmarks conflict)
+      pkgFlags <- resolvePackageIds (T.unpack ghcPkgPath) lib.packages
+
+      let -- Compile to interface files and object files
           -- --make mode allows GHC to reuse existing .hi files and handle deps
           cmd =
             [T.unpack ghcPath, "--make", "-c", "-hidir", hiDir, "-odir", hiDir, "-i" <> srcDir]
@@ -942,7 +946,7 @@ haskellFFIBinaryAction tc projectRoot pkgPath outDir bin = do
   case inputHashes of
     Left err -> pure $ Left err
     Right hashes -> do
-      let TC.Haskell {ghc = TC.Tool ghcPath} = tc.haskell
+      let TC.Haskell {ghc = TC.Tool ghcPath, ghc_pkg = TC.Tool ghcPkgPath} = tc.haskell
           TC.Cxx {cxx = TC.Tool cxxPath, paths = TC.Paths incPaths _} = tc.cxx
 
           -- Haskell flags
@@ -951,9 +955,12 @@ haskellFFIBinaryAction tc projectRoot pkgPath outDir bin = do
             (m : _) -> m
             [] -> headOr "Main.hs" bin.hsSrcs
           mainSrc = srcDir </> T.unpack mainSrcFile
-          pkgFlags = concatMap (\p -> ["-package", T.unpack p]) bin.packages
           extFlags = map (\e -> "-X" <> T.unpack e) bin.languageExtensions
-          depFlags = concatMap (haskellDepFlag projectRoot outDir) bin.deps
+
+      -- Resolve package names to IDs (fixes vector-benchmarks conflict)
+      pkgFlags <- resolvePackageIds (T.unpack ghcPkgPath) bin.packages
+
+      let depFlags = concatMap (haskellDepFlag projectRoot outDir) bin.deps
 
           -- C++ compilation flags
           cxxIncludeFlags = concatMap (\i -> ["-isystem", i]) (map T.unpack incPaths)
@@ -1424,6 +1431,22 @@ runCommand exe args = do
     ExitSuccess -> pure $ Right ()
     ExitFailure code ->
       pure $ Left $ CommandFailed (T.pack exe) code (T.pack stderr)
+
+-- | Resolve package names to package IDs using ghc-pkg
+-- This fixes issues with multiple packages having the same name (e.g., vector and vector-benchmarks)
+resolvePackageIds :: FilePath -> [Text] -> IO [String]
+resolvePackageIds ghcPkgPath packages = do
+  ids <- forM packages $ \pkg -> do
+    (exitCode, stdout, _stderr) <- readProcessWithExitCode ghcPkgPath ["--simple-output", "field", T.unpack pkg, "id"] ""
+    case exitCode of
+      ExitSuccess ->
+        -- Take first line, trim whitespace
+        let pkgId = takeWhile (/= '\n') $ dropWhile (== ' ') stdout
+         in pure ["-package-id", pkgId]
+      ExitFailure _ ->
+        -- Fallback to -package if ghc-pkg fails
+        pure ["-package", T.unpack pkg]
+  pure $ concat ids
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Helpers

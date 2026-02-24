@@ -13,18 +13,16 @@ module DhallFast.Convert
   )
 where
 
-import qualified Data.ByteString.Short as SBS
-import qualified Data.Foldable as F
+import Data.ByteString.Short qualified as SBS
+import Data.Foldable qualified as F
 import Data.List.NonEmpty (NonEmpty (..))
-import qualified Data.Sequence as Seq
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Short as TS
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Text.Short qualified as TS
 import Data.Void (Void)
-import qualified Dhall.Core as D
-import qualified Dhall.Map as DM
-import qualified Dhall.Src as Src
+import Dhall.Core qualified as D
+import Dhall.Map qualified as DM
+import Dhall.Src qualified as Src
 import DhallFast.Core
 
 --------------------------------------------------------------------------------
@@ -192,7 +190,7 @@ fromDhall = go []
 
     -- Find de Bruijn index for variable
     findVar :: Text -> Int -> [Text] -> Int -> Int
-    findVar name !targetIdx [] !acc =
+    findVar name !targetIdx [] !_acc =
       error $ "Unbound variable: " ++ T.unpack name ++ "@" ++ show targetIdx
     findVar name !targetIdx (x : xs) !acc
       | x == name = if targetIdx == 0 then acc else findVar name (targetIdx - 1) xs (acc + 1)
@@ -241,6 +239,7 @@ toDhall = go []
         let nameT = nameText name
             scope' = nameT : scope
          in D.Pi Nothing nameT (go scope domain) (go scope' codomain)
+      EApp (EBuiltin BSome) x -> D.Some (go scope x)
       EApp f x -> D.App (go scope f) (go scope x)
       ELet name mty val body ->
         let nameT = nameText name

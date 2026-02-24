@@ -55,20 +55,19 @@ where
 import Control.DeepSeq (NFData (..))
 import Control.Monad.ST (ST, runST)
 import Data.ByteString.Short (ShortByteString)
-import qualified Data.ByteString.Short as SBS
-import qualified Data.HashMap.Strict as HM
+import Data.ByteString.Short qualified as SBS
+import Data.HashMap.Strict qualified as HM
 import Data.Hashable (Hashable (..))
 import Data.IORef
 import Data.Int (Int64)
 import Data.List (sortOn)
 import Data.Sequence (Seq)
-import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import Data.Text.Short (ShortText)
-import qualified Data.Text.Short as TS
+import Data.Text.Short qualified as TS
 import Data.Vector (Vector)
-import qualified Data.Vector as V
-import qualified Data.Vector.Mutable as MV
+import Data.Vector qualified as V
+import Data.Vector.Mutable qualified as MV
 import Data.Word (Word64)
 import GHC.Generics (Generic)
 import System.IO.Unsafe (unsafePerformIO)
