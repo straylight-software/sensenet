@@ -15,11 +15,10 @@
 #include <cstdio>
 #include <numeric>
 
-// use kokkos mdspan for device compatibility
-// (std::mdspan not yet in cuda::std::)
-#include <experimental/mdspan>
+// use CCCL cuda::std::mdspan for device compatibility
+#include <cuda/std/mdspan>
 
-namespace stdex = std::experimental;
+namespace cudastd = cuda::std;
 
 namespace straylight::examples {
 
@@ -33,8 +32,8 @@ template <typename T>
 __global__ void matmul_kernel(const T* __restrict__ a_data, const T* __restrict__ b_data,
                               T* __restrict__ c_data, int M, int K, int N) {
   // create mdspan views inside kernel
-  using matrix_t = stdex::mdspan<const T, stdex::dextents<int, 2>>;
-  using out_matrix_t = stdex::mdspan<T, stdex::dextents<int, 2>>;
+  using matrix_t = cudastd::mdspan<const T, cudastd::dextents<int, 2>>;
+  using out_matrix_t = cudastd::mdspan<T, cudastd::dextents<int, 2>>;
 
   matrix_t A{a_data, M, K};
   matrix_t B{b_data, K, N};
@@ -46,10 +45,10 @@ __global__ void matmul_kernel(const T* __restrict__ a_data, const T* __restrict_
   if (row < M && col < N) {
     T sum = 0;
     for (int k = 0; k < K; ++k) {
-      // use operator[] for C++23 multidimensional subscript
-      sum += A[row, k] * B[k, col];
+      // use operator() for mdspan element access
+      sum += A(row, k) * B(k, col);
     }
-    C[row, col] = sum;
+    C(row, col) = sum;
   }
 }
 

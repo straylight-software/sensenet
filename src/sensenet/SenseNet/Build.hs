@@ -741,8 +741,11 @@ nvBinaryAction tc projectRoot pkgPath outDir bin = do
               -- Architecture flags: --cuda-gpu-arch=sm_XX for each arch
               archFlags = concatMap (\arch -> ["--cuda-gpu-arch=" <> T.unpack arch]) targetArchs
 
-              -- CUDA SDK include paths
-              cudaIncludes = concatMap (\i -> ["-isystem", T.unpack i]) sdkIncludes
+              -- CUDA SDK include paths (including CCCL for cuda::std::mdspan etc.)
+              ccclPath = sdkPath </> "include" </> "cccl"
+              cudaIncludes =
+                concatMap (\i -> ["-isystem", T.unpack i]) sdkIncludes
+                  ++ ["-isystem", ccclPath]
 
               -- CUDA SDK library paths (need -B for crt files, -L for libs)
               cudaLibs = concatMap (\l -> ["-B" <> T.unpack l, "-L" <> T.unpack l]) sdkLibs
