@@ -17,6 +17,8 @@
   either,
   filepath,
   hashable,
+  hostname,
+  katip,
   memory,
   microlens,
   process,
@@ -42,6 +44,8 @@ let
     either
     filepath
     hashable
+    hostname
+    katip
     memory
     microlens
     process

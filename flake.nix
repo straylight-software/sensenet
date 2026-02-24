@@ -131,6 +131,8 @@
               either
               filepath
               hashable
+              hostname
+              katip
               memory
               microlens
               process

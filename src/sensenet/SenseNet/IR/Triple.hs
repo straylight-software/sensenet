@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- |
@@ -230,7 +231,11 @@ data Triple = Triple
 -- | Render triple to text (e.g., "x86_64-linux-znver4")
 tripleToText :: Triple -> Text
 tripleToText t =
-  archToText t.arch <> "-" <> osToText t.os <> "-" <> cpuToText t.cpu
+  archToText t.arch
+    <> "-"
+    <> osToText t.os
+    <> "-"
+    <> cpuToText t.cpu
     <> case t.gpu of
       GpuNone -> ""
       g -> "-" <> gpuToArch g

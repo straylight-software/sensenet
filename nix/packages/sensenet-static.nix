@@ -31,19 +31,29 @@ let
     isExecutable = true;
 
     executableHaskellDepends = with haskellPackages; [
+      aeson
       async
       base
       bytestring
       containers
       crypton
+      deepseq
       dhall
       directory
+      either
       filepath
+      hashable
+      hostname
+      katip
       memory
+      microlens
       process
       text
+      text-short
       time
       unix
+      unordered-containers
+      vector
     ];
 
     # Static linking flags
