@@ -27,8 +27,9 @@ import SenseNet.IR (Dep (..), Package (..), Rule (..), ruleDeps, ruleKind, ruleN
 import SenseNet.Toolchains qualified as TC
 import System.Directory (XdgDirectory (..), doesDirectoryExist, getCurrentDirectory, getXdgDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
-import System.Exit (exitFailure, exitSuccess)
+import System.Exit (exitFailure, exitSuccess, exitWith)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
+import System.Process (rawSystem)
 
 main :: IO ()
 main = do
@@ -42,6 +43,7 @@ main = do
     ["--help"] -> usage
     ["-h"] -> usage
     ("build" : rest) -> cmdBuild rest
+    ("run" : rest) -> cmdRun rest
     ("query" : rest) -> cmdQuery rest
     ("targets" : _) -> cmdTargets
     ("clean" : rest) -> cmdClean ("--full" `elem` rest)
@@ -66,6 +68,7 @@ usage = do
         "",
         "Commands:",
         "  build <target> [-j N]  Build target(s) with N parallel jobs",
+        "  run <target> [-- args] Build and run a target, passing args to it",
         "  targets                List available targets",
         "  clean [--full]         Remove build outputs (--full: also clear cache)",
         "  query <target>#<sel>   Query the build graph",
@@ -97,6 +100,7 @@ usage = do
         "Examples:",
         "  sensenet build //src/examples/cxx:hello",
         "  sensenet build //src/examples/... -j4",
+        "  sensenet run //src/examples/cxx:hello -- arg1 arg2",
         "  sensenet targets"
       ]
 
@@ -312,6 +316,54 @@ buildPackageWaves mJobs tc projectRoot allPkgPaths pkgs = go [] [] pkgs
           -- Deps not ready - this shouldn't happen with proper topo sort
           -- but handle it gracefully by putting pkg at end
           go results completed (rest ++ [pkg])
+
+-- | Run command: build target then execute it
+cmdRun :: [String] -> IO ()
+cmdRun [] = do
+  TIO.putStrLn "Usage: sensenet run //path/to/pkg:target [-- args...]"
+  exitFailure
+cmdRun args = do
+  -- Split args at "--" to separate target from program args
+  let (targetArgs, progArgs) = case break (== "--") args of
+        (before, []) -> (before, [])
+        (before, _ : after) -> (before, after)
+  case targetArgs of
+    [] -> do
+      TIO.putStrLn "Usage: sensenet run //path/to/pkg:target [-- args...]"
+      exitFailure
+    [targetStr] -> do
+      case parseTarget (T.pack targetStr) of
+        Nothing -> do
+          TIO.putStrLn $ "Invalid target: " <> T.pack targetStr
+          exitFailure
+        Just (SingleTarget pkgPath targetName) -> do
+          projectRoot <- getCurrentDirectory
+          tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
+          let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+          pkg <- Dhall.parsePackageFile projectRoot dhallPath'
+          -- Build the target first
+          result <- buildWithDepsJ Nothing tc projectRoot pkg targetName
+          case result of
+            Left err -> do
+              TIO.putStrLn $ "✗ Build failed: " <> showError err
+              exitFailure
+            Right (BuildSuccess outputs) -> runBinary outputs progArgs
+            Right (BuildCached outputs) -> runBinary outputs progArgs
+        Just _ -> do
+          TIO.putStrLn "run requires a single target (//pkg:target), not a pattern"
+          exitFailure
+    _ -> do
+      TIO.putStrLn "run requires exactly one target"
+      exitFailure
+  where
+    runBinary :: [FilePath] -> [String] -> IO ()
+    runBinary [] _ = do
+      TIO.putStrLn "✗ No output binary found"
+      exitFailure
+    runBinary (bin : _) progArgs' = do
+      -- Execute the binary with the given arguments
+      exitCode <- rawSystem bin progArgs'
+      exitWith exitCode
 
 cmdTargets :: IO ()
 cmdTargets = do

@@ -304,9 +304,16 @@ executeGraph cache runner graph = do
 
       -- Check cache
       cached <- checkCache cache key
-      case cached of
+      -- Verify outputs still exist before trusting cache
+      cacheValid <- case cached of
         Just result -> do
-          -- Cache hit
+          let outputs = map T.unpack (arOutputs result)
+          allExist <- and <$> mapM doesFileExist outputs
+          pure $ if allExist then Just result else Nothing
+        Nothing -> pure Nothing
+      case cacheValid of
+        Just result -> do
+          -- Cache hit with valid outputs
           TIO.putStrLn $ "  ✓ " <> aName action <> " (cached)"
           go (Map.insert key result results) (hits + 1) executed failed rest
         Nothing -> do
@@ -438,7 +445,14 @@ processWaves semMaybe total progressVar cache runner graph resultsVar hitsVar ex
 
       -- Check cache first
       cached <- checkCache cache key
-      case cached of
+      -- Verify outputs still exist before trusting cache
+      cacheValid <- case cached of
+        Just result -> do
+          let outputs = map T.unpack (arOutputs result)
+          allExist <- and <$> mapM doesFileExist outputs
+          pure $ if allExist then Just result else Nothing
+        Nothing -> pure Nothing
+      case cacheValid of
         Just result -> do
           TIO.putStrLn $ progress <> "✓ " <> aName action <> " (cached)"
           modifyMVar_ resultsVar $ pure . Map.insert key result

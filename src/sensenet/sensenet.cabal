@@ -80,6 +80,7 @@ executable sensenet
         base >= 4.18 && < 5,
         bytestring,
         directory,
+        process,
         text,
         sensenet
     ghc-options:
