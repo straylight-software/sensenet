@@ -19,7 +19,7 @@ import GHC.Conc (getNumProcessors)
 import SenseNet.Build (BuildError (..), BuildResult (..), buildAllTargetsJ, buildWithDepsJ, packageDeps, sortPackagesByDeps)
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
-import SenseNet.IR (Package (..), ruleName)
+import SenseNet.IR (Dep (..), Package (..), Rule, ruleDeps, ruleKind, ruleName, ruleSrcs)
 import SenseNet.Toolchains qualified as TC
 import System.Directory (XdgDirectory (..), doesDirectoryExist, getCurrentDirectory, getXdgDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
@@ -38,6 +38,7 @@ main = do
     ["--help"] -> usage
     ["-h"] -> usage
     ("build" : rest) -> cmdBuild rest
+    ("query" : rest) -> cmdQuery rest
     ("targets" : _) -> cmdTargets
     ("clean" : rest) -> cmdClean ("--full" `elem` rest)
     (cmd : _) -> do
@@ -63,6 +64,14 @@ usage = do
         "  build <target> [-j N]  Build target(s) with N parallel jobs",
         "  targets                List available targets",
         "  clean [--full]         Remove build outputs (--full: also clear cache)",
+        "  query <target>#<sel>   Query the build graph",
+        "",
+        "Query selectors:",
+        "  #deps                  Transitive dependencies",
+        "  #rdeps                 Reverse dependencies (what depends on this)",
+        "  #inputs                Source files",
+        "  #kind/<type>           Filter by rule kind (e.g. #kind/rust_binary)",
+        "  #attrs                 All attributes (JSON)",
         "",
         "Target patterns:",
         "  //path/to/pkg:target   Single target",
@@ -333,6 +342,187 @@ cmdClean full = do
     else pure ()
 
   TIO.putStrLn "✓ Clean"
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Query Command
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Query selector (parsed from #fragment)
+data QuerySelector
+  = QDeps
+  | QRdeps
+  | QInputs
+  | QKind Text
+  | QAttrs
+  deriving (Show, Eq)
+
+-- | Query options
+data QueryOpts = QueryOpts
+  { qoLimit :: Maybe Int,
+    qoJson :: Bool
+  }
+
+defaultQueryOpts :: QueryOpts
+defaultQueryOpts = QueryOpts {qoLimit = Nothing, qoJson = False}
+
+-- | Parse query options from args
+parseQueryOpts :: [String] -> (QueryOpts, [String])
+parseQueryOpts = go defaultQueryOpts
+  where
+    go opts [] = (opts, [])
+    go opts ("--json" : rest) = go opts {qoJson = True} rest
+    go opts ("--limit" : n : rest)
+      | all isDigit n = go opts {qoLimit = Just (read n)} rest
+    go opts (arg : rest) =
+      let (opts', rest') = go opts rest
+       in (opts', arg : rest')
+
+-- | Parse a query expression: //pkg:target#selector
+parseQueryExpr :: Text -> Maybe (TargetPattern, Maybe QuerySelector)
+parseQueryExpr t = case T.breakOn "#" t of
+  (targetPart, fragment)
+    | T.null fragment -> do
+        pat <- parseTarget targetPart
+        pure (pat, Nothing)
+    | otherwise -> do
+        pat <- parseTarget targetPart
+        sel <- parseSelector (T.drop 1 fragment) -- drop the #
+        pure (pat, Just sel)
+
+parseSelector :: Text -> Maybe QuerySelector
+parseSelector t = case T.breakOn "/" t of
+  ("deps", _) -> Just QDeps
+  ("rdeps", _) -> Just QRdeps
+  ("inputs", _) -> Just QInputs
+  ("attrs", _) -> Just QAttrs
+  ("kind", rest) -> Just $ QKind (T.drop 1 rest) -- drop the /
+  _ -> Nothing
+
+cmdQuery :: [String] -> IO ()
+cmdQuery [] = do
+  TIO.putStrLn "Usage: sensenet query //path/to/pkg:target#selector"
+  TIO.putStrLn ""
+  TIO.putStrLn "Selectors: #deps, #rdeps, #inputs, #kind/<type>, #attrs"
+  exitFailure
+cmdQuery args = do
+  let (opts, rest) = parseQueryOpts args
+  case rest of
+    [] -> do
+      TIO.putStrLn "Usage: sensenet query //path/to/pkg:target#selector"
+      exitFailure
+    queries -> do
+      projectRoot <- getCurrentDirectory
+      -- Parse all packages
+      files <- discover projectRoot
+      pkgs <- mapM (\f -> Dhall.parsePackageFile projectRoot (dhallPath f)) files
+      -- Process each query
+      results <- concat <$> mapM (runQuery opts pkgs) queries
+      -- Output
+      mapM_ TIO.putStrLn results
+
+runQuery :: QueryOpts -> [Package] -> String -> IO [Text]
+runQuery opts pkgs queryStr = do
+  case parseQueryExpr (T.pack queryStr) of
+    Nothing -> do
+      TIO.putStrLn $ "Invalid query: " <> T.pack queryStr
+      pure []
+    Just (pat, mSel) -> do
+      -- Find matching targets
+      let targets = findTargets pkgs pat
+      case mSel of
+        Nothing -> pure $ map (formatTarget pkgs) targets
+        Just sel -> executeSelector opts pkgs targets sel
+
+-- | Find targets matching a pattern
+findTargets :: [Package] -> TargetPattern -> [(Package, Rule)]
+findTargets pkgs = \case
+  SingleTarget pkgPath targetName ->
+    [ (pkg, rule)
+    | pkg <- pkgs,
+      T.pack pkg.path == pkgPath,
+      rule <- pkg.rules,
+      ruleName rule == targetName
+    ]
+  AllInPackage pkgPath ->
+    [ (pkg, rule)
+    | pkg <- pkgs,
+      T.pack pkg.path == pkgPath,
+      rule <- pkg.rules
+    ]
+  Recursive subPath ->
+    [ (pkg, rule)
+    | pkg <- pkgs,
+      T.null subPath || T.pack pkg.path `T.isPrefixOf` subPath || subPath `T.isPrefixOf` T.pack pkg.path,
+      rule <- pkg.rules
+    ]
+
+-- | Format a target as a label
+formatTarget :: [Package] -> (Package, Rule) -> Text
+formatTarget _ (pkg, rule) = "//" <> T.pack pkg.path <> ":" <> ruleName rule
+
+-- | Execute a query selector
+executeSelector :: QueryOpts -> [Package] -> [(Package, Rule)] -> QuerySelector -> IO [Text]
+executeSelector opts pkgs targets = \case
+  QDeps -> do
+    let limit = qoLimit opts
+    pure $ concatMap (getDeps limit pkgs) targets
+  QRdeps -> do
+    let targetLabels = map (\(p, r) -> "//" <> T.pack p.path <> ":" <> ruleName r) targets
+    pure
+      [ formatTarget pkgs (pkg, rule)
+      | pkg <- pkgs,
+        rule <- pkg.rules,
+        any (depMatchesAny targetLabels (T.pack pkg.path)) (ruleDeps rule)
+      ]
+  QInputs ->
+    pure $ concatMap (\(pkg, rule) -> map (\s -> T.pack pkg.path <> "/" <> s) (ruleSrcs rule)) targets
+  QKind kindPattern ->
+    pure
+      [ formatTarget pkgs t
+      | t@(_, rule) <- targets,
+        kindPattern `T.isInfixOf` ruleKind rule
+      ]
+  QAttrs ->
+    pure $ map (\(_, rule) -> T.pack (show rule)) targets
+
+-- | Get dependencies for a target (with optional depth limit)
+getDeps :: Maybe Int -> [Package] -> (Package, Rule) -> [Text]
+getDeps limit pkgs (pkg, rule) = go 0 [] (ruleDeps rule)
+  where
+    go _ acc [] = acc
+    go depth acc deps
+      | Just l <- limit, depth >= l = acc
+      | otherwise =
+          let depLabels = map (depToLabel (T.pack pkg.path)) deps
+              newAcc = acc ++ depLabels
+              -- Find transitive deps
+              transDeps =
+                [ dep
+                | label <- depLabels,
+                  (p, r) <- findTargetByLabel pkgs label,
+                  dep <- ruleDeps r,
+                  depToLabel (T.pack p.path) dep `notElem` newAcc
+                ]
+           in go (depth + 1) newAcc transDeps
+
+-- | Convert a Dep to a label
+depToLabel :: Text -> Dep -> Text
+depToLabel pkgPath = \case
+  DepLocal name
+    | ":" `T.isPrefixOf` name -> "//" <> pkgPath <> name
+    | "//" `T.isPrefixOf` name -> name
+    | otherwise -> "//" <> pkgPath <> ":" <> name
+  DepFlake ref -> ref
+
+-- | Check if a dep matches any of the target labels
+depMatchesAny :: [Text] -> Text -> Dep -> Bool
+depMatchesAny labels pkgPath dep = depToLabel pkgPath dep `elem` labels
+
+-- | Find a target by label
+findTargetByLabel :: [Package] -> Text -> [(Package, Rule)]
+findTargetByLabel pkgs label = case parseTarget label of
+  Just (SingleTarget p t) -> findTargets pkgs (SingleTarget p t)
+  _ -> []
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Helpers
