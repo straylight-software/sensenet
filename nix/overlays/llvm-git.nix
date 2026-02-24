@@ -15,5 +15,5 @@ let
 in
 lib.optionalAttrs is-linux {
   # Use llvm-git from the llvm-project flake
-  llvm-git = inputs.llvm-project.packages.${stdenv.hostPlatform.system}.llvm-git;
+  inherit (inputs.llvm-project.packages.${stdenv.hostPlatform.system}) llvm-git;
 }

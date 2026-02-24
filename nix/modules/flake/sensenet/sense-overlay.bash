@@ -34,77 +34,77 @@ DHALL_TO_BUCK="${SENSE_DHALL_TO_BUCK:-./dhall-to-buck}"
 # Generate BUCK files
 # ══════════════════════════════════════════════════════════════════════════════
 generate_buck_files() {
-	local output_dir="$1"
-	local count=0
-	local failed=0
+  local output_dir="$1"
+  local count=0
+  local failed=0
 
-	while IFS= read -r -d '' dhall_file; do
-		local rel_path="${dhall_file#$PROJECT_ROOT/}"
-		local rel_dir
-		rel_dir=$(dirname "$rel_path")
-		local buck_dir="$output_dir/$rel_dir"
-		local buck_file="$buck_dir/BUCK"
+  while IFS= read -r -d '' dhall_file; do
+    local rel_path="${dhall_file#$PROJECT_ROOT/}"
+    local rel_dir
+    rel_dir=$(dirname "$rel_path")
+    local buck_dir="$output_dir/$rel_dir"
+    local buck_file="$buck_dir/BUCK"
 
-		mkdir -p "$buck_dir"
+    mkdir -p "$buck_dir"
 
-		if "$DHALL_TO_BUCK" "$dhall_file" >"$buck_file" 2>&1; then
-			((count++)) || true
-		else
-			echo "ERROR: $dhall_file" >&2
-			cat "$buck_file" >&2
-			rm -f "$buck_file"
-			((failed++)) || true
-		fi
-	done < <(find "$PROJECT_ROOT" -name "BUILD.dhall" -print0 2>/dev/null)
+    if "$DHALL_TO_BUCK" "$dhall_file" >"$buck_file" 2>&1; then
+      ((count++)) || true
+    else
+      echo "ERROR: $dhall_file" >&2
+      cat "$buck_file" >&2
+      rm -f "$buck_file"
+      ((failed++)) || true
+    fi
+  done < <(find "$PROJECT_ROOT" -name "BUILD.dhall" -print0 2>/dev/null)
 
-	if [[ "$count" -gt 0 ]]; then
-		echo "sense: generated $count BUCK file(s)" >&2
-	fi
+  if [[ $count -gt 0 ]]; then
+    echo "sense: generated $count BUCK file(s)" >&2
+  fi
 
-	[[ "$failed" -eq 0 ]]
+  [[ $failed -eq 0 ]]
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Overlay mode: bind-mount BUCK files in isolated namespace
 # ══════════════════════════════════════════════════════════════════════════════
 overlay_mode() {
-	if [[ -n "${SENSE_OVERLAY:-}" ]]; then
-		exec "${@:-$SHELL}"
-	fi
+  if [[ -n ${SENSE_OVERLAY:-} ]]; then
+    exec "${@:-$SHELL}"
+  fi
 
-	if ! command -v unshare &>/dev/null; then
-		echo "ERROR: unshare not found" >&2
-		return 1
-	fi
+  if ! command -v unshare &>/dev/null; then
+    echo "ERROR: unshare not found" >&2
+    return 1
+  fi
 
-	# Create temp directory for generated BUCK files
-	local tmpdir
-	tmpdir=$(mktemp -d -t sense.XXXXXX)
+  # Create temp directory for generated BUCK files
+  local tmpdir
+  tmpdir=$(mktemp -d -t sense.XXXXXX)
 
-	# Generate BUCK files
-	if ! generate_buck_files "$tmpdir"; then
-		rm -rf "$tmpdir"
-		return 1
-	fi
+  # Generate BUCK files
+  if ! generate_buck_files "$tmpdir"; then
+    rm -rf "$tmpdir"
+    return 1
+  fi
 
-	# Export for use in subshell
-	export SENSE_OVERLAY=1
-	export SENSE_TMPDIR="$tmpdir"
-	export SENSE_PROJECT_ROOT="$PROJECT_ROOT"
+  # Export for use in subshell
+  export SENSE_OVERLAY=1
+  export SENSE_TMPDIR="$tmpdir"
+  export SENSE_PROJECT_ROOT="$PROJECT_ROOT"
 
-	# Enter new namespace and bind-mount BUCK files
-	# Use unique isolation dir so buck2 starts a fresh daemon that sees our mounts
-	export BUCK_ISOLATION_DIR="sense-overlay"
+  # Enter new namespace and bind-mount BUCK files
+  # Use unique isolation dir so buck2 starts a fresh daemon that sees our mounts
+  export BUCK_ISOLATION_DIR="sense-overlay"
 
-	# Kill any existing daemon for this isolation dir (it won't see our mounts)
-	buck2 kill 2>/dev/null || true
+  # Kill any existing daemon for this isolation dir (it won't see our mounts)
+  buck2 kill 2>/dev/null || true
 
-	# Create a file listing mount points we create, so we can clean them up
-	export SENSE_MOUNT_POINTS="$tmpdir/mount_points"
-	touch "$SENSE_MOUNT_POINTS"
+  # Create a file listing mount points we create, so we can clean them up
+  export SENSE_MOUNT_POINTS="$tmpdir/mount_points"
+  touch "$SENSE_MOUNT_POINTS"
 
-	# Run in namespace, capture exit code
-	unshare --user --mount --map-root-user --propagation=private bash -c '
+  # Run in namespace, capture exit code
+  unshare --user --mount --map-root-user --propagation=private bash -c '
         mount --make-rprivate / 2>/dev/null || true
 
         # Bind-mount each generated BUCK file
@@ -124,56 +124,56 @@ overlay_mode() {
         cd "$SENSE_PROJECT_ROOT"
         "$@"
     ' -- "${@:-$SHELL}"
-	exit_code=$?
+  exit_code=$?
 
-	# Clean up mount points we created (outside namespace now)
-	while IFS= read -r mp; do
-		if [[ -f "$mp" && ! -s "$mp" ]]; then
-			rm -f "$mp" 2>/dev/null || true
-		fi
-	done <"$SENSE_MOUNT_POINTS"
-	rm -rf "$tmpdir"
+  # Clean up mount points we created (outside namespace now)
+  while IFS= read -r mp; do
+    if [[ -f $mp && ! -s $mp ]]; then
+      rm -f "$mp" 2>/dev/null || true
+    fi
+  done <"$SENSE_MOUNT_POINTS"
+  rm -rf "$tmpdir"
 
-	exit $exit_code
+  exit $exit_code
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Simple mode: generate BUCK files in place
 # ══════════════════════════════════════════════════════════════════════════════
 simple_mode() {
-	local count=0
-	local failed=0
+  local count=0
+  local failed=0
 
-	while IFS= read -r -d '' dhall_file; do
-		local dir
-		dir=$(dirname "$dhall_file")
-		local buck_file="$dir/BUCK"
+  while IFS= read -r -d '' dhall_file; do
+    local dir
+    dir=$(dirname "$dhall_file")
+    local buck_file="$dir/BUCK"
 
-		# Skip if BUCK is newer
-		if [[ -f "$buck_file" && "$buck_file" -nt "$dhall_file" ]]; then
-			continue
-		fi
+    # Skip if BUCK is newer
+    if [[ -f $buck_file && $buck_file -nt $dhall_file ]]; then
+      continue
+    fi
 
-		if "$DHALL_TO_BUCK" "$dhall_file" >"$buck_file.tmp" 2>&1; then
-			mv "$buck_file.tmp" "$buck_file"
-			((count++)) || true
-		else
-			echo "ERROR: $dhall_file" >&2
-			cat "$buck_file.tmp" >&2
-			rm -f "$buck_file.tmp"
-			((failed++)) || true
-		fi
-	done < <(find "$PROJECT_ROOT" -name "BUILD.dhall" -print0 2>/dev/null)
+    if "$DHALL_TO_BUCK" "$dhall_file" >"$buck_file.tmp" 2>&1; then
+      mv "$buck_file.tmp" "$buck_file"
+      ((count++)) || true
+    else
+      echo "ERROR: $dhall_file" >&2
+      cat "$buck_file.tmp" >&2
+      rm -f "$buck_file.tmp"
+      ((failed++)) || true
+    fi
+  done < <(find "$PROJECT_ROOT" -name "BUILD.dhall" -print0 2>/dev/null)
 
-	if [[ "$count" -gt 0 ]]; then
-		echo "sense: generated $count BUCK file(s)" >&2
-	fi
+  if [[ $count -gt 0 ]]; then
+    echo "sense: generated $count BUCK file(s)" >&2
+  fi
 
-	if [[ "$failed" -gt 0 ]]; then
-		return 1
-	fi
+  if [[ $failed -gt 0 ]]; then
+    return 1
+  fi
 
-	exec "${@:-$SHELL}"
+  exec "${@:-$SHELL}"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -181,11 +181,11 @@ simple_mode() {
 # ══════════════════════════════════════════════════════════════════════════════
 case "${1:-}" in
 --simple | -s)
-	shift
-	simple_mode "$@"
-	;;
+  shift
+  simple_mode "$@"
+  ;;
 --help | -h)
-	cat <<'EOF'
+  cat <<'EOF'
 sense-overlay - Zero Starlark environment
 
 Usage: sense-overlay [OPTIONS] [COMMAND...]
@@ -206,8 +206,8 @@ Examples:
   sense-overlay buck2 build //...   # Build with ephemeral BUCK files
   sense-overlay --simple            # Generate BUCK files in place
 EOF
-	;;
+  ;;
 *)
-	overlay_mode "$@" || simple_mode "$@"
-	;;
+  overlay_mode "$@" || simple_mode "$@"
+  ;;
 esac

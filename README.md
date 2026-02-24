@@ -77,7 +77,7 @@ in  { rules = [ S.cxxBinary server { compiler = [], linker = [] } ]
 **Two modes:**
 
 1. **Simple mode** (default): BUCK files generated on shell entry, gitignored
-2. **Overlay mode**: BUCK files exist only in memory via Linux namespaces
+1. **Overlay mode**: BUCK files exist only in memory via Linux namespaces
 
 ```bash
 # Overlay mode - BUCK files never touch disk
@@ -89,16 +89,16 @@ sense build //...
 
 Supported rules:
 
-| Rule                                                  | Languages                 |
+| Rule | Languages |
 | ----------------------------------------------------- | ------------------------- |
-| `cxxBinary`, `cxxLibrary`                             | C, C++                    |
-| `rustBinary`, `rustLibrary`                           | Rust                      |
-| `haskellBinary`, `haskellLibrary`, `haskellFFIBinary` | Haskell                   |
-| `leanBinary`, `leanLibrary`                           | Lean 4                    |
-| `nvBinary`, `nvLibrary`                               | CUDA (clang + ptxas)      |
-| `purescriptApp`, `purescriptBinary`                   | PureScript                |
-| `nixCxxBinary`                                        | C++ with Nix dependencies |
-| `genrule`                                             | Arbitrary commands        |
+| `cxxBinary`, `cxxLibrary` | C, C++ |
+| `rustBinary`, `rustLibrary` | Rust |
+| `haskellBinary`, `haskellLibrary`, `haskellFFIBinary` | Haskell |
+| `leanBinary`, `leanLibrary` | Lean 4 |
+| `nvBinary`, `nvLibrary` | CUDA (clang + ptxas) |
+| `purescriptApp`, `purescriptBinary` | PureScript |
+| `nixCxxBinary` | C++ with Nix dependencies |
+| `genrule` | Arbitrary commands |
 
 ## Architecture
 
@@ -182,14 +182,14 @@ pkg-config --libs z
 
 All toolchains are Nix-hermetic with paths from the devshell:
 
-| Toolchain  | Source                    | Notes                           |
+| Toolchain | Source | Notes |
 | ---------- | ------------------------- | ------------------------------- |
-| C/C++      | LLVM 22 (straylight fork) | SM120 Blackwell support         |
-| Haskell    | GHC 9.12                  | ghcWithPackages integration     |
-| Rust       | rustc from nixpkgs        | 2021 edition default            |
-| Lean       | lean4 from nixpkgs        | Theorem proving + executables   |
-| CUDA       | NVIDIA SDK + clang        | No nvcc, pure clang compilation |
-| PureScript | purs + spago              | Halogen app bundling            |
+| C/C++ | LLVM 22 (straylight fork) | SM120 Blackwell support |
+| Haskell | GHC 9.12 | ghcWithPackages integration |
+| Rust | rustc from nixpkgs | 2021 edition default |
+| Lean | lean4 from nixpkgs | Theorem proving + executables |
+| CUDA | NVIDIA SDK + clang | No nvcc, pure clang compilation |
+| PureScript | purs + spago | Halogen app bundling |
 
 Paths are written to `.buckconfig.local` by the devshell:
 
@@ -264,14 +264,14 @@ sensenet graph [pattern]    # Show build graph
 
 ## Flake Modules
 
-| Module       | Purpose                                      |
+| Module | Purpose |
 | ------------ | -------------------------------------------- |
-| `sensenet`   | Full build system integration                |
-| `formatter`  | treefmt (nixfmt, clang-format, rustfmt, ...) |
-| `lint`       | Static analysis (statix, clang-tidy, ...)    |
-| `devshell`   | Development environment                      |
-| `nativelink` | Remote execution infrastructure              |
-| `std`        | nixpkgs with overlays                        |
+| `sensenet` | Full build system integration |
+| `formatter` | treefmt (nixfmt, clang-format, rustfmt, ...) |
+| `lint` | Static analysis (statix, clang-tidy, ...) |
+| `devshell` | Development environment |
+| `nativelink` | Remote execution infrastructure |
+| `std` | nixpkgs with overlays |
 
 ## Development
 

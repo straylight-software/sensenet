@@ -147,8 +147,8 @@ system from the rest of the codebase.
 Orchestrates builds. Three modes:
 
 1. **`build`** — Simple sequential builds (legacy)
-2. **`buildWithDeps`** — DICE-based incremental builds
-3. **`buildWithConsole`** — DICE + superconsole TUI (default)
+1. **`buildWithDeps`** — DICE-based incremental builds
+1. **`buildWithConsole`** — DICE + superconsole TUI (default)
 
 Implements a builder for each rule type:
 
@@ -163,10 +163,11 @@ buildGenrule        :: Toolchains -> Genrule -> IO BuildResult
 ```
 
 Each builder:
+
 1. Resolves Nix dependencies (`DepFlake` → store paths)
-2. Constructs compiler flags (includes, libs, defines)
-3. Invokes the toolchain (clang++, rustc, ghc, etc.)
-4. Writes output to `sensenet-out/`
+1. Constructs compiler flags (includes, libs, defines)
+1. Invokes the toolchain (clang++, rustc, ghc, etc.)
+1. Writes output to `sensenet-out/`
 
 ### SenseNet.DICE — Incremental Computation
 
@@ -183,6 +184,7 @@ registerTarget :: Text -> [Text] -> (Text -> IO ByteString) -> DICE ()
 ```
 
 DICE provides:
+
 - Automatic invalidation when inputs change
 - Cached computation results
 - Dependency tracking
@@ -213,6 +215,7 @@ completeAction   :: ActionHandle -> IO ()
 ```
 
 Shows:
+
 - Progress bar
 - Currently running actions with elapsed time
 - Completed action log
@@ -226,11 +229,12 @@ buildRemote :: RemoteConfig -> Rule -> IO BuildResult
 ```
 
 Flow:
+
 1. Upload source files to CAS (Content Addressable Storage)
-2. Create action proto with command + inputs
-3. Submit to execution service
-4. Poll for completion
-5. Download outputs from CAS
+1. Create action proto with command + inputs
+1. Submit to execution service
+1. Poll for completion
+1. Download outputs from CAS
 
 Currently supports: CxxBinary, Genrule. Other rules return "not yet supported".
 
@@ -277,15 +281,15 @@ Respects `.gitignore` and `.sensenetignore`. Skips `buck-out`, `node_modules`,
 
 ## Supported Languages
 
-| Language   | Rules                                          | Toolchain          |
+| Language | Rules | Toolchain |
 |------------|------------------------------------------------|--------------------|
-| C/C++      | `cxxBinary`, `cxxLibrary`, `nixCxxBinary`      | LLVM 22 (clang++)  |
-| Rust       | `rustBinary`, `rustLibrary`, `cratesIo`        | rustc              |
-| Haskell    | `haskellBinary`, `haskellLibrary`, `haskellFFIBinary` | GHC 9.12    |
-| Lean 4     | `leanBinary`, `leanLibrary`                    | lean/leanc         |
-| CUDA       | `nvBinary`, `nvLibrary`                        | clang + ptxas      |
+| C/C++ | `cxxBinary`, `cxxLibrary`, `nixCxxBinary` | LLVM 22 (clang++) |
+| Rust | `rustBinary`, `rustLibrary`, `cratesIo` | rustc |
+| Haskell | `haskellBinary`, `haskellLibrary`, `haskellFFIBinary` | GHC 9.12 |
+| Lean 4 | `leanBinary`, `leanLibrary` | lean/leanc |
+| CUDA | `nvBinary`, `nvLibrary` | clang + ptxas |
 | PureScript | `purescriptApp`, `purescriptBinary`, `purescriptLibrary` | purs + esbuild |
-| Generic    | `genrule`                                      | sh                 |
+| Generic | `genrule` | sh |
 
 ## Directory Structure
 
@@ -352,6 +356,7 @@ sensenet --version           Show version info
 ```
 
 Options:
+
 ```
 --remote              Enable remote execution
 --remote-host <host>  NativeLink host (default: localhost)
@@ -362,16 +367,16 @@ Options:
 
 ## Comparison with Buck2
 
-| Feature          | Buck2          | SENSENET       |
+| Feature | Buck2 | SENSENET |
 |------------------|----------------|----------------|
-| Config language  | Starlark       | Dhall          |
-| Type checking    | Runtime        | Compile time   |
-| Rule definitions | .bzl files     | Dhall types    |
-| Queries          | BXL            | dhall + jq     |
-| Toolchains       | Starlark       | Nix            |
-| Incremental      | DICE           | DICE (same!)   |
-| Remote exec      | RE API         | NativeLink     |
-| Bootstrap        | Buck2 or Cargo | Cabal + Nix    |
+| Config language | Starlark | Dhall |
+| Type checking | Runtime | Compile time |
+| Rule definitions | .bzl files | Dhall types |
+| Queries | BXL | dhall + jq |
+| Toolchains | Starlark | Nix |
+| Incremental | DICE | DICE (same!) |
+| Remote exec | RE API | NativeLink |
+| Bootstrap | Buck2 or Cargo | Cabal + Nix |
 
 ## Milestones
 
@@ -443,7 +448,7 @@ Two issues with the current build system:
    Large parallel builds can OOM the machine because we spawn N jobs without
    knowing their combined memory footprint.
 
-2. **Static dependencies only**: Cross-package deps (`//src/foo:bar` depending on
+1. **Static dependencies only**: Cross-package deps (`//src/foo:bar` depending on
    `//src/baz:qux`) fail because we only load one package at a time. Dynamic
    dependencies (like GHC discovering imports) aren't supported at all.
 
@@ -483,6 +488,7 @@ We're implementing a minimal version that captures the key insight without
 requiring full graded monad machinery:
 
 **Memory Profiling** (Completed — commit `1207719`):
+
 - `getrusage(RUSAGE_CHILDREN)` FFI to track peak memory of child processes
 - `ProfileData` type with `time_ms` and `peak_memory_bytes`
 - Profile data stored in DICE's `TargetResult` for caching
@@ -500,6 +506,7 @@ data ProfileData = ProfileData
 ```
 
 **Cross-Package Dependencies** (Completed — commit `a45a402`):
+
 - `DepLocal` can be `:foo` (same package) or `//pkg:target` (cross-package)
 - `ParsedDep` type and `parseDep`/`parseFqName` functions
 - `BuildContext` with `PackageCache` for lazy loading
@@ -520,6 +527,7 @@ Fixed the transitive dependency gap so builds can span packages:
 **Changes required:**
 
 1. **Parse cross-package deps** — Update `extractLocalDepNames`:
+
    ```haskell
    -- NEW: returns (Maybe PackagePath, TargetName)
    parseDep :: Dep -> Maybe (Maybe Text, Text)
@@ -530,10 +538,11 @@ Fixed the transitive dependency gap so builds can span packages:
    parseDep (DepFlake _) = Nothing  -- External, not DICE
    ```
 
-2. **Add PackageCache** — Avoid re-parsing BUILD.dhall:
+1. **Add PackageCache** — Avoid re-parsing BUILD.dhall:
+
    ```haskell
    type PackageCache = IORef (Map FilePath Package)
-   
+
    loadPackage :: PackageCache -> FilePath -> FilePath -> IO Package
    loadPackage cache projectRoot pkgPath = do
      cached <- readIORef cache
@@ -545,7 +554,8 @@ Fixed the transitive dependency gap so builds can span packages:
          pure pkg
    ```
 
-3. **Lazy package loading in buildWithDeps** — Worklist algorithm:
+1. **Lazy package loading in buildWithDeps** — Worklist algorithm:
+
    ```haskell
    buildWithDeps tc projectRoot initialPkg targetName = runDICE $ do
      clearTargets
@@ -629,14 +639,17 @@ Use that to decide whether to start a new job.
 Where do we get `ProfileData` for scheduling decisions?
 
 1. **DICE cache hit** — Target was built before, profile stored in `TargetResult`
+
    - DICE returns cached result immediately, no callback invoked
    - No scheduling needed (it's instant)
 
-2. **DICE cache miss, profile known** — Target rebuilt, but we profiled it before
+1. **DICE cache miss, profile known** — Target rebuilt, but we profiled it before
+
    - Store profiles in a separate persistent cache: `.sensenet/profiles.json`
    - Even if DICE invalidates (source changed), memory estimate likely similar
 
-3. **DICE cache miss, profile unknown** — First build of this target
+1. **DICE cache miss, profile unknown** — First build of this target
+
    - Use conservative default: `defaultProfileKb = 512 * 1024` (512 MB)
    - Or infer from rule type: Rust link = 2GB, C++ compile = 500MB, etc.
    - Profile the actual run, update cache for next time
@@ -788,10 +801,11 @@ getMaxMemoryBytes opts = case optMaxMemory opts of
 The "burn one build going slow" insight: first build of a target has no profile.
 
 Options:
+
 1. **Conservative default** — Assume 512MB, may over-parallelize
-2. **Rule-based heuristics** — Rust link = 2GB, C++ compile = 500MB
-3. **Sequential mode** — `--profile` runs everything sequentially to gather data
-4. **Adaptive** — Start with default, if OOM detected (exit 137), halve parallelism
+1. **Rule-based heuristics** — Rust link = 2GB, C++ compile = 500MB
+1. **Sequential mode** — `--profile` runs everything sequentially to gather data
+1. **Adaptive** — Start with default, if OOM detected (exit 137), halve parallelism
 
 Recommendation: **Rule-based heuristics + adaptive backoff**
 

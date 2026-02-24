@@ -6,6 +6,6 @@
 
 namespace greeter {
 std::string greet(const std::string& name);
-}
+} // namespace greeter
 
 #endif // GREETER_HPP

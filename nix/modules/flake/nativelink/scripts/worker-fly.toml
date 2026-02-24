@@ -1,0 +1,32 @@
+# worker-fly.toml - Fly.io deployment config for NativeLink worker
+#
+# Substituted variables:
+#   @APP_NAME@ - Fly.io app name (e.g., "aleph-worker")
+#   @REGION@ - Primary region (e.g., "iad")
+#   @SCHEDULER_URL@ - Scheduler endpoint
+#   @CAS_URL@ - CAS endpoint
+
+app = "@APP_NAME@"
+primary_region = "@REGION@"
+
+[build]
+# Built from nix2gpu with full toolchain
+dockerfile = "Dockerfile"
+
+[env]
+RUST_LOG = "info"
+SCHEDULER_URL = "@SCHEDULER_URL@"
+CAS_URL = "@CAS_URL@"
+
+[[services]]
+internal_port = 50061
+protocol = "tcp"
+
+[[services.ports]]
+port = 50061
+handlers = ["tls"]
+
+[services.concurrency]
+type = "connections"
+hard_limit = 100
+soft_limit = 50

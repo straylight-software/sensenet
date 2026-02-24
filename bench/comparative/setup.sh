@@ -14,16 +14,16 @@ mkdir -p "$WORKDIR"
 # ════════════════════════════════════════════════════════════════════════════
 
 generate_buck2_project() {
-	local name=$1
-	local num_targets=$2
-	local deps_per_target=${3:-3}
-	local project_dir="${WORKDIR}/${name}"
+  local name=$1
+  local num_targets=$2
+  local deps_per_target=${3:-3}
+  local project_dir="${WORKDIR}/${name}"
 
-	mkdir -p "$project_dir"
-	cd "$project_dir"
+  mkdir -p "$project_dir"
+  cd "$project_dir"
 
-	# Buck2 root files
-	cat >.buckconfig <<'EOF'
+  # Buck2 root files
+  cat >.buckconfig <<'EOF'
 [repositories]
 root = .
 
@@ -34,36 +34,36 @@ name = BUCK
 ignore = .git
 EOF
 
-	cat >.buckroot <<'EOF'
+  cat >.buckroot <<'EOF'
 EOF
 
-	cat >BUCK <<EOF
+  cat >BUCK <<EOF
 # Auto-generated benchmark with $num_targets targets
 EOF
 
-	# Generate targets
-	for i in $(seq 1 $num_targets); do
-		local target_name="target_${i}"
-		local src_file="src/file_${i}.txt"
+  # Generate targets
+  for i in $(seq 1 $num_targets); do
+    local target_name="target_${i}"
+    local src_file="src/file_${i}.txt"
 
-		mkdir -p "src"
-		echo "// Source file $i" >"$src_file"
+    mkdir -p "src"
+    echo "// Source file $i" >"$src_file"
 
-		# Calculate dependencies (previous targets, up to deps_per_target)
-		local deps=""
-		if [ $i -gt 1 ]; then
-			local max_dep=$((i - 1))
-			local num_deps=$((max_dep < deps_per_target ? max_dep : deps_per_target))
-			for j in $(seq 1 $num_deps); do
-				local dep_idx=$((i - j))
-				if [ -n "$deps" ]; then
-					deps="${deps}, "
-				fi
-				deps="${deps}\":target_${dep_idx}\""
-			done
-		fi
+    # Calculate dependencies (previous targets, up to deps_per_target)
+    local deps=""
+    if [ $i -gt 1 ]; then
+      local max_dep=$((i - 1))
+      local num_deps=$((max_dep < deps_per_target ? max_dep : deps_per_target))
+      for j in $(seq 1 $num_deps); do
+        local dep_idx=$((i - j))
+        if [ -n "$deps" ]; then
+          deps="${deps}, "
+        fi
+        deps="${deps}\":target_${dep_idx}\""
+      done
+    fi
 
-		cat >>BUCK <<EOF
+    cat >>BUCK <<EOF
 
 genrule(
     name = "${target_name}",
@@ -73,53 +73,53 @@ genrule(
     deps = [${deps}],
 )
 EOF
-	done
+  done
 
-	echo "Generated Buck2 project: $project_dir with $num_targets targets"
+  echo "Generated Buck2 project: $project_dir with $num_targets targets"
 }
 
 generate_sensenet_project() {
-	local name=$1
-	local num_targets=$2
-	local deps_per_target=${3:-3}
-	local project_dir="${WORKDIR}/${name}"
+  local name=$1
+  local num_targets=$2
+  local deps_per_target=${3:-3}
+  local project_dir="${WORKDIR}/${name}"
 
-	mkdir -p "$project_dir"
-	cd "$project_dir"
+  mkdir -p "$project_dir"
+  cd "$project_dir"
 
-	# sensenet uses Dhall, but for this benchmark we'll measure the Haskell core directly
-	# Create a simple JSON representation that our benchmark can parse
+  # sensenet uses Dhall, but for this benchmark we'll measure the Haskell core directly
+  # Create a simple JSON representation that our benchmark can parse
 
-	cat >targets.json <<EOF
+  cat >targets.json <<EOF
 {
   "targets": [
 EOF
 
-	for i in $(seq 1 $num_targets); do
-		local target_name="target_${i}"
+  for i in $(seq 1 $num_targets); do
+    local target_name="target_${i}"
 
-		# Calculate dependencies
-		local deps="[]"
-		if [ $i -gt 1 ]; then
-			local max_dep=$((i - 1))
-			local num_deps=$((max_dep < deps_per_target ? max_dep : deps_per_target))
-			deps="["
-			for j in $(seq 1 $num_deps); do
-				local dep_idx=$((i - j))
-				if [ $j -gt 1 ]; then
-					deps="${deps}, "
-				fi
-				deps="${deps}\"target_${dep_idx}\""
-			done
-			deps="${deps}]"
-		fi
+    # Calculate dependencies
+    local deps="[]"
+    if [ $i -gt 1 ]; then
+      local max_dep=$((i - 1))
+      local num_deps=$((max_dep < deps_per_target ? max_dep : deps_per_target))
+      deps="["
+      for j in $(seq 1 $num_deps); do
+        local dep_idx=$((i - j))
+        if [ $j -gt 1 ]; then
+          deps="${deps}, "
+        fi
+        deps="${deps}\"target_${dep_idx}\""
+      done
+      deps="${deps}]"
+    fi
 
-		local comma=""
-		if [ $i -lt $num_targets ]; then
-			comma=","
-		fi
+    local comma=""
+    if [ $i -lt $num_targets ]; then
+      comma=","
+    fi
 
-		cat >>targets.json <<EOF
+    cat >>targets.json <<EOF
     {
       "name": "${target_name}",
       "command": ["cat", "src/file_${i}.txt"],
@@ -128,20 +128,20 @@ EOF
       "deps": ${deps}
     }${comma}
 EOF
-	done
+  done
 
-	cat >>targets.json <<EOF
+  cat >>targets.json <<EOF
   ]
 }
 EOF
 
-	# Create source files
-	mkdir -p src
-	for i in $(seq 1 $num_targets); do
-		echo "// Source file $i" >"src/file_${i}.txt"
-	done
+  # Create source files
+  mkdir -p src
+  for i in $(seq 1 $num_targets); do
+    echo "// Source file $i" >"src/file_${i}.txt"
+  done
 
-	echo "Generated sensenet project: $project_dir with $num_targets targets"
+  echo "Generated sensenet project: $project_dir with $num_targets targets"
 }
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -181,6 +181,40 @@ in
           projectRootFile = "flake.nix";
 
           # ────────────────────────────────────────────────────────────────────────
+          #                                                       // global // excludes
+          # ────────────────────────────────────────────────────────────────────────
+          #
+          # Exclude generated files, build outputs, and vendored code from all
+          # formatters. These are either machine-generated or third-party.
+          #
+          # ────────────────────────────────────────────────────────────────────────
+
+          settings.global.excludes = [
+            # Build outputs
+            "sensenet-out/*"
+            "buck-out/*"
+            "result"
+            "result-*"
+            "dist-newstyle/*"
+
+            # Generated PureScript output
+            "**/output/*"
+            "**/output-test/*"
+
+            # Vendored third-party code
+            "vendor/*"
+
+            # Node modules
+            "**/node_modules/*"
+
+            # Generated toolchain files
+            ".sensenet/toolchains.json"
+
+            # Spago cache
+            "**/.spago/*"
+          ];
+
+          # ────────────────────────────────────────────────────────────────────────
           #                                                            // nix // lint
           # ────────────────────────────────────────────────────────────────────────
 
@@ -254,7 +288,11 @@ in
           #                                                        // haskell // lint
           # ────────────────────────────────────────────────────────────────────────
 
-          programs.fourmolu.enable = true;
+          # NOTE: fourmolu disabled until ghc-lib-parser supports GHC 9.12 syntax.
+          # fourmolu 0.15.0 uses ghc-lib-parser 9.8 which doesn't parse postpositive
+          # qualified imports (`import Data.Text qualified as T`), a GHC2024 default.
+          # See: https://github.com/fourmolu/fourmolu/issues/438
+          programs.fourmolu.enable = false;
           # n.b. hlint disabled — it's a linter, not a formatter, and treefmt-nix
           # doesn't support the config file needed to suppress suggestions
 
@@ -291,15 +329,21 @@ in
               # - nixos modules: no access to Dhall prelude for templating
               # - packages/overlays: bootstrap code that doesn't have access to prelude
               # - flake.nix: root bootstrap file that defines the prelude
-              # - devshell/buck2: shell hook generation uses replaceVars (no prelude access)
+              # - devshell: shell hook generation has long inline scripts
+              # - sensenet module: toolchain generation has long inline scripts
+              # - nix-compile: has long inline scripts for type checking
+              # - test: integration tests have long inline scripts
               excludes = [
                 "nix/prelude/*"
                 "nix/lib/*"
                 "nix/modules/nixos/*"
                 "nix/packages/*"
                 "nix/overlays/*"
-                "nix/modules/flake/devshell/*"
+                "nix/modules/flake/devshell.nix"
+                "nix/modules/flake/sensenet/*"
+                "nix/modules/flake/nix-compile/*"
                 "nix/modules/flake/buck2/*"
+                "test/*"
                 "flake.nix"
               ];
             };

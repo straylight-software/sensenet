@@ -19,7 +19,8 @@ let json_demo =
         with language_extensions = ["DeriveGeneric", "OverloadedStrings"]
 
 in  { targets =
-        [ A.rule.haskellLibrary greetlib
+        [ A.rule.haskellBinary hello
+        , A.rule.haskellLibrary greetlib
         , A.rule.haskellBinary greeter
         , A.rule.haskellBinary json_demo
         ]

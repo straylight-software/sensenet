@@ -5,40 +5,64 @@
   mkDerivation,
   lib,
   # Core deps (from sensenet.cabal)
+  aeson,
   async,
   base,
   bytestring,
   containers,
   crypton,
+  deepseq,
   dhall,
   directory,
+  either,
   filepath,
+  hashable,
   memory,
+  microlens,
   process,
   text,
+  text-short,
   time,
   unix,
+  unordered-containers,
+  vector,
 }:
-mkDerivation {
-  pname = "sensenet";
-  version = "0.4.0";
-  src = lib.cleanSource ../../src/sensenet;
-  isLibrary = false;
-  isExecutable = true;
-  executableHaskellDepends = [
+let
+  coreDeps = [
+    aeson
     async
     base
     bytestring
     containers
     crypton
+    deepseq
     dhall
     directory
+    either
     filepath
+    hashable
     memory
+    microlens
     process
     text
+    text-short
     time
     unix
+    unordered-containers
+    vector
+  ];
+in
+mkDerivation {
+  pname = "sensenet";
+  version = "0.4.0";
+  src = lib.cleanSource ../../src/sensenet;
+  isLibrary = true;
+  isExecutable = true;
+  libraryHaskellDepends = coreDeps;
+  executableHaskellDepends = [
+    base
+    directory
+    text
   ];
   executableSystemDepends = [ ];
   doCheck = false;
@@ -51,5 +75,4 @@ mkDerivation {
   description = "SENSE // NET - Bootstrap build (minimal deps)";
   license = lib.licenses.mit;
   mainProgram = "sensenet";
-  patchPhase = ":";
 }

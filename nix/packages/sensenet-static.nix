@@ -12,7 +12,7 @@ let
   # Use static Haskell packages with tests disabled for cross-compilation
   # pkgsMusl is pkgsStatic which uses musl libc
   haskellPackages = pkgsMusl.haskell.packages.ghc912.override {
-    overrides = self: super: {
+    overrides = _self: super: {
       # Disable tests for packages that fail with cross-compilation
       # (they require -fexternal-interpreter which doesn't work for musl)
       vector = hlib.dontCheck super.vector;

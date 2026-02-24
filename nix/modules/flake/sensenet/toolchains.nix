@@ -65,7 +65,11 @@
 
   # Haskell toolchain section
   mkHaskellSection =
-    { ghc, ghcVersion, ghcPkgWrapper ? null }:
+    {
+      ghc,
+      ghcVersion,
+      ghcPkgWrapper ? null,
+    }:
     ''
 
       [haskell]
@@ -75,7 +79,8 @@
       ghc_version = ${ghcVersion}
       ghc_lib_dir = ${ghc}/lib/ghc-${ghcVersion}/lib
       global_package_db = ${ghc}/lib/ghc-${ghcVersion}/lib/package.conf.d
-    '' + lib.optionalString (ghcPkgWrapper != null) ''
+    ''
+    + lib.optionalString (ghcPkgWrapper != null) ''
       ghc_pkg_wrapper = ${ghcPkgWrapper}
     '';
 
@@ -106,7 +111,10 @@
 
   # Python toolchain section
   mkPythonSection =
-    { python, pybind11 ? null }:
+    {
+      python,
+      pybind11 ? null,
+    }:
     let
       # Handle both plain python and python.withPackages results
       # withPackages returns an env that wraps the original python
@@ -147,15 +155,13 @@
     '';
 
   # PureScript toolchain section
-  mkPureScriptSection =
-    _:
-    ''
+  mkPureScriptSection = _: ''
 
-      [purescript]
-      purs = ${pkgs.purescript}/bin/purs
-      spago = ${pkgs.spago}/bin/spago
-      node = ${pkgs.nodejs}/bin/node
-    '';
+    [purescript]
+    purs = ${pkgs.purescript}/bin/purs
+    spago = ${pkgs.spago}/bin/spago
+    node = ${pkgs.nodejs}/bin/node
+  '';
 
   # Remote Execution section (NativeLink)
   mkRemoteExecutionSection =

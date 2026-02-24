@@ -24,6 +24,7 @@ We use **BLAKE2b-256** instead of SHA256:
 | FNV-1a 128-bit | 0.65 µs | 1.5M/sec | Non-cryptographic |
 
 **Why BLAKE2b-256?**
+
 - 1.5x faster than SHA256
 - Still cryptographically secure (unlike FNV/xxHash)
 - Same 256-bit output, same collision resistance
@@ -33,25 +34,31 @@ We use **BLAKE2b-256** instead of SHA256:
 ## Optimization History
 
 ### Baseline (v0.3)
+
 ```
 Text.intercalate → Text → encodeUtf8 → SHA256 → hex
 ```
+
 - ~483K keys/sec
 
 ### v0.4 Optimizations
 
 1. **ByteString Builder** (+35% on canonical form)
+
    - Avoid intermediate Text allocations
    - Single-pass construction
 
-2. **hashlazy** (+10% on hashing)
+1. **hashlazy** (+10% on hashing)
+
    - Hash lazy ByteString directly
    - Avoid `BL.toStrict` copy
 
-3. **BLAKE2b-256** (+50% on hashing)
+1. **BLAKE2b-256** (+50% on hashing)
+
    - Faster algorithm, same security
 
-4. **Fast-path escape** (+5% on inputs without special chars)
+1. **Fast-path escape** (+5% on inputs without special chars)
+
    - Skip byte-by-byte escaping when no `\0` or `\\` present
 
 **Combined improvement: ~83% faster**
@@ -117,8 +124,8 @@ Per action:  4.35 µs
 **Key findings:**
 
 1. **Dhall overhead**: BUILD.dhall → IR takes ~48ms (dominated by Dhall interpreter)
-2. **Buck2 analysis**: Parsing BUCK files is very fast (~11ms for cxx example)
-3. **DICE overhead**: Minimal compared to Dhall evaluation
+1. **Buck2 analysis**: Parsing BUCK files is very fast (~11ms for cxx example)
+1. **DICE overhead**: Minimal compared to Dhall evaluation
    - ActionKey: 2.46 µs/action = 407K keys/sec
    - Graph: 2.79 µs/insert = 359K inserts/sec
 
@@ -139,21 +146,25 @@ normalization-bound workloads:
 | List/fold 100 | 6.4 µs | 3.4 µs | **1.9x** |
 
 **Key optimizations:**
+
 - De Bruijn indices: O(1) variable lookup vs O(n) name search
 - Strict spine list environment: O(1) cons, O(i) lookup (i typically < 10)
 - Sorted vector fields: Binary search with better cache locality
 - Unboxed literals: Less indirection, better L2 cache usage
 
 **When DhallFast helps:**
+
 - Cold cache (no semantic cache hit)
 - Compute-bound expressions (Natural/fold, List/fold)
 - Deep nesting (many let bindings, lambdas)
 
 **When DhallFast has overhead:**
+
 - Already-normalized expressions (conversion cost ~0.5-1µs)
 - Small, simple expressions (conversion dominates)
 
 Run DhallFast benchmarks:
+
 ```bash
 ./bench/dhall-fast-bench
 ./bench/integration-test path/to/BUILD.dhall 1000
@@ -185,6 +196,7 @@ ghc -O2 -package crypton -package memory bench/Main.hs -o bench
 | TopoSort | 1.6M/sec | ~5M/sec | 32% |
 
 Remaining overhead:
+
 - UTF-8 encoding of Text fields (~20%)
 - Memory allocation (~30%)
 - Map rebalancing (~20%)
@@ -192,6 +204,7 @@ Remaining overhead:
 ## Memory Usage
 
 For 100K actions:
+
 - Graph: ~50 MB
 - Peak during sort: ~80 MB
 - ActionKey size: 64 bytes (hex-encoded BLAKE2b-256)
@@ -211,6 +224,7 @@ Topological sort is O(n + e) where e = edges.
 ## Profiling
 
 To profile:
+
 ```bash
 ghc -O2 -prof -fprof-auto bench/Main.hs -o bench
 ./bench +RTS -p -N1
@@ -218,6 +232,7 @@ cat bench.prof
 ```
 
 Key findings:
+
 - 70% of time in `actionKey` (hash computation)
 - 15% of time in `Map.insert`
 - 10% of time in `topoSort`

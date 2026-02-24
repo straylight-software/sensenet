@@ -10,7 +10,7 @@ let
   src = lib.cleanSourceWith {
     src = ../../src/vendor/dice;
     filter =
-      path: type:
+      path: _type:
       # Exclude build artifacts
       !(lib.hasInfix "/target" path);
   };

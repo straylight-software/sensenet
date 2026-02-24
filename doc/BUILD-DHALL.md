@@ -278,6 +278,7 @@ buck2 build //...
 ```
 
 Add to `.gitignore`:
+
 ```
 BUCK
 ```
@@ -291,13 +292,15 @@ sense-overlay buck2 build //...
 ```
 
 How it works:
+
 1. Generates BUCK files into tmpdir
-2. Creates isolated mount namespace with `unshare`
-3. Bind-mounts BUCK files into source tree
-4. Runs buck2 in this namespace
-5. On exit, mounts disappear - no files on disk
+1. Creates isolated mount namespace with `unshare`
+1. Bind-mounts BUCK files into source tree
+1. Runs buck2 in this namespace
+1. On exit, mounts disappear - no files on disk
 
 Requirements:
+
 - Linux with user namespaces (`kernel.unprivileged_userns_clone=1`)
 - util-linux (unshare, mount)
 
@@ -352,6 +355,6 @@ let T = ./dhall/prelude/Types.dhall
 To convert existing BUCK files to BUILD.dhall:
 
 1. Create BUILD.dhall with equivalent Dhall definitions
-2. Add `BUCK` to `.gitignore`
-3. Run `sense gen` to verify output matches
-4. Delete the old BUCK file
+1. Add `BUCK` to `.gitignore`
+1. Run `sense gen` to verify output matches
+1. Delete the old BUCK file

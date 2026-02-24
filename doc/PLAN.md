@@ -45,65 +45,73 @@ incremental builds.
 
 ### Supported Languages ✓
 
-| Language   | Local Build | Remote Build |
+| Language | Local Build | Remote Build |
 |------------|-------------|--------------|
-| C/C++      | ✓           | ✓            |
-| Rust       | ✓           | —            |
-| Haskell    | ✓           | —            |
-| Lean 4     | ✓           | —            |
-| CUDA       | ✓           | —            |
-| PureScript | ✓           | —            |
-| Genrule    | ✓           | ✓            |
+| C/C++ | ✓ | ✓ |
+| Rust | ✓ | — |
+| Haskell | ✓ | — |
+| Lean 4 | ✓ | — |
+| CUDA | ✓ | — |
+| PureScript | ✓ | — |
+| Genrule | ✓ | ✓ |
 
 ## Remaining Work
 
 ### P0: Critical Path to v1.0
 
 1. **Self-hosting** 🎯
+
    - sensenet should build sensenet — this is the unlock
    - Every improvement compounds once we're self-hosting
    - Need BUILD.dhall for:
-     - Haskell modules (SenseNet.*, NativeLink.*, Proto.*)
+     - Haskell modules (SenseNet.*, NativeLink.*, Proto.\*)
      - Rust FFI crates (dice_ffi, superconsole_ffi)
    - Bootstrap via nix/cabal, then self-host
    - Milestone: `sensenet build //src/sensenet:sensenet` produces working binary
 
-2. **Startup performance** ⚡ (good enough for now)
+1. **Startup performance** ⚡ (good enough for now)
+
    - `sensenet query` was ~1.6s, now ~0.9s (44% faster)
    - Fixes applied:
      - [x] `-threaded -rtsopts "-with-rtsopts=-N"` for parallel runtime
      - [x] `mapConcurrently` for parallel Dhall parsing
-   - Future (when we need <200ms):
+   - Future (when we need \<200ms):
      - [ ] Cache normalized Dhall (hash inputs → cached IR)
      - [ ] Dhall semantic cache (`dhall freeze` prelude)
      - [ ] Target manifest for instant queries
 
-3. **Remote execution for all languages**
+1. **Remote execution for all languages**
+
    - Extend `SenseNet.Remote` to support Rust, Haskell, Lean, PureScript
    - Main challenge: capturing correct environment/toolchain for remote workers
 
-4. **Action caching**
+1. **Action caching**
+
    - Local action cache (content-addressed by inputs)
    - Remote action cache via NativeLink
    - Currently DICE handles in-session caching; need persistent cache
 
-5. **Parallel builds**
+1. **Parallel builds**
+
    - DICE supports parallelism; need to wire it through to Build.hs
    - Currently builds are sequential within a target
 
 ### P1: Quality of Life
 
 6. **Better error messages**
+
    - Dhall parse errors should point to BUILD.dhall location
    - Build failures should show command + output clearly
    - Nix resolution failures need clearer diagnostics
 
-7. **Query improvements**
+1. **Query improvements**
+
    - `sensenet query deps(//foo:bar)` — show dependencies
    - `sensenet query rdeps(//..., //lib:core)` — reverse dependencies
    - Currently just lists all targets
 
-8. **Watch mode**
+1. **Watch mode**
+
    - `sensenet build --watch //foo:bar`
    - Re-run build on source file changes
    - Leverage DICE invalidation
@@ -111,22 +119,26 @@ incremental builds.
 ### P2: Ecosystem
 
 9. **Package manager integration**
+
    - `cratesIo` rule for Rust crates (exists but incomplete)
    - `hackage` rule for Haskell packages
    - Better `nixpkgs#` resolution caching
 
-10. **IDE integration**
-    - LSP-style diagnostics
-    - compile_commands.json generation for C++
+1. **IDE integration**
+
+   - LSP-style diagnostics
+   - compile_commands.json generation for C++
 
 ### P3: Advanced
 
 11. **Distributed builds**
+
     - Multiple NativeLink workers
     - Geographic distribution
     - Build farm integration
 
-12. **Artifact deduplication**
+01. **Artifact deduplication**
+
     - Share artifacts across projects
     - Remote cache population from CI
 
@@ -168,24 +180,28 @@ The following were part of the "Buck2 fiction" approach and are no longer needed
 ## Testing Strategy
 
 1. **Unit tests** — IR construction, Dhall parsing, flag generation
-2. **Integration tests** — Build each `src/examples/*/` project
-3. **Golden tests** — Compare build output against expected
-4. **Round-trip tests** — Parse → IR → (optionally emit) → build succeeds
+1. **Integration tests** — Build each `src/examples/*/` project
+1. **Golden tests** — Compare build output against expected
+1. **Round-trip tests** — Parse → IR → (optionally emit) → build succeeds
 
 ## Open Questions
 
 1. **Should SenseNet.Emit be removed?**
+
    - Pro: Dead code, confusing
    - Con: Might want Buck2 compatibility mode later
 
-2. **Nix evaluation caching?**
+1. **Nix evaluation caching?**
+
    - Currently shells out to `nix build` each time
    - Could cache flake resolution in a sqlite db
 
-3. **Dhall evaluation caching?**
+1. **Dhall evaluation caching?**
+
    - Dhall is pure and normalizable
    - Could cache normalized output keyed by file hash
 
-4. **Worker protocol?**
+1. **Worker protocol?**
+
    - NativeLink is one option
    - Could also do simple SSH + rsync for small teams

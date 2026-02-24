@@ -16,8 +16,9 @@
 
     # nix2gpu.flakeModule must be imported before nativelink module
     # (provides perSystem.nix2gpu options)
-    inputs.nix2gpu.flakeModule
-    (import ./nativelink/flake-module.nix { inherit inputs; })
+    # TODO: Re-enable once nativelink module is fixed
+    # inputs.nix2gpu.flakeModule
+    # (import ./nativelink/flake-module.nix { inherit inputs; })
   ];
 
   # Enable devshell for this repo
@@ -26,7 +27,9 @@
   sense.devshell.nv.enable = true;
 
   # Enable NativeLink for remote execution
-  sense.nativelink.enable = true;
+  # TODO: Re-enable once nativelink module dependencies are fixed
+  # The module references pkgs.sense.script.ghc which doesn't exist in this repo
+  # sense.nativelink.enable = false;
 
   # Enable custom LLVM git toolchain for SM120 support
   sense.llvm-git.enable = true;

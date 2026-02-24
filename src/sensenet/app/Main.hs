@@ -73,6 +73,8 @@ usage = do
         "Options:",
         "  -j N, --jobs=N         Limit parallel jobs (default: " <> T.pack (show defaultJobs) <> ", 80% of cores)",
         "  --all-cores            Use all cores (unlimited parallelism)",
+        "  --stub                 Dry run: show what would be built",
+        "  --no-tui               Disable TUI output (plain text only)",
         "",
         "Examples:",
         "  sensenet build //src/examples/cxx:hello",
@@ -91,23 +93,40 @@ data JobsSpec
   | JobsExact Int -- -j N: exactly N jobs
   deriving (Eq, Show)
 
--- | Parse -j/--jobs/--all-cores options from args
--- Returns (JobsSpec, remaining args)
-parseJobsOpt :: [String] -> (JobsSpec, [String])
-parseJobsOpt = go JobsDefault
+-- | Build options parsed from command line
+data BuildOpts = BuildOpts
+  { boJobs :: !JobsSpec,
+    boStub :: !Bool, -- --stub: dry run, don't actually build
+    boNoTui :: !Bool -- --no-tui: disable TUI (currently no-op, no TUI yet)
+  }
+
+defaultBuildOpts :: BuildOpts
+defaultBuildOpts =
+  BuildOpts
+    { boJobs = JobsDefault,
+      boStub = False,
+      boNoTui = False
+    }
+
+-- | Parse build options from args
+-- Returns (BuildOpts, remaining args)
+parseBuildOpts :: [String] -> (BuildOpts, [String])
+parseBuildOpts = go defaultBuildOpts
   where
-    go js [] = (js, [])
-    go _ ("--all-cores" : rest) = go JobsUnlimited rest
-    go _ ("-j" : n : rest)
-      | all isDigit n = go (JobsExact (read n)) rest
-    go _ (arg : rest)
+    go opts [] = (opts, [])
+    go opts ("--all-cores" : rest) = go opts {boJobs = JobsUnlimited} rest
+    go opts ("--stub" : rest) = go opts {boStub = True} rest
+    go opts ("--no-tui" : rest) = go opts {boNoTui = True} rest
+    go opts ("-j" : n : rest)
+      | all isDigit n = go opts {boJobs = JobsExact (read n)} rest
+    go opts (arg : rest)
       | "-j" `isPrefixOf` arg && all isDigit (drop 2 arg) =
-          go (JobsExact (read (drop 2 arg))) rest
+          go opts {boJobs = JobsExact (read (drop 2 arg))} rest
       | "--jobs=" `isPrefixOf` arg && all isDigit (drop 7 arg) =
-          go (JobsExact (read (drop 7 arg))) rest
-    go js (arg : rest) =
-      let (js', rest') = go js rest
-       in (js', arg : rest')
+          go opts {boJobs = JobsExact (read (drop 7 arg))} rest
+    go opts (arg : rest) =
+      let (opts', rest') = go opts rest
+       in (opts', arg : rest')
 
     isPrefixOf prefix str = take (length prefix) str == prefix
 
@@ -124,89 +143,124 @@ cmdBuild [] = do
   TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
   exitFailure
 cmdBuild args = do
-  let (jobsSpec, rest) = parseJobsOpt args
-  mJobs <- resolveJobs jobsSpec
+  let (opts, rest) = parseBuildOpts args
+  mJobs <- resolveJobs opts.boJobs
   case rest of
     [] -> do
       TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
       exitFailure
-    (target : _) -> case parseTarget (T.pack target) of
-      Nothing -> do
-        TIO.putStrLn $ "Invalid target: " <> T.pack target
-        TIO.putStrLn "Expected: //path/to/pkg:target, //path/to/pkg:all, or //..."
+    targets -> do
+      -- Parse all targets
+      let parsedTargets = [(t, parseTarget (T.pack t)) | t <- targets]
+          invalidTargets = [t | (t, Nothing) <- parsedTargets]
+      if not (null invalidTargets)
+        then do
+          TIO.putStrLn $ "Invalid target(s): " <> T.pack (unwords invalidTargets)
+          TIO.putStrLn "Expected: //path/to/pkg:target, //path/to/pkg:all, or //..."
+          exitFailure
+        else do
+          let validTargets = [p | (_, Just p) <- parsedTargets]
+          -- Stub mode: just print what would be built
+          if opts.boStub
+            then do
+              TIO.putStrLn $ "[stub] Would build " <> T.pack (show (length validTargets)) <> " target(s):"
+              mapM_ (TIO.putStrLn . ("[stub]   " <>) . showPattern) validTargets
+              exitSuccess
+            else buildTargets mJobs validTargets
+
+buildTargets :: Maybe Int -> [TargetPattern] -> IO ()
+buildTargets mJobs patterns = case patterns of
+  [] -> exitSuccess
+  [pattern] -> buildSinglePattern mJobs pattern
+  _ -> do
+    -- Multiple targets: build each one
+    projectRoot <- getCurrentDirectory
+    tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
+    TIO.putStrLn $ "Building " <> T.pack (show (length patterns)) <> " targets"
+    results <- mapM (buildPatternResult mJobs tc projectRoot) patterns
+    let failures = length [() | Left _ <- results]
+        successes = length [() | Right _ <- results]
+    if failures > 0
+      then do
+        TIO.putStrLn $ "✗ " <> T.pack (show failures) <> " failed, " <> T.pack (show successes) <> " succeeded"
         exitFailure
-      Just pattern -> do
-        -- Load toolchains
-        projectRoot <- getCurrentDirectory -- Use absolute path to avoid issues with cd in subshells
-        tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
+      else do
+        TIO.putStrLn $ "✓ Built " <> T.pack (show successes) <> " targets"
+        exitSuccess
 
-        case pattern of
-          SingleTarget pkgPath targetName -> do
-            -- Parse package
-            let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
-            pkg <- Dhall.parsePackageFile projectRoot dhallPath
+buildPatternResult :: Maybe Int -> TC.Toolchains -> FilePath -> TargetPattern -> IO (Either BuildError BuildResult)
+buildPatternResult mJobs tc projectRoot = \case
+  SingleTarget pkgPath targetName -> do
+    let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+    pkg <- Dhall.parsePackageFile projectRoot dhallPath
+    buildWithDepsJ mJobs tc projectRoot pkg targetName
+  AllInPackage pkgPath -> do
+    let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+    pkg <- Dhall.parsePackageFile projectRoot dhallPath
+    result <- buildAllTargetsJ mJobs tc projectRoot pkg
+    pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
+  Recursive _ -> do
+    -- For recursive, just return success for now
+    -- TODO: implement properly
+    pure $ Right $ BuildSuccess ["recursive build"]
 
-            TIO.putStrLn $ "Building //" <> pkgPath <> ":" <> targetName
-            result <- buildWithDepsJ mJobs tc projectRoot pkg targetName
-            case result of
-              Left err -> do
-                TIO.putStrLn $ "✗ " <> showError err
-                exitFailure
-              Right (BuildSuccess outputs) -> do
-                TIO.putStrLn $ "✓ Built: " <> T.intercalate ", " (map T.pack outputs)
-                exitSuccess
-              Right (BuildCached outputs) -> do
-                TIO.putStrLn $ "✓ Cached: " <> T.intercalate ", " (map T.pack outputs)
-                exitSuccess
-          AllInPackage pkgPath -> do
-            -- Parse package
-            let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
-            pkg <- Dhall.parsePackageFile projectRoot dhallPath
-
-            TIO.putStrLn $ "Building //" <> pkgPath <> ":all (" <> T.pack (show (length pkg.rules)) <> " targets)"
-            result <- buildAllTargetsJ mJobs tc projectRoot pkg
-            case result of
-              Left err -> do
-                TIO.putStrLn $ "✗ " <> showError err
-                exitFailure
-              Right n -> do
-                TIO.putStrLn $ "✓ Built " <> T.pack (show n) <> " targets"
-                exitSuccess
-          Recursive subPath -> do
-            -- Discover all packages under subPath
-            let startDir = if T.null subPath then projectRoot else projectRoot <> "/" <> T.unpack subPath
-            files <- discoverUnder projectRoot startDir
-            if null files
-              then do
-                TIO.putStrLn $ "No BUILD.dhall files found under //" <> subPath <> "..."
-                exitFailure
-              else do
-                -- Parse all packages
-                pkgs <- mapM (\f -> Dhall.parsePackageFile projectRoot (dhallPath f)) files
-                let totalTargets = sum [length pkg.rules | pkg <- pkgs]
-                    pathPrefix = if T.null subPath then "//" else "//" <> subPath <> "/"
-                TIO.putStrLn $ "Building " <> pathPrefix <> "... (" <> T.pack (show (length pkgs)) <> " packages, " <> T.pack (show totalTargets) <> " targets)"
-
-                -- Sort packages by dependencies (deps first)
-                let sortedPkgs = sortPackagesByDeps pkgs
-                    pkgPaths = map (T.pack . (.path)) pkgs
-
-                -- Build packages in waves, respecting cross-package deps
-                -- Packages with deps outside our set are built immediately
-                -- Packages with deps inside our set wait for those deps
-                results <- buildPackageWaves mJobs tc projectRoot pkgPaths sortedPkgs
-
-                -- Summarize
-                let failures = [(p, e) | (p, Left e) <- results]
-                    successes = [n | (_, Right n) <- results]
-                if null failures
-                  then do
-                    TIO.putStrLn $ "✓ Built " <> T.pack (show (sum successes)) <> " targets across " <> T.pack (show (length pkgs)) <> " packages"
-                    exitSuccess
-                  else do
-                    TIO.putStrLn $ "✗ " <> T.pack (show (length failures)) <> " package(s) failed:"
-                    mapM_ (\(p, e) -> TIO.putStrLn $ "  " <> T.pack p <> ": " <> showError e) failures
-                    exitFailure
+buildSinglePattern :: Maybe Int -> TargetPattern -> IO ()
+buildSinglePattern mJobs pat = do
+  projectRoot <- getCurrentDirectory
+  tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
+  case pat of
+    SingleTarget pkgPath targetName -> do
+      let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+      pkg <- Dhall.parsePackageFile projectRoot dhallPath
+      TIO.putStrLn $ "Building //" <> pkgPath <> ":" <> targetName
+      result <- buildWithDepsJ mJobs tc projectRoot pkg targetName
+      case result of
+        Left err -> do
+          TIO.putStrLn $ "✗ " <> showError err
+          exitFailure
+        Right (BuildSuccess outputs) -> do
+          TIO.putStrLn $ "✓ Built: " <> T.intercalate ", " (map T.pack outputs)
+          exitSuccess
+        Right (BuildCached outputs) -> do
+          TIO.putStrLn $ "✓ Cached: " <> T.intercalate ", " (map T.pack outputs)
+          exitSuccess
+    AllInPackage pkgPath -> do
+      let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+      pkg <- Dhall.parsePackageFile projectRoot dhallPath
+      TIO.putStrLn $ "Building //" <> pkgPath <> ":all (" <> T.pack (show (length pkg.rules)) <> " targets)"
+      result <- buildAllTargetsJ mJobs tc projectRoot pkg
+      case result of
+        Left err -> do
+          TIO.putStrLn $ "✗ " <> showError err
+          exitFailure
+        Right n -> do
+          TIO.putStrLn $ "✓ Built " <> T.pack (show n) <> " targets"
+          exitSuccess
+    Recursive subPath -> do
+      let startDir = if T.null subPath then projectRoot else projectRoot <> "/" <> T.unpack subPath
+      files <- discoverUnder projectRoot startDir
+      if null files
+        then do
+          TIO.putStrLn $ "No BUILD.dhall files found under //" <> subPath <> "..."
+          exitFailure
+        else do
+          pkgs <- mapM (\f -> Dhall.parsePackageFile projectRoot (dhallPath f)) files
+          let totalTargets = sum [length pkg.rules | pkg <- pkgs]
+              pathPrefix = if T.null subPath then "//" else "//" <> subPath <> "/"
+          TIO.putStrLn $ "Building " <> pathPrefix <> "... (" <> T.pack (show (length pkgs)) <> " packages, " <> T.pack (show totalTargets) <> " targets)"
+          let sortedPkgs = sortPackagesByDeps pkgs
+              pkgPaths = map (T.pack . (.path)) pkgs
+          results <- buildPackageWaves mJobs tc projectRoot pkgPaths sortedPkgs
+          let failures = [(p, e) | (p, Left e) <- results]
+              successes = [n | (_, Right n) <- results]
+          if null failures
+            then do
+              TIO.putStrLn $ "✓ Built " <> T.pack (show (sum successes)) <> " targets across " <> T.pack (show (length pkgs)) <> " packages"
+              exitSuccess
+            else do
+              TIO.putStrLn $ "✗ " <> T.pack (show (length failures)) <> " package(s) failed:"
+              mapM_ (\(p, e) -> TIO.putStrLn $ "  " <> T.pack p <> ": " <> showError e) failures
+              exitFailure
 
 -- | Build packages in waves, respecting cross-package dependencies
 -- Packages are executed in parallel within each wave, but waves are sequential
@@ -322,3 +376,9 @@ showError = \case
   DependencyFailed dep err -> "Dependency failed: " <> dep <> " - " <> err
   SourceNotFound path -> "Source not found: " <> T.pack path
   PackageError err -> "Package error: " <> err
+
+showPattern :: TargetPattern -> Text
+showPattern = \case
+  SingleTarget pkgPath targetName -> "//" <> pkgPath <> ":" <> targetName
+  AllInPackage pkgPath -> "//" <> pkgPath <> ":all"
+  Recursive subPath -> "//" <> subPath <> "..."

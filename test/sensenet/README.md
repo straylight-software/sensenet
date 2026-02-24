@@ -140,15 +140,15 @@ This adds the following checks:
 ### Nix Tests
 
 1. Create `test/sensenet/your-test.nix`
-2. Add `__tests` attribute with test metadata
-3. Create `test/sensenet/your-test.nix.expected`
-4. Add to `run-tests.sh`
+1. Add `__tests` attribute with test metadata
+1. Create `test/sensenet/your-test.nix.expected`
+1. Add to `run-tests.sh`
 
 ### Dhall Tests
 
 1. Create `test/sensenet/your-test.dhall`
-2. Use Dhall assertions for type-level tests
-3. Add to `run-tests.sh`
+1. Use Dhall assertions for type-level tests
+1. Add to `run-tests.sh`
 
 ## Architecture
 

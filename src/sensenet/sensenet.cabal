@@ -12,9 +12,22 @@ maintainer:         dev@straylight.ai
 category:           Development
 build-type:         Simple
 
-executable sensenet
-    main-is:          Main.hs
-    other-modules:
+-- Common build settings shared by library, executable, and tests
+common sensenet-common
+    default-language: GHC2024
+    default-extensions:
+        LambdaCase
+        OverloadedStrings
+        OverloadedRecordDot
+    ghc-options:
+        -Wall
+        -Werror
+
+-- Library: exposes core modules for tests and downstream use
+library
+    import:           sensenet-common
+    hs-source-dirs:   .
+    exposed-modules:
         DhallFast.Core
         DhallFast.Convert
         DhallFast.Eval
@@ -49,21 +62,27 @@ executable sensenet
         unix,
         unordered-containers,
         vector
-    default-language: GHC2024
-    default-extensions:
-        LambdaCase
-        OverloadedStrings
-        OverloadedRecordDot
+
+-- Executable: thin wrapper around library
+executable sensenet
+    import:           sensenet-common
+    main-is:          Main.hs
+    build-depends:
+        base >= 4.18 && < 5,
+        directory,
+        text,
+        sensenet
     ghc-options:
-        -Wall
-        -Werror
         -O2
         -threaded
         -rtsopts
         "-with-rtsopts=-N"
-    hs-source-dirs:   .
+    hs-source-dirs:   app
+    -- Reexport library modules for Main to use
+    -- (Main imports SenseNet.*, which come from the library)
 
 test-suite sensenet-test
+    import:           sensenet-common
     type:             exitcode-stdio-1.0
     main-is:          Main.hs
     other-modules:
@@ -76,16 +95,10 @@ test-suite sensenet-test
         Test.SenseNet.Savage
         Test.SenseNet.TUI
     build-depends:
-        aeson,
-        async,
         base >= 4.18 && < 5,
-        bytestring,
         containers,
-        crypton,
-        deepseq,
         directory,
         filepath,
-        memory,
         process,
         random,
         tasty,
@@ -95,22 +108,17 @@ test-suite sensenet-test
         time,
         unix,
         sensenet
-    default-language: GHC2024
     default-extensions:
-        LambdaCase
-        OverloadedStrings
-        OverloadedRecordDot
         RecordWildCards
         ScopedTypeVariables
     ghc-options:
-        -Wall
-        -Werror
         -threaded
         -rtsopts
         "-with-rtsopts=-N"
     hs-source-dirs:   ../../test
 
 benchmark sensenet-bench
+    import:           sensenet-common
     type:             exitcode-stdio-1.0
     main-is:          Main.hs
     build-depends:
@@ -120,14 +128,10 @@ benchmark sensenet-bench
         deepseq,
         random,
         text
-    default-language: GHC2024
     default-extensions:
-        LambdaCase
-        OverloadedStrings
         RecordWildCards
         ScopedTypeVariables
     ghc-options:
-        -Wall
         -O2
         -threaded
         -rtsopts

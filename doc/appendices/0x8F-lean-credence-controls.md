@@ -16,10 +16,11 @@ documentation infrastructure is **assigning the credence of proven Lean to
 slop that merely typechecks**.
 
 A document can:
+
 1. Typecheck and prove real theorems (high credence)
-2. Typecheck and prove trivial tautologies (medium credence)
-3. Typecheck with axioms that stipulate rather than derive (zero credence from Lean)
-4. Fail to typecheck (negative credence — known broken)
+1. Typecheck and prove trivial tautologies (medium credence)
+1. Typecheck with axioms that stipulate rather than derive (zero credence from Lean)
+1. Fail to typecheck (negative credence — known broken)
 
 The danger is (3) being mistaken for (1). The mitigation is explicit controls.
 
@@ -59,6 +60,7 @@ theorem clean_requires_request :
 ```
 
 The proof must:
+
 - Not be `trivial`, `rfl`, or `exact ⟨...⟩` alone
 - Follow from the structure of a definition
 - Have a contrapositive that fails to compile
@@ -94,6 +96,7 @@ Every theorem and axiom must be marked with its credence level:
 ### 5. Axiom Disclosure
 
 Any use of `axiom` must include a comment block explaining:
+
 - Why this is stipulated rather than proven
 - What would be required to prove it
 - What credence to assign

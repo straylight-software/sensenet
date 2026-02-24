@@ -1059,8 +1059,8 @@ in
                 llvm = pkgs.llvm-git or pkgs.llvmPackages_19.llvm;
                 clang = pkgs.llvm-git or pkgs.llvmPackages_19.clang;
                 lld = pkgs.llvm-git or pkgs.llvmPackages_19.lld;
-                gcc = pkgs.gcc;
-                glibc = pkgs.glibc;
+                inherit (pkgs) gcc;
+                inherit (pkgs) glibc;
               in
               [
                 # NativeLink worker

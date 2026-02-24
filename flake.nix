@@ -110,7 +110,7 @@
 
       # Self-use: packages and minimal devshell for this repo
       perSystem =
-        { pkgs, system, ... }:
+        { pkgs, ... }:
         let
           # GHC 9.12 with haskell overlay applied (via std.nix)
           inherit (pkgs.haskell.packages) ghc912;
@@ -119,19 +119,27 @@
           sensenetDeps = {
             inherit (ghc912)
               mkDerivation
+              aeson
               async
               base
               bytestring
               containers
               crypton
+              deepseq
               dhall
               directory
+              either
               filepath
+              hashable
               memory
+              microlens
               process
               text
+              text-short
               time
               unix
+              unordered-containers
+              vector
               ;
           };
 

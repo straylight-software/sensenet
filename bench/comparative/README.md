@@ -16,9 +16,9 @@ native buck2:
 ## What We Measure
 
 1. **Dhall evaluation time**: How fast can we render BUILD.dhall → BUCK?
-2. **Buck2 analysis time**: Does generated BUCK have overhead vs hand-written?
-3. **End-to-end no-op**: Time from `sensenet build` to completion (cached)
-4. **DICE vs Buck2 caching**: ActionKey computation overhead
+1. **Buck2 analysis time**: Does generated BUCK have overhead vs hand-written?
+1. **End-to-end no-op**: Time from `sensenet build` to completion (cached)
+1. **DICE vs Buck2 caching**: ActionKey computation overhead
 
 ## Running Benchmarks
 
