@@ -24,7 +24,12 @@ tests =
     "Crashers"
     [ testGroup "foldr1 on empty list" foldr1CrashTests,
       testGroup "Partial functions" partialFunctionTests,
-      testGroup "Infinite loops" infiniteLoopTests
+      testGroup "Infinite loops" infiniteLoopTests,
+      testGroup "Division by zero" divisionByZeroTests,
+      testGroup "Stack overflow" stackOverflowTests,
+      testGroup "Memory exhaustion" memoryExhaustionTests,
+      testGroup "File handle exhaustion" fileHandleTests,
+      testGroup "Signal handling" signalTests
     ]
 
 -- ════════════════════════════════════════════════════════════════════════════

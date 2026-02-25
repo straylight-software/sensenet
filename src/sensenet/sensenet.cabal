@@ -33,6 +33,7 @@ library
         DhallFast.Eval
         DhallFast.Input
         SenseNet.Build
+        SenseNet.Complete
         SenseNet.DICE
         SenseNet.Dhall
         SenseNet.Discover
@@ -99,23 +100,33 @@ test-suite sensenet-test
     main-is:          Main.hs
     other-modules:
         Test.SenseNet.Adversarial
+        Test.SenseNet.Bootstrap
         Test.SenseNet.Build
         Test.SenseNet.Crashers
         Test.SenseNet.DICE
+        Test.SenseNet.DhallNixIntegration
+        Test.SenseNet.DhallTorture
+        Test.SenseNet.Filesystem
         Test.SenseNet.Integration
         Test.SenseNet.Psychotic
         Test.SenseNet.Savage
         Test.SenseNet.TUI
     build-depends:
+        async,
         base >= 4.18 && < 5,
+        bytestring,
         containers,
+        crypton,
+        deepseq,
         directory,
         filepath,
+        memory,
         process,
         random,
         tasty,
         tasty-hunit,
         tasty-quickcheck,
+        temporary,
         text,
         time,
         unix,

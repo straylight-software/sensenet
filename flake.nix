@@ -146,8 +146,10 @@
               ;
           };
 
-          # Stage 1: Bootstrap - minimal deps, fast build
-          sensenet-bootstrap = pkgs.callPackage ./nix/packages/sensenet-bootstrap.nix sensenetDeps;
+          # Stage 1: Bootstrap - minimal deps, fast build (no shell completions)
+          sensenet-bootstrap = pkgs.callPackage ./nix/packages/sensenet-bootstrap.nix (
+            builtins.removeAttrs sensenetDeps [ "installShellFiles" ]
+          );
 
           # Stage 2: Local - same as bootstrap (no remote execution deps)
           sensenet-local = pkgs.callPackage ./nix/packages/sensenet-local.nix sensenetDeps;

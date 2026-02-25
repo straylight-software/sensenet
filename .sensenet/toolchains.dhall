@@ -32,8 +32,8 @@ let rustToolchain : TC.Rust =
 
 let haskellToolchain : TC.Haskell =
   { image = None Text
-  , ghc = TC.tool "/nix/store/dq5xs27h4q02468kbngiszpcgs1q0vay-ghc-9.12.2-with-packages/bin/ghc"
-  , ghc_pkg = TC.tool "/nix/store/dq5xs27h4q02468kbngiszpcgs1q0vay-ghc-9.12.2-with-packages/bin/ghc-pkg"
+  , ghc = TC.tool "/nix/store/fyfnr0mspnwdw4w9aphdz4l8hicxabw7-ghc-9.12.2-with-packages/bin/ghc"
+  , ghc_pkg = TC.tool "/nix/store/fyfnr0mspnwdw4w9aphdz4l8hicxabw7-ghc-9.12.2-with-packages/bin/ghc-pkg"
   , paths = TC.emptyPaths
   }
 
