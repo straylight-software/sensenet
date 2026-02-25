@@ -117,6 +117,7 @@
 
           # Minimal deps required by sensenet.cabal
           sensenetDeps = {
+            inherit (pkgs) lib installShellFiles;
             inherit (ghc912)
               mkDerivation
               aeson

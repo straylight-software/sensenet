@@ -4,6 +4,7 @@
 {
   mkDerivation,
   lib,
+  installShellFiles,
   # Core deps (from sensenet.cabal)
   aeson,
   async,
@@ -56,31 +57,46 @@ let
     unordered-containers
     vector
   ];
+
+  # Build the Haskell package
+  sensenet-unwrapped = mkDerivation {
+    pname = "sensenet";
+    version = "0.4.0";
+    src = lib.cleanSource ../../src/sensenet;
+    # Library + executable
+    isLibrary = true;
+    isExecutable = true;
+    libraryHaskellDepends = coreDeps;
+    executableHaskellDepends = [
+      base
+      directory
+      text
+    ];
+    # No FFI dependencies - pure Haskell
+    executableSystemDepends = [ ];
+    doCheck = false;
+    # Parallel GHC compilation + threaded runtime
+    configureFlags = [
+      "--ghc-options=-j"
+      "--ghc-options=-threaded"
+      "--ghc-options=-rtsopts"
+      "--ghc-options=-with-rtsopts=-N"
+    ];
+    description = "SENSE // NET - Pure Haskell build system with content-addressed caching";
+    license = lib.licenses.mit;
+    mainProgram = "sensenet";
+  };
 in
-mkDerivation {
-  pname = "sensenet";
-  version = "0.4.0";
-  src = lib.cleanSource ../../src/sensenet;
-  # Library + executable
-  isLibrary = true;
-  isExecutable = true;
-  libraryHaskellDepends = coreDeps;
-  executableHaskellDepends = [
-    base
-    directory
-    text
-  ];
-  # No FFI dependencies - pure Haskell
-  executableSystemDepends = [ ];
-  doCheck = false;
-  # Parallel GHC compilation + threaded runtime
-  configureFlags = [
-    "--ghc-options=-j"
-    "--ghc-options=-threaded"
-    "--ghc-options=-rtsopts"
-    "--ghc-options=-with-rtsopts=-N"
-  ];
-  description = "SENSE // NET - Pure Haskell build system with content-addressed caching";
-  license = lib.licenses.mit;
-  mainProgram = "sensenet";
-}
+# Wrap with shell completions
+sensenet-unwrapped.overrideAttrs (old: {
+  nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ installShellFiles ];
+  postInstall = (old.postInstall or "") + ''
+    # Install shell completions for bash, zsh, and fish
+    installShellCompletion --bash --name sensenet.bash \
+      <($out/bin/sensenet complete bash)
+    installShellCompletion --zsh --name _sensenet \
+      <($out/bin/sensenet complete zsh)
+    installShellCompletion --fish --name sensenet.fish \
+      <($out/bin/sensenet complete fish)
+  '';
+})
