@@ -23,6 +23,7 @@ module SenseNet.Build
     buildWithDepsJ,
     buildAllTargets,
     buildAllTargetsJ,
+    buildAllPackagesJ,
     BuildResult (..),
     BuildError (..),
 
@@ -294,6 +295,61 @@ buildAllTargetsJ mJobs blog tc projectRoot pkg = do
           logMaybe blog $ \env -> Log.logBuildComplete env pkgName 0 -- TODO: track duration
           pure $ Right total
 
+-- | Build ALL packages with a unified action graph
+-- This enables maximum parallelism by creating a single graph across all packages
+-- and letting DICE execute everything in parallel (subject to dependencies).
+buildAllPackagesJ ::
+  -- | Max concurrent jobs (Nothing = unlimited)
+  Maybe Int ->
+  -- | Logging context
+  BuildLog ->
+  Toolchains ->
+  FilePath ->
+  [Package] ->
+  IO (Either BuildError Int)
+buildAllPackagesJ mJobs blog tc projectRoot pkgs = do
+  let totalTargets = sum [length pkg.rules | pkg <- pkgs]
+  logMaybe blog $ \env -> Log.logBuildStart env "//..." totalTargets
+
+  -- Build unresolved actions for all packages
+  actionResults <- forM pkgs $ \pkg -> do
+    let outDir = projectRoot </> "sensenet-out" </> pkg.path
+    createDirectoryIfMissing True outDir
+    buildAllActionsUnresolved tc projectRoot pkg outDir
+
+  -- Check for errors in action building
+  case [err | Left err <- actionResults] of
+    (err : _) -> do
+      logMaybe blog $ \env -> Log.logBuildFailed env "//..." (T.pack (show err))
+      pure $ Left err
+    [] -> do
+      -- Flatten all (Package, Rule, Action) triples
+      let allTriples = concat [triples | Right triples <- actionResults]
+
+      -- Build unified nameToKey map across ALL packages
+      -- This is crucial for cross-package dependency resolution
+      let nameToKey = Map.fromList [(aName a, actionKey a) | (_, _, a) <- allTriples]
+
+      -- Resolve dependencies for all actions using unified map
+      let resolvedActions = [resolveDepsForRule nameToKey pkg r a | (pkg, r, a) <- allTriples]
+
+      -- Build unified graph from resolved actions
+      let graph = foldl (\g a -> addAction a g) emptyGraph resolvedActions
+          rootKeys = [actionKey a | a <- resolvedActions]
+          unifiedGraph = graph {agRoots = rootKeys}
+
+      -- Execute the unified graph with DICE
+      cache <- newCache
+      execResult <- executeGraphWithJobs mJobs cache runAction unifiedGraph
+      case erFailed execResult of
+        ((_, err) : _) -> do
+          logMaybe blog $ \env -> Log.logBuildFailed env "//..." err
+          pure $ Left $ CommandFailed "graph" 1 err
+        [] -> do
+          let total = erExecuted execResult + erCacheHits execResult
+          logMaybe blog $ \env -> Log.logBuildComplete env "//..." 0
+          pure $ Right total
+
 -- | Build action graph for ALL rules in a package
 buildAllActionGraph ::
   Toolchains ->
@@ -316,6 +372,22 @@ buildAllActionGraph tc projectRoot pkg outDir = do
           rootKeys = [actionKey a | a <- resolvedActions]
           graphWithRoots = graph {agRoots = rootKeys}
       pure $ Right graphWithRoots
+
+-- | Build unresolved actions for all rules in a package
+-- Returns (Package, Rule, Action) triples with aInputKeys = []
+-- Cross-package dependencies are resolved later with a unified nameToKey map
+buildAllActionsUnresolved ::
+  Toolchains ->
+  FilePath ->
+  Package ->
+  FilePath ->
+  IO (Either BuildError [(Package, Rule, Action)])
+buildAllActionsUnresolved tc projectRoot pkg outDir = do
+  let allRules = pkg.rules
+  actionsResult <- buildActionsWithRules tc projectRoot pkg.path outDir allRules
+  pure $ case actionsResult of
+    Left err -> Left err
+    Right ruleActionPairs -> Right [(pkg, r, a) | (r, a) <- ruleActionPairs]
 
 -- | Build an action graph from a rule and its dependencies
 -- Supports both local (:target) and cross-package (//pkg:target) deps

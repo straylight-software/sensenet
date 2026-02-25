@@ -16,12 +16,14 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (isDigit)
+import Data.List (isInfixOf, isPrefixOf)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import GHC.Conc (getNumProcessors)
-import SenseNet.Build (BuildError (..), BuildLog, BuildResult (..), buildAllTargetsJ, buildWithDepsJ, noLog, packageDeps, sortPackagesByDeps, withLogging)
+import SenseNet.Build (BuildError (..), BuildLog, BuildResult (..), buildAllPackagesJ, buildAllTargetsJ, buildWithDepsJ, noLog, withLogging)
+import SenseNet.Complete qualified as Complete
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
 import SenseNet.IR (Dep (..), Package (..), Rule (..), ruleDeps, ruleKind, ruleName, ruleSrcs)
@@ -44,6 +46,8 @@ main = do
     ["-V"] -> version
     ["--help"] -> usage
     ["-h"] -> usage
+    ("--complete" : rest) -> cmdComplete rest
+    ("complete" : rest) -> cmdCompleteScript rest
     ("build" : rest) -> cmdBuild rest
     ("run" : rest) -> cmdRun rest
     ("query" : rest) -> cmdQuery rest
@@ -74,6 +78,7 @@ usage = do
         "  targets                List available targets",
         "  clean [--full]         Remove build outputs (--full: also clear cache)",
         "  query <target>#<sel>   Query the build graph",
+        "  complete <shell>       Generate shell completion script (bash/zsh/fish)",
         "",
         "Query selectors:",
         "  #deps                  Transitive dependencies",
@@ -99,6 +104,11 @@ usage = do
         "  --stub                 Dry run: show what would be built",
         "  --no-tui               Disable TUI output (plain text only)",
         "  -v, --verbose          Enable structured logging (Katip JSON output)",
+        "",
+        "Shell completion:",
+        "  eval \"$(sensenet complete bash)\"   # Add to ~/.bashrc",
+        "  eval \"$(sensenet complete zsh)\"    # Add to ~/.zshrc",
+        "  sensenet complete fish | source     # Add to ~/.config/fish/config.fish",
         "",
         "Examples:",
         "  sensenet build //src/examples/cxx:hello",
@@ -156,8 +166,6 @@ parseBuildOpts = go defaultBuildOpts
     go opts (arg : rest) =
       let (opts', rest') = go opts rest
        in (opts', arg : rest')
-
-    isPrefixOf prefix str = take (length prefix) str == prefix
 
 -- | Resolve JobsSpec to Maybe Int for the executor
 resolveJobs :: JobsSpec -> IO (Maybe Int)
@@ -286,53 +294,15 @@ buildSinglePattern mJobs blog pat = do
           let totalTargets = sum [length pkg.rules | pkg <- pkgs]
               pathPrefix = if T.null subPath then "//" else "//" <> subPath <> "/"
           TIO.putStrLn $ "Building " <> pathPrefix <> "... (" <> T.pack (show (length pkgs)) <> " packages, " <> T.pack (show totalTargets) <> " targets)"
-          let sortedPkgs = sortPackagesByDeps pkgs
-              pkgPaths = map (T.pack . (.path)) pkgs
-          results <- buildPackageWaves mJobs blog tc projectRoot pkgPaths sortedPkgs
-          let failures = [(p, e) | (p, Left e) <- results]
-              successes = [n | (_, Right n) <- results]
-          if null failures
-            then do
-              TIO.putStrLn $ "✓ Built " <> T.pack (show (sum successes)) <> " targets across " <> T.pack (show (length pkgs)) <> " packages"
-              exitSuccess
-            else do
-              TIO.putStrLn $ "✗ " <> T.pack (show (length failures)) <> " package(s) failed:"
-              mapM_ (\(p, e) -> TIO.putStrLn $ "  " <> T.pack p <> ": " <> showError e) failures
-              exitFailure
-
--- | Build packages in waves, respecting cross-package dependencies
--- Packages are executed in parallel within each wave, but waves are sequential
-buildPackageWaves ::
-  Maybe Int ->
-  BuildLog ->
-  TC.Toolchains ->
-  FilePath ->
-  [Text] -> -- All package paths in our build set
-  [Package] -> -- Packages sorted by deps (deps first)
-  IO [(FilePath, Either BuildError Int)]
-buildPackageWaves mJobs blog tc projectRoot allPkgPaths pkgs = go [] [] pkgs
-  where
-    go results _ [] = pure results
-    go results completed (pkg : rest) = do
-      -- Check if all deps in our set are completed
-      let deps = filter (`elem` allPkgPaths) (packageDeps pkg)
-          depsReady = all (`elem` completed) deps
-
-      if depsReady
-        then do
-          -- Build this package
-          result <- buildAllTargetsJ mJobs blog tc projectRoot pkg
+          -- Build all packages with a unified action graph for maximum parallelism
+          result <- buildAllPackagesJ mJobs blog tc projectRoot pkgs
           case result of
             Left err -> do
-              -- Package failed, but continue with others
-              go ((pkg.path, Left err) : results) completed rest
+              TIO.putStrLn $ "✗ " <> showError err
+              exitFailure
             Right n -> do
-              TIO.putStrLn $ "  ✓ //" <> T.pack pkg.path <> " (" <> T.pack (show n) <> " targets)"
-              go ((pkg.path, Right n) : results) (T.pack pkg.path : completed) rest
-        else do
-          -- Deps not ready - this shouldn't happen with proper topo sort
-          -- but handle it gracefully by putting pkg at end
-          go results completed (rest ++ [pkg])
+              TIO.putStrLn $ "✓ Built " <> T.pack (show n) <> " targets across " <> T.pack (show (length pkgs)) <> " packages"
+              exitSuccess
 
 -- | Run command: build target then execute it
 cmdRun :: [String] -> IO ()
@@ -693,6 +663,201 @@ findTargetByLabel :: [Package] -> Text -> [(Package, Rule)]
 findTargetByLabel pkgs label = case parseTarget label of
   Just (SingleTarget p t) -> findTargets pkgs (SingleTarget p t)
   _ -> []
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Shell Completion
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Fast inline completion (called by shell completion functions)
+-- Usage: sensenet --complete <word> [context...]
+-- Outputs completions one per line, optimized for speed
+cmdComplete :: [String] -> IO ()
+cmdComplete args = case args of
+  [] -> completeCommands ""
+  [word] -> completeCommands word
+  [cmd, word] -> completeForCommand cmd word
+  (cmd : word : _) -> completeForCommand cmd word
+
+-- | Complete top-level commands
+completeCommands :: String -> IO ()
+completeCommands prefix = do
+  let commands = ["build", "run", "query", "targets", "clean", "complete", "--help", "--version"]
+      matches = filter (prefix `isPrefixOf`) commands
+  mapM_ putStrLn matches
+
+-- | Complete arguments for a specific command
+completeForCommand :: String -> String -> IO ()
+completeForCommand cmd word
+  | cmd == "build" = completeBuild word
+  | cmd == "run" = completeRun word
+  | cmd == "query" = completeQuery word
+  | cmd == "clean" = completeClean word
+  | cmd == "complete" = completeShells word
+  | otherwise = pure ()
+
+-- | Complete build command (targets and options)
+completeBuild :: String -> IO ()
+completeBuild word
+  | "-" `isPrefixOf` word = completeBuildOpts word
+  | "//" `isPrefixOf` word = completeTargets word
+  | otherwise = completeTargets ("//" ++ word)
+
+-- | Complete build options
+completeBuildOpts :: String -> IO ()
+completeBuildOpts prefix = do
+  let opts = ["-j", "--jobs=", "--all-cores", "--stub", "--no-tui", "-v", "--verbose"]
+      matches = filter (prefix `isPrefixOf`) opts
+  mapM_ putStrLn matches
+
+-- | Complete run command (single target only)
+completeRun :: String -> IO ()
+completeRun word
+  | "-" `isPrefixOf` word = pure () -- run doesn't have options before target
+  | "//" `isPrefixOf` word = completeTargets word
+  | otherwise = completeTargets ("//" ++ word)
+
+-- | Complete query command (targets with selectors)
+completeQuery :: String -> IO ()
+completeQuery word
+  | "#" `isInfixOf` word = completeQuerySelector word
+  | "--" `isPrefixOf` word = completeQueryOpts word
+  | "//" `isPrefixOf` word = completeTargets word
+  | otherwise = completeTargets ("//" ++ word)
+
+-- | Complete query selectors after #
+completeQuerySelector :: String -> IO ()
+completeQuerySelector word = do
+  let (targetPart, fragment) = break (== '#') word
+      selectorPrefix = drop 1 fragment -- drop the #
+      selectors = ["deps", "rdeps", "inputs", "attrs", "kind/"]
+      matches = filter (selectorPrefix `isPrefixOf`) selectors
+  mapM_ (\s -> putStrLn $ targetPart ++ "#" ++ s) matches
+
+-- | Complete query options
+completeQueryOpts :: String -> IO ()
+completeQueryOpts prefix = do
+  let opts = ["--json", "--dot", "--limit"]
+      matches = filter (prefix `isPrefixOf`) opts
+  mapM_ putStrLn matches
+
+-- | Complete clean options
+completeClean :: String -> IO ()
+completeClean prefix = do
+  let opts = ["--full"]
+      matches = filter (prefix `isPrefixOf`) opts
+  mapM_ putStrLn matches
+
+-- | Complete shell names for complete command
+completeShells :: String -> IO ()
+completeShells prefix = do
+  let shells = ["bash", "zsh", "fish"]
+      matches = filter (prefix `isPrefixOf`) shells
+  mapM_ putStrLn matches
+
+-- | Complete targets (//path:target)
+-- Uses cached target discovery for speed (< 50ms vs 4+ seconds)
+completeTargets :: String -> IO ()
+completeTargets prefix = do
+  projectRoot <- getCurrentDirectory
+  completions <- Complete.completeTargetsCached projectRoot (T.pack prefix)
+  mapM_ (putStrLn . T.unpack) completions
+
+-- | Generate shell completion scripts
+cmdCompleteScript :: [String] -> IO ()
+cmdCompleteScript args = case args of
+  ["bash"] -> TIO.putStrLn bashCompletion
+  ["zsh"] -> TIO.putStrLn zshCompletion
+  ["fish"] -> TIO.putStrLn fishCompletion
+  _ -> do
+    TIO.putStrLn "Usage: sensenet complete <shell>"
+    TIO.putStrLn "Supported shells: bash, zsh, fish"
+    exitFailure
+
+-- | Bash completion script
+bashCompletion :: Text
+bashCompletion =
+  T.unlines
+    [ "# sensenet bash completion",
+      "# Add to ~/.bashrc: eval \"$(sensenet complete bash)\"",
+      "",
+      "_sensenet_complete() {",
+      "    local cur prev words cword",
+      "    _init_completion || return",
+      "",
+      "    # Get completions from sensenet",
+      "    local IFS=$'\\n'",
+      "    local cmd=\"\"",
+      "    if [[ $cword -ge 2 ]]; then",
+      "        cmd=\"${words[1]}\"",
+      "    fi",
+      "",
+      "    COMPREPLY=( $(sensenet --complete \"$cmd\" \"$cur\" 2>/dev/null) )",
+      "",
+      "    # Handle special characters in target paths",
+      "    if [[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == */: ]]; then",
+      "        # Don't add space after colon",
+      "        compopt -o nospace",
+      "    elif [[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == *... ]]; then",
+      "        # Don't add space after ...",
+      "        compopt -o nospace",
+      "    fi",
+      "}",
+      "",
+      "complete -F _sensenet_complete sensenet"
+    ]
+
+-- | Zsh completion script
+zshCompletion :: Text
+zshCompletion =
+  T.unlines
+    [ "#compdef sensenet",
+      "# sensenet zsh completion",
+      "# Add to ~/.zshrc: eval \"$(sensenet complete zsh)\"",
+      "",
+      "_sensenet() {",
+      "    local -a completions",
+      "    local cmd=\"\"",
+      "    ",
+      "    if (( CURRENT >= 3 )); then",
+      "        cmd=\"${words[2]}\"",
+      "    fi",
+      "",
+      "    # Get completions from sensenet",
+      "    completions=(${(f)\"$(sensenet --complete \"$cmd\" \"${words[CURRENT]}\" 2>/dev/null)\"})",
+      "",
+      "    if (( ${#completions[@]} > 0 )); then",
+      "        _describe -t completions 'sensenet' completions",
+      "    fi",
+      "}",
+      "",
+      "_sensenet"
+    ]
+
+-- | Fish completion script
+fishCompletion :: Text
+fishCompletion =
+  T.unlines
+    [ "# sensenet fish completion",
+      "# Add to ~/.config/fish/config.fish: sensenet complete fish | source",
+      "",
+      "function __sensenet_complete",
+      "    set -l tokens (commandline -opc)",
+      "    set -l current (commandline -ct)",
+      "    set -l cmd \"\"",
+      "    ",
+      "    if test (count $tokens) -ge 2",
+      "        set cmd $tokens[2]",
+      "    end",
+      "",
+      "    sensenet --complete \"$cmd\" \"$current\" 2>/dev/null",
+      "end",
+      "",
+      "# Disable file completion for sensenet",
+      "complete -c sensenet -f",
+      "",
+      "# Add dynamic completions",
+      "complete -c sensenet -a '(__sensenet_complete)'"
+    ]
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Helpers
