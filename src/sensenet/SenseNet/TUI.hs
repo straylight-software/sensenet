@@ -43,7 +43,6 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import HyperConsole.Layout (Constraint (Exact, Fill))
-import HyperConsole.Style (Style)
 import HyperConsole.Terminal (Console, emit, render, withConsoleFallback)
 import HyperConsole.Theme qualified as Theme
 import HyperConsole.Widget (Line, Span (..), Widget, progress, textStyled, vbox, vboxWith, (<+>))
@@ -127,14 +126,48 @@ buildWithTUI target buildAction =
 
     pure result
   where
-    -- Fallback for non-TTY: just run with a simple callback
-    fallback = buildAction simpleCallback
+    -- Fallback for non-TTY: use verbose text callback from DICE
+    fallback = buildAction verboseCallback
 
-    simpleCallback = \case
-      ProgressStarting name _ _ -> TIO.putStrLn $ "Building " <> name
-      ProgressCached name _ _ -> TIO.putStrLn $ "Cached " <> name
-      ProgressCompleted name _ _ _ -> TIO.putStrLn $ "Built " <> name
-      ProgressFailed name _ _ err -> TIO.putStrLn $ "Failed " <> name <> ": " <> err
+    -- Simple text callback that shows all events
+    verboseCallback = \case
+      -- Discovery
+      ProgressDiscovering p -> TIO.putStrLn $ "◌ scanning " <> p
+      ProgressFoundPackage p -> TIO.putStrLn $ "◉ found " <> p
+      -- Dhall
+      ProgressDhallParsing p -> TIO.putStrLn $ "◌ parsing " <> p
+      ProgressDhallParsed p -> TIO.putStrLn $ "◉ parsed " <> p
+      ProgressDhallImport i -> TIO.putStrLn $ "  ↳ import " <> i
+      ProgressDhallNormalizing t -> TIO.putStrLn $ "◌ eval " <> t
+      ProgressDhallEvaluated t n -> TIO.putStrLn $ "◉ eval " <> t <> " (" <> T.pack (show n) <> " rules)"
+      -- Toolchains
+      ProgressToolchainLoading p -> TIO.putStrLn $ "◌ toolchains " <> p
+      ProgressToolchainCached p -> TIO.putStrLn $ "○ toolchains (cached) " <> p
+      ProgressToolchainLoaded p n -> TIO.putStrLn $ "◉ toolchains " <> p <> " (" <> T.pack (show n) <> ")"
+      -- Dependencies
+      ProgressResolvingDeps t -> TIO.putStrLn $ "◌ deps " <> t
+      ProgressCrossPackageDep p -> TIO.putStrLn $ "  ↳ cross-pkg " <> p
+      ProgressDepsResolved t n -> TIO.putStrLn $ "◉ deps " <> t <> " (" <> T.pack (show n) <> ")"
+      -- Nix
+      ProgressNixResolving r -> TIO.putStrLn $ "◌ nix " <> r
+      ProgressNixResolved r _ -> TIO.putStrLn $ "◉ nix " <> r
+      -- Graph
+      ProgressBuildingGraph t -> TIO.putStrLn $ "◌ graph " <> t
+      ProgressGraphAction a -> TIO.putStrLn $ "  + " <> a
+      ProgressGraphBuilt n -> TIO.putStrLn $ "◉ graph (" <> T.pack (show n) <> " actions)"
+      -- Cache
+      ProgressCacheCheck a -> TIO.putStrLn $ "? cache " <> a
+      ProgressCacheHit a -> TIO.putStrLn $ "✓ hit " <> a
+      ProgressCacheMiss a -> TIO.putStrLn $ "✗ miss " <> a
+      -- Execution
+      ProgressStarting nm _ _ -> TIO.putStrLn $ "→ " <> nm
+      ProgressCached nm _ _ -> TIO.putStrLn $ "○ " <> nm <> " (cached)"
+      ProgressCompleted nm _ _ _ -> TIO.putStrLn $ "✓ " <> nm
+      ProgressFailed nm _ _ e -> TIO.putStrLn $ "✗ " <> nm <> ": " <> e
+      -- Finalization
+      ProgressWritingOutput p -> TIO.putStrLn $ "◌ write " <> p
+      ProgressCacheStore a -> TIO.putStrLn $ "◌ cache " <> a
+      ProgressPhaseComplete ph d -> TIO.putStrLn $ "◉ " <> ph <> " (" <> T.pack (show (round (d * 1000) :: Int)) <> "ms)"
 
 -- | Render loop - updates display at ~30fps
 renderLoop :: Console -> IORef TUIState -> IORef Int -> IO ()
@@ -156,10 +189,84 @@ renderLoop console stateRef tickRef = forever $ do
   threadDelay 33333
 
 -- | Progress callback that updates TUI state
+--
+-- Every event emits a line that scrolls up in the emit area, providing
+-- maximum visibility into the build process.
 tuiCallback :: Console -> IORef TUIState -> ProgressCallback
 tuiCallback console stateRef = \case
+  -- ══════════════════════════════════════════════════════════════════════════
+  -- Discovery phase - show every file being scanned
+  -- ══════════════════════════════════════════════════════════════════════════
+  ProgressDiscovering path ->
+    emit console (infoLine "◌" "scanning" path)
+  ProgressFoundPackage pkg ->
+    emit console (successLine "◉" "found" pkg)
+  -- ══════════════════════════════════════════════════════════════════════════
+  -- Dhall phase - show parsing, imports, normalization
+  -- ══════════════════════════════════════════════════════════════════════════
+  ProgressDhallParsing path ->
+    emit console (infoLine "◌" "parsing" path)
+  ProgressDhallParsed path ->
+    emit console (successLine "◉" "parsed" path)
+  ProgressDhallImport imp ->
+    emit console (mutedLine "  ↳" "import" imp)
+  ProgressDhallNormalizing target ->
+    emit console (infoLine "◌" "eval" target)
+  ProgressDhallEvaluated target nRules ->
+    emit console (successLine "◉" "eval" (target <> " (" <> T.pack (show nRules) <> " rules)"))
+  -- ══════════════════════════════════════════════════════════════════════════
+  -- Toolchains
+  -- ══════════════════════════════════════════════════════════════════════════
+  ProgressToolchainLoading path ->
+    emit console (infoLine "◌" "toolchains" path)
+  ProgressToolchainCached path ->
+    emit console (cachedLine "○" "toolchains" path)
+  ProgressToolchainLoaded path n ->
+    emit console (successLine "◉" "toolchains" (path <> " (" <> T.pack (show n) <> ")"))
+  -- ══════════════════════════════════════════════════════════════════════════
+  -- Dependency resolution
+  -- ══════════════════════════════════════════════════════════════════════════
+  ProgressResolvingDeps target ->
+    emit console (infoLine "◌" "deps" target)
+  ProgressCrossPackageDep pkg ->
+    emit console (mutedLine "  ↳" "cross-pkg" pkg)
+  ProgressDepsResolved target n ->
+    emit console (successLine "◉" "deps" (target <> " (" <> T.pack (show n) <> ")"))
+  -- ══════════════════════════════════════════════════════════════════════════
+  -- Nix resolution
+  -- ══════════════════════════════════════════════════════════════════════════
+  ProgressNixResolving ref ->
+    emit console (infoLine "◌" "nix" ref)
+  ProgressNixResolved ref _storePath ->
+    emit console (successLine "◉" "nix" ref)
+  -- ══════════════════════════════════════════════════════════════════════════
+  -- Graph construction
+  -- ══════════════════════════════════════════════════════════════════════════
+  ProgressBuildingGraph target ->
+    emit console (infoLine "◌" "graph" target)
+  ProgressGraphAction action ->
+    emit console (mutedLine "  +" "" action)
+  ProgressGraphBuilt n -> do
+    emit console (successLine "◉" "graph" (T.pack (show n) <> " actions"))
+    -- Update total when graph is built
+    atomicModifyIORef' stateRef $ \s ->
+      (s {tuiTotal = n}, ())
+
+  -- ══════════════════════════════════════════════════════════════════════════
+  -- Cache checks
+  -- ══════════════════════════════════════════════════════════════════════════
+  ProgressCacheCheck action ->
+    emit console (mutedLine "?" "cache" action)
+  ProgressCacheHit action ->
+    emit console (cachedLine "✓" "hit" action)
+  ProgressCacheMiss action ->
+    emit console (mutedLine "✗" "miss" action)
+  -- ══════════════════════════════════════════════════════════════════════════
+  -- Execution - these update the canvas state
+  -- ══════════════════════════════════════════════════════════════════════════
   ProgressStarting name _cur total -> do
     now <- getCurrentTime
+    emit console (infoLine "→" "exec" name)
     atomicModifyIORef' stateRef $ \s ->
       ( s
           { tuiTotal = max total (tuiTotal s),
@@ -168,9 +275,7 @@ tuiCallback console stateRef = \case
         ()
       )
   ProgressCached name _cur total -> do
-    -- Emit completed line (scrolls up)
-    emit console (completedLine Theme.themeStatusCached "○" name "(cached)")
-    -- Increment both completed and cached - don't use cur as callbacks may arrive out of order
+    emit console (cachedLine "○" "" (name <> " (cached)"))
     atomicModifyIORef' stateRef $ \s ->
       ( s
           { tuiTotal = max total (tuiTotal s),
@@ -181,9 +286,7 @@ tuiCallback console stateRef = \case
         ()
       )
   ProgressCompleted name _cur total _memKB -> do
-    -- Emit completed line (scrolls up)
-    emit console (completedLine Theme.themeSuccess "✓" name "")
-    -- Increment completed - don't use cur as callbacks may arrive out of order
+    emit console (successLine "✓" "" name)
     atomicModifyIORef' stateRef $ \s ->
       ( s
           { tuiTotal = max total (tuiTotal s),
@@ -193,27 +296,59 @@ tuiCallback console stateRef = \case
         ()
       )
   ProgressFailed name _cur _total err -> do
-    -- Emit failure line
-    emit console (failedLine name err)
+    emit console (errorLine "✗" name err)
     atomicModifyIORef' stateRef $ \s ->
       ( s {tuiActive = Map.delete name (tuiActive s)},
         ()
       )
 
--- | Create a completed line for emit (scrolls up above canvas)
-completedLine :: Style -> Text -> Text -> Text -> Line
-completedLine style glyph name suffix =
-  Seq.fromList $
-    [ Span style (glyph <> " "),
-      Span Theme.themePrimary name
-    ]
-      ++ [Span Theme.themeSecondary (" " <> suffix) | not (T.null suffix)]
+  -- ══════════════════════════════════════════════════════════════════════════
+  -- Finalization
+  -- ══════════════════════════════════════════════════════════════════════════
+  ProgressWritingOutput path ->
+    emit console (mutedLine "◌" "write" path)
+  ProgressCacheStore action ->
+    emit console (mutedLine "◌" "cache" action)
+  ProgressPhaseComplete phase duration ->
+    emit console (successLine "◉" phase (T.pack (show (round (duration * 1000) :: Int)) <> "ms"))
 
--- | Create a failed line for emit
-failedLine :: Text -> Text -> Line
-failedLine name err =
+-- | Info line (in progress) - frost1 color
+infoLine :: Text -> Text -> Text -> Line
+infoLine glyph verb name =
+  Seq.fromList $
+    [Span Theme.themeAccent (glyph <> " ")]
+      ++ [Span Theme.themeSecondary (verb <> " ") | not (T.null verb)]
+      ++ [Span Theme.themePrimary name]
+
+-- | Success line - green
+successLine :: Text -> Text -> Text -> Line
+successLine glyph verb name =
+  Seq.fromList $
+    [Span Theme.themeSuccess (glyph <> " ")]
+      ++ [Span Theme.themeSecondary (verb <> " ") | not (T.null verb)]
+      ++ [Span Theme.themePrimary name]
+
+-- | Cached line - dim cyan
+cachedLine :: Text -> Text -> Text -> Line
+cachedLine glyph verb name =
+  Seq.fromList $
+    [Span Theme.themeStatusCached (glyph <> " ")]
+      ++ [Span Theme.themeSecondary (verb <> " ") | not (T.null verb)]
+      ++ [Span Theme.themePrimary name]
+
+-- | Muted line (secondary info) - dim
+mutedLine :: Text -> Text -> Text -> Line
+mutedLine glyph verb name =
+  Seq.fromList $
+    [Span Theme.themeMuted (glyph <> " ")]
+      ++ [Span Theme.themeMuted (verb <> " ") | not (T.null verb)]
+      ++ [Span Theme.themeMuted name]
+
+-- | Error line - red
+errorLine :: Text -> Text -> Text -> Line
+errorLine glyph name err =
   Seq.fromList
-    [ Span Theme.themeError "✗ ",
+    [ Span Theme.themeError (glyph <> " "),
       Span Theme.themePrimary name,
       Span Theme.themeError (": " <> err)
     ]

@@ -289,9 +289,82 @@ data ExecutionResult = ExecutionResult
 -- Progress Callbacks
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Progress events emitted during graph execution
+-- | Progress events emitted during build execution
+--
+-- These events enable rich TUI display with maximum visibility into
+-- every operation: Dhall parsing, discovery, graph construction, etc.
 data ProgressEvent
-  = -- | Action is starting execution
+  = -- ════════════════════════════════════════════════════════════════════════
+    -- Phase: Discovery
+    -- ════════════════════════════════════════════════════════════════════════
+
+    -- | Discovering BUILD.dhall files under a path
+    ProgressDiscovering !Text -- path being scanned
+  | -- | Found a BUILD.dhall file
+    ProgressFoundPackage !Text -- package path (e.g., "//src/foo")
+  | -- ════════════════════════════════════════════════════════════════════════
+    -- Phase: Dhall Parsing
+    -- ════════════════════════════════════════════════════════════════════════
+
+    -- | Starting to parse a Dhall file
+    ProgressDhallParsing !Text -- path (e.g., "src/foo/BUILD.dhall")
+  | -- | Dhall file parsed successfully
+    ProgressDhallParsed !Text -- path
+  | -- | Resolving a Dhall import
+    ProgressDhallImport !Text -- import path
+  | -- | Normalizing Dhall expression
+    ProgressDhallNormalizing !Text -- target name
+  | -- | Dhall evaluation complete
+    ProgressDhallEvaluated !Text !Int -- target, number of rules extracted
+  | -- ════════════════════════════════════════════════════════════════════════
+    -- Phase: Toolchains
+    -- ════════════════════════════════════════════════════════════════════════
+
+    -- | Loading toolchains
+    ProgressToolchainLoading !Text -- toolchain file path
+  | -- | Toolchain loaded from cache
+    ProgressToolchainCached !Text -- toolchain file path
+  | -- | Toolchain loaded (fresh parse)
+    ProgressToolchainLoaded !Text !Int -- path, number of toolchains
+  | -- ════════════════════════════════════════════════════════════════════════
+    -- Phase: Dependency Resolution
+    -- ════════════════════════════════════════════════════════════════════════
+
+    -- | Resolving dependencies for a target
+    ProgressResolvingDeps !Text -- target name
+  | -- | Loading cross-package dependency
+    ProgressCrossPackageDep !Text -- package path
+  | -- | Dependencies resolved
+    ProgressDepsResolved !Text !Int -- target, number of deps
+  | -- ════════════════════════════════════════════════════════════════════════
+    -- Phase: Nix Resolution
+    -- ════════════════════════════════════════════════════════════════════════
+
+    -- | Resolving a nix flake reference
+    ProgressNixResolving !Text -- flake ref
+  | -- | Nix package resolved
+    ProgressNixResolved !Text !Text -- flake ref, store path
+  | -- ════════════════════════════════════════════════════════════════════════
+    -- Phase: Graph Construction
+    -- ════════════════════════════════════════════════════════════════════════
+
+    -- | Building action graph for target
+    ProgressBuildingGraph !Text -- target name
+  | -- | Adding action to graph
+    ProgressGraphAction !Text -- action name
+  | -- | Graph construction complete
+    ProgressGraphBuilt !Int -- total actions
+  | -- ════════════════════════════════════════════════════════════════════════
+    -- Phase: Execution
+    -- ════════════════════════════════════════════════════════════════════════
+
+    -- | Checking cache for action
+    ProgressCacheCheck !Text -- action name
+  | -- | Cache hit
+    ProgressCacheHit !Text -- action name
+  | -- | Cache miss
+    ProgressCacheMiss !Text -- action name
+  | -- | Action is starting execution
     ProgressStarting !Text !Int !Int -- name, current, total
   | -- | Action completed from cache
     ProgressCached !Text !Int !Int -- name, current, total
@@ -299,14 +372,73 @@ data ProgressEvent
     ProgressCompleted !Text !Int !Int !Word64 -- name, current, total, peakMemKB
   | -- | Action failed
     ProgressFailed !Text !Int !Int !Text -- name, current, total, error
+  | -- ════════════════════════════════════════════════════════════════════════
+    -- Phase: Finalization
+    -- ════════════════════════════════════════════════════════════════════════
+
+    -- | Writing outputs
+    ProgressWritingOutput !Text -- output path
+  | -- | Storing result in cache
+    ProgressCacheStore !Text -- action name
+  | -- | Build phase complete
+    ProgressPhaseComplete !Text !Double -- phase name, duration in seconds
   deriving stock (Show, Eq)
 
 -- | Callback for receiving progress events
 type ProgressCallback = ProgressEvent -> IO ()
 
--- | Default progress callback (prints to stdout like current behavior)
+-- | Default progress callback (prints to stdout with maximum visibility)
 defaultProgressCallback :: ProgressCallback
 defaultProgressCallback = \case
+  -- Discovery
+  ProgressDiscovering path ->
+    TIO.putStrLn $ "◌ scanning " <> path
+  ProgressFoundPackage pkg ->
+    TIO.putStrLn $ "◉ found " <> pkg
+  -- Dhall
+  ProgressDhallParsing path ->
+    TIO.putStrLn $ "◌ parsing " <> path
+  ProgressDhallParsed path ->
+    TIO.putStrLn $ "◉ parsed " <> path
+  ProgressDhallImport imp ->
+    TIO.putStrLn $ "  ↳ import " <> imp
+  ProgressDhallNormalizing target ->
+    TIO.putStrLn $ "◌ normalizing " <> target
+  ProgressDhallEvaluated target nRules ->
+    TIO.putStrLn $ "◉ evaluated " <> target <> " (" <> T.pack (show nRules) <> " rules)"
+  -- Toolchains
+  ProgressToolchainLoading path ->
+    TIO.putStrLn $ "◌ loading toolchains " <> path
+  ProgressToolchainCached path ->
+    TIO.putStrLn $ "◉ toolchains (cached) " <> path
+  ProgressToolchainLoaded path n ->
+    TIO.putStrLn $ "◉ toolchains loaded " <> path <> " (" <> T.pack (show n) <> ")"
+  -- Dependencies
+  ProgressResolvingDeps target ->
+    TIO.putStrLn $ "◌ resolving deps " <> target
+  ProgressCrossPackageDep pkg ->
+    TIO.putStrLn $ "  ↳ cross-pkg " <> pkg
+  ProgressDepsResolved target n ->
+    TIO.putStrLn $ "◉ deps resolved " <> target <> " (" <> T.pack (show n) <> ")"
+  -- Nix
+  ProgressNixResolving ref ->
+    TIO.putStrLn $ "◌ nix " <> ref
+  ProgressNixResolved ref _storePath ->
+    TIO.putStrLn $ "◉ nix " <> ref
+  -- Graph
+  ProgressBuildingGraph target ->
+    TIO.putStrLn $ "◌ building graph " <> target
+  ProgressGraphAction action ->
+    TIO.putStrLn $ "  + " <> action
+  ProgressGraphBuilt n ->
+    TIO.putStrLn $ "◉ graph built (" <> T.pack (show n) <> " actions)"
+  -- Execution
+  ProgressCacheCheck action ->
+    TIO.putStrLn $ "? cache " <> action
+  ProgressCacheHit action ->
+    TIO.putStrLn $ "✓ cache hit " <> action
+  ProgressCacheMiss action ->
+    TIO.putStrLn $ "✗ cache miss " <> action
   ProgressStarting name cur total ->
     TIO.putStrLn $ "[" <> T.pack (show cur) <> "/" <> T.pack (show total) <> "] → " <> name
   ProgressCached name cur total ->
@@ -316,6 +448,13 @@ defaultProgressCallback = \case
      in TIO.putStrLn $ "[" <> T.pack (show cur) <> "/" <> T.pack (show total) <> "] ✓ " <> name <> memInfo
   ProgressFailed name cur total err ->
     TIO.putStrLn $ "[" <> T.pack (show cur) <> "/" <> T.pack (show total) <> "] ✗ " <> name <> " - " <> err
+  -- Finalization
+  ProgressWritingOutput path ->
+    TIO.putStrLn $ "◌ writing " <> path
+  ProgressCacheStore action ->
+    TIO.putStrLn $ "◌ caching " <> action
+  ProgressPhaseComplete phase duration ->
+    TIO.putStrLn $ "◉ " <> phase <> " (" <> T.pack (show (round (duration * 1000) :: Int)) <> "ms)"
 
 -- | Execute an action graph
 -- Returns results for all actions, with caching
@@ -627,6 +766,9 @@ processWavesWithCallback semMaybe total progressVar doneVar callback cache runne
       -- n is the "started" index - only used for ProgressStarting
       n <- modifyMVar progressVar $ \p -> pure (p + 1, p + 1)
 
+      -- Emit cache check event
+      callback $ ProgressCacheCheck (aName action)
+
       cached <- checkCache cache key
       cacheValid <- case cached of
         Just result -> do
@@ -637,6 +779,8 @@ processWavesWithCallback semMaybe total progressVar doneVar callback cache runne
 
       case cacheValid of
         Just result -> do
+          -- Emit cache hit event
+          callback $ ProgressCacheHit (aName action)
           -- Increment done counter BEFORE callback for proper ordering
           done <- modifyMVar doneVar $ \d -> pure (d + 1, d + 1)
           callback $ ProgressCached (aName action) done total
@@ -645,11 +789,15 @@ processWavesWithCallback semMaybe total progressVar doneVar callback cache runne
           modifyMVar_ completedVar $ pure . Set.insert key
           findNewlyReady graph completedVar pendingVar key
         Nothing -> do
+          -- Emit cache miss event
+          callback $ ProgressCacheMiss (aName action)
           callback $ ProgressStarting (aName action) n total
           result <- runner action
 
           if arExitCode result == 0
             then do
+              -- Emit cache store event
+              callback $ ProgressCacheStore (aName action)
               storeCache cache key result
               -- Increment done counter BEFORE callback for proper ordering
               done <- modifyMVar doneVar $ \d -> pure (d + 1, d + 1)

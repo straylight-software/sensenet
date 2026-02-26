@@ -222,16 +222,14 @@ buildTargets presenter mJobs patterns = case patterns of
   [] -> exitSuccess
   [pattern] -> buildSinglePattern presenter mJobs pattern
   _ -> do
-    -- Multiple patterns: build each one sequentially
-    -- Use a quiet callback since each pattern has its own graph with own counter
-    -- (would show confusing [1/1] [1/1] [1/1] otherwise)
+    -- Multiple patterns: build each one sequentially with verbose progress
     projectRoot <- getCurrentDirectory
     tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
-    let quietCallback = const $ pure () -- suppress per-action progress
+    let verboseCallback = progressToOutput presenter
     results <- forM (zip [1 ..] patterns) $ \(i, pat) -> do
       Output.emitProgressIO presenter $ Output.ProgressCount i (length patterns)
       Output.emitProgressIO presenter $ Output.Building (showPattern pat)
-      buildPatternResult mJobs quietCallback tc projectRoot pat
+      buildPatternResult mJobs verboseCallback tc projectRoot pat
     let failures = length [() | Left _ <- results]
         successes = length [() | Right _ <- results]
     if failures > 0
@@ -427,24 +425,79 @@ buildErrorToOutput target = \case
 
 -- | Create a ProgressCallback that emits typed Output via presenter
 --
--- Note: We don't emit ProgressCount on ProgressStarting because concurrent
--- execution causes out-of-order starts ([4/45] [1/45] [5/45]). Instead we
--- show progress only on completion events where order matters less.
+-- | Convert ProgressEvent to Output for the presenter
+--
+-- This provides verbose output showing every operation: Dhall parsing,
+-- discovery, graph construction, cache checks, etc.
 progressToOutput :: Output.Presenter -> ProgressCallback
 progressToOutput presenter = \case
-  ProgressStarting _name _cur _total ->
-    -- Don't emit count on start - concurrent execution causes chaos
-    -- The "Building //..." message already shown covers this
-    pure ()
+  -- Discovery - show as progress messages
+  ProgressDiscovering p ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "scanning " <> p
+  ProgressFoundPackage p ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "found " <> p
+  -- Dhall - show parsing and evaluation
+  ProgressDhallParsing p ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "parsing " <> p
+  ProgressDhallParsed p ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "parsed " <> p
+  ProgressDhallImport i ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "  import " <> i
+  ProgressDhallNormalizing t ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "eval " <> t
+  ProgressDhallEvaluated t n ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "eval " <> t <> " (" <> T.pack (show n) <> " rules)"
+  -- Toolchains
+  ProgressToolchainLoading p ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "loading toolchains " <> p
+  ProgressToolchainCached p ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "toolchains (cached) " <> p
+  ProgressToolchainLoaded p n ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "toolchains " <> p <> " (" <> T.pack (show n) <> ")"
+  -- Dependencies
+  ProgressResolvingDeps t ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "deps " <> t
+  ProgressCrossPackageDep p ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "  cross-pkg " <> p
+  ProgressDepsResolved t n ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "deps " <> t <> " (" <> T.pack (show n) <> ")"
+  -- Nix
+  ProgressNixResolving r ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "nix " <> r
+  ProgressNixResolved r _ ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "nix resolved " <> r
+  -- Graph construction
+  ProgressBuildingGraph t ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "graph " <> t
+  ProgressGraphAction a ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "  + " <> a
+  ProgressGraphBuilt n ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "graph (" <> T.pack (show n) <> " actions)"
+  -- Cache operations - show every check
+  ProgressCacheCheck a ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "? " <> a
+  ProgressCacheHit a ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "hit " <> a
+  ProgressCacheMiss a ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "miss " <> a
+  -- Execution events
+  ProgressStarting name _cur _total ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "exec " <> name
   ProgressCached name cur total -> do
     Output.emitProgressIO presenter $ Output.ProgressCount cur total
     Output.emitProgressIO presenter $ Output.Cached name
   ProgressCompleted name cur total _memKB -> do
     Output.emitProgressIO presenter $ Output.ProgressCount cur total
-    -- Note: duration not available here, would need to track
     Output.emitProgressIO presenter $ Output.Built name 0
   ProgressFailed name _cur _total err ->
     Output.emitErrorIO presenter $ Output.BuildFailed name err Nothing
+  -- Finalization
+  ProgressWritingOutput p ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "write " <> p
+  ProgressCacheStore a ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ "cache " <> a
+  ProgressPhaseComplete phase dur ->
+    Output.emitProgressIO presenter $ Output.ProgressMsg $ phase <> " (" <> T.pack (show (round (dur * 1000) :: Int)) <> "ms)"
 
 -- | Run command: build target then execute it
 cmdRun :: [String] -> IO ()
