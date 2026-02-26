@@ -81,6 +81,14 @@ in
         # Development utilities
         hp.lens
         hp.raw-strings-qq
+
+        # ── sensenet self-build dependencies ──────────────────────────────
+        # Required for `sensenet build //src/sensenet:sensenet`
+        # NOTE: deepseq is a GHC boot package (null in ghc912 config), don't add it
+        hp.ansi-terminal
+        hp.colour
+        hp.hashable
+        # NOTE: hyperconsole is added via overlay-haskell-packages in perSystem
       ];
       description = "Extra Haskell packages for devshell (on top of build.toolchain.haskell.packages)";
     };
@@ -144,8 +152,19 @@ in
         # Combine build toolchain packages + devshell extras
         # build.toolchain.haskell.packages: core packages for Buck2 builds
         # cfg.extra-haskell-packages: testing, scripting, dev tools
+        #
+        # Overlay packages (hyperconsole, etc.) must be added here directly,
+        # not in the extra-haskell-packages default, because option defaults
+        # are evaluated before overlays are applied.
+        overlay-haskell-packages = hp: [
+          hp.hyperconsole # from haskell.nix overlay
+        ];
+
         ghc-with-all-deps = hs-pkgs.ghcWithPackages (
-          hp: (build-cfg.toolchain.haskell.packages hp) ++ (cfg.extra-haskell-packages hp)
+          hp:
+          (build-cfg.toolchain.haskell.packages hp)
+          ++ (cfg.extra-haskell-packages hp)
+          ++ (overlay-haskell-packages hp)
         );
 
         # System libraries GHC needs at runtime
