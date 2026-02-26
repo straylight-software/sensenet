@@ -43,6 +43,12 @@ module SenseNet.DICE
     executeGraphParallel,
     executeGraphWithJobs,
 
+    -- * Progress Callbacks
+    ProgressEvent (..),
+    ProgressCallback,
+    defaultProgressCallback,
+    executeGraphWithProgress,
+
     -- * Cache
     ActionCache (..),
     newCache,
@@ -279,6 +285,38 @@ data ExecutionResult = ExecutionResult
   }
   deriving stock (Show, Generic)
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- Progress Callbacks
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Progress events emitted during graph execution
+data ProgressEvent
+  = -- | Action is starting execution
+    ProgressStarting !Text !Int !Int -- name, current, total
+  | -- | Action completed from cache
+    ProgressCached !Text !Int !Int -- name, current, total
+  | -- | Action completed successfully
+    ProgressCompleted !Text !Int !Int !Word64 -- name, current, total, peakMemKB
+  | -- | Action failed
+    ProgressFailed !Text !Int !Int !Text -- name, current, total, error
+  deriving stock (Show, Eq)
+
+-- | Callback for receiving progress events
+type ProgressCallback = ProgressEvent -> IO ()
+
+-- | Default progress callback (prints to stdout like current behavior)
+defaultProgressCallback :: ProgressCallback
+defaultProgressCallback = \case
+  ProgressStarting name cur total ->
+    TIO.putStrLn $ "[" <> T.pack (show cur) <> "/" <> T.pack (show total) <> "] → " <> name
+  ProgressCached name cur total ->
+    TIO.putStrLn $ "[" <> T.pack (show cur) <> "/" <> T.pack (show total) <> "] ✓ " <> name <> " (cached)"
+  ProgressCompleted name cur total peakMem ->
+    let memInfo = if peakMem > 0 then " [" <> formatMemory peakMem <> "]" else ""
+     in TIO.putStrLn $ "[" <> T.pack (show cur) <> "/" <> T.pack (show total) <> "] ✓ " <> name <> memInfo
+  ProgressFailed name cur total err ->
+    TIO.putStrLn $ "[" <> T.pack (show cur) <> "/" <> T.pack (show total) <> "] ✗ " <> name <> " - " <> err
+
 -- | Execute an action graph
 -- Returns results for all actions, with caching
 executeGraph ::
@@ -512,6 +550,116 @@ findNewlyReady graph _completedVar pendingVar completedKey = do
        in if newCount == 0
             then (depKey : ready, pending')
             else (ready, pending')
+
+-- | Execute graph with progress callback
+-- Like executeGraphWithJobs but emits ProgressEvents via callback
+executeGraphWithProgress ::
+  Maybe Int ->
+  ProgressCallback ->
+  ActionCache ->
+  (Action -> IO ActionResult) ->
+  ActionGraph ->
+  IO ExecutionResult
+executeGraphWithProgress mJobs callback cache runner graph = do
+  -- Create semaphore for job limiting
+  semMaybe <- case mJobs of
+    Just n | n > 0 -> Just <$> newQSem n
+    _ -> pure Nothing
+
+  -- Shared state
+  resultsVar <- newMVar Map.empty
+  hitsVar <- newMVar 0
+  executedVar <- newMVar 0
+  failedVar <- newMVar []
+  completedVar <- newMVar Set.empty
+
+  let allKeys = Map.keys (agActions graph)
+      depCount = Map.fromList [(k, length (aInputKeys (agActions graph Map.! k))) | k <- allKeys]
+      total = length allKeys
+
+  pendingVar <- newMVar depCount
+  progressVar <- newMVar 0
+
+  let ready0 = [k | k <- allKeys, Map.findWithDefault 0 k depCount == 0]
+
+  processWavesWithCallback semMaybe total progressVar callback cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar ready0
+
+  results <- readMVar resultsVar
+  hits <- readMVar hitsVar
+  executed <- readMVar executedVar
+  failed <- readMVar failedVar
+
+  pure
+    ExecutionResult
+      { erResults = results,
+        erCacheHits = hits,
+        erExecuted = executed,
+        erFailed = failed
+      }
+
+-- | Process waves with progress callback
+processWavesWithCallback ::
+  Maybe QSem ->
+  Int ->
+  MVar Int ->
+  ProgressCallback ->
+  ActionCache ->
+  (Action -> IO ActionResult) ->
+  ActionGraph ->
+  MVar (Map ActionKey ActionResult) ->
+  MVar Int ->
+  MVar Int ->
+  MVar [(ActionKey, Text)] ->
+  MVar (Set ActionKey) ->
+  MVar (Map ActionKey Int) ->
+  [ActionKey] ->
+  IO ()
+processWavesWithCallback _ _ _ _ _ _ _ _ _ _ _ _ _ [] = pure ()
+processWavesWithCallback semMaybe total progressVar callback cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar readyKeys = do
+  newlyReady <- forConcurrently readyKeys $ \key -> do
+    let action = agActions graph Map.! key
+        runWithLimit = case semMaybe of
+          Nothing -> id
+          Just sem -> bracket_ (waitQSem sem) (signalQSem sem)
+
+    runWithLimit $ do
+      n <- modifyMVar progressVar $ \p -> pure (p + 1, p + 1)
+
+      cached <- checkCache cache key
+      cacheValid <- case cached of
+        Just result -> do
+          let outputs = map T.unpack (arOutputs result)
+          allExist <- and <$> mapM doesFileExist outputs
+          pure $ if allExist then Just result else Nothing
+        Nothing -> pure Nothing
+
+      case cacheValid of
+        Just result -> do
+          callback $ ProgressCached (aName action) n total
+          modifyMVar_ resultsVar $ pure . Map.insert key result
+          modifyMVar_ hitsVar $ pure . (+ 1)
+          modifyMVar_ completedVar $ pure . Set.insert key
+          findNewlyReady graph completedVar pendingVar key
+        Nothing -> do
+          callback $ ProgressStarting (aName action) n total
+          result <- runner action
+
+          if arExitCode result == 0
+            then do
+              storeCache cache key result
+              callback $ ProgressCompleted (aName action) n total (arPeakMemoryKB result)
+              modifyMVar_ resultsVar $ pure . Map.insert key result
+              modifyMVar_ executedVar $ pure . (+ 1)
+              modifyMVar_ completedVar $ pure . Set.insert key
+              findNewlyReady graph completedVar pendingVar key
+            else do
+              let errMsg = "exit " <> T.pack (show (arExitCode result)) <> ": " <> T.take 200 (arStderr result)
+              callback $ ProgressFailed (aName action) n total errMsg
+              modifyMVar_ failedVar $ pure . ((key, errMsg) :)
+              pure []
+
+  let nextReady = Set.toList $ Set.fromList $ concat newlyReady
+  processWavesWithCallback semMaybe total progressVar callback cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar nextReady
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Cache (persistent, file-based)

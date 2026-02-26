@@ -22,7 +22,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import GHC.Conc (getNumProcessors)
-import SenseNet.Build (BuildError (..), BuildLog, BuildResult (..), buildAllPackagesJ, buildAllTargetsJ, buildWithDepsJ, noLog, withLogging)
+import SenseNet.Build (BuildError (..), BuildLog, BuildResult (..), ProgressCallback, ProgressEvent (..), buildAllPackagesJ, buildAllTargetsJ, buildWithDepsJ, buildWithProgress, noLog, withLogging)
 import SenseNet.Complete qualified as Complete
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
@@ -268,7 +268,9 @@ buildSinglePattern presenter mJobs blog pat = do
           dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
       pkg <- Dhall.parsePackageFile projectRoot dhallPath
       Output.emitProgressIO presenter $ Output.Building target
-      result <- buildWithDepsJ mJobs blog tc projectRoot pkg targetName
+      -- Use buildWithProgress for typed progress output
+      let callback = progressToOutput presenter
+      result <- buildWithProgress mJobs callback tc projectRoot pkg targetName
       case result of
         Left err -> do
           Output.emitErrorIO presenter $ buildErrorToOutput target err
@@ -340,6 +342,19 @@ buildErrorToOutput target = \case
   DependencyFailed dep err -> Output.BuildFailed target ("Dependency failed: " <> dep) (Just err)
   SourceNotFound path -> Output.BuildFailed target ("Source not found: " <> T.pack path) Nothing
   PackageError err -> Output.BuildFailed target "Package error" (Just err)
+
+-- | Create a ProgressCallback that emits typed Output via presenter
+progressToOutput :: Output.Presenter -> ProgressCallback
+progressToOutput presenter = \case
+  ProgressStarting _name cur total ->
+    Output.emitProgressIO presenter $ Output.ProgressCount cur total
+  ProgressCached name _cur _total ->
+    Output.emitProgressIO presenter $ Output.Cached name
+  ProgressCompleted name _cur _total _memKB ->
+    -- Note: duration not available here, would need to track
+    Output.emitProgressIO presenter $ Output.Built name 0
+  ProgressFailed name _cur _total err ->
+    Output.emitErrorIO presenter $ Output.BuildFailed name err Nothing
 
 -- | Run command: build target then execute it
 cmdRun :: [String] -> IO ()

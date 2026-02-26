@@ -27,6 +27,11 @@ module SenseNet.Build
     BuildResult (..),
     BuildError (..),
 
+    -- * Build with Progress
+    buildWithProgress,
+    ProgressCallback,
+    ProgressEvent (..),
+
     -- * Package-level dependencies
     packageDeps,
     sortPackagesByDeps,
@@ -63,11 +68,14 @@ import SenseNet.DICE
     ActionKey,
     ActionResult (..),
     ExecutionResult (..),
+    ProgressCallback,
+    ProgressEvent (..),
     actionKey,
     addAction,
     checkCache,
     emptyGraph,
     executeGraphWithJobs,
+    executeGraphWithProgress,
     newCache,
     storeCache,
   )
@@ -250,6 +258,44 @@ buildWithDepsJ mJobs blog tc projectRoot pkg targetName
 logMaybe :: BuildLog -> (Log.LogEnv -> IO ()) -> IO ()
 logMaybe (BuildLog Nothing) _ = pure ()
 logMaybe (BuildLog (Just env)) action = action env
+
+-- | Build a target with progress callback
+-- This version uses a callback for progress events instead of direct stdout
+buildWithProgress ::
+  Maybe Int ->
+  ProgressCallback ->
+  Toolchains ->
+  FilePath ->
+  Package ->
+  Text ->
+  IO (Either BuildError BuildResult)
+buildWithProgress mJobs callback tc projectRoot pkg targetName
+  | Nothing <- findRule targetName pkg.rules = pure $ Left $ TargetNotFound targetName
+  | Just rootRule <- findRule targetName pkg.rules = do
+      let outDir = projectRoot </> "sensenet-out" </> pkg.path
+      createDirectoryIfMissing True outDir
+      graphResult <- buildActionGraph tc projectRoot pkg outDir rootRule
+      either (pure . Left) (executeAndExtract mJobs callback) graphResult
+  where
+    executeAndExtract :: Maybe Int -> ProgressCallback -> ActionGraph -> IO (Either BuildError BuildResult)
+    executeAndExtract jobs cb graph = do
+      cache <- newCache
+      execResult <- executeGraphWithProgress jobs cb cache runAction graph
+      pure $ extractResult graph execResult
+
+    extractResult :: ActionGraph -> ExecutionResult -> Either BuildError BuildResult
+    extractResult graph execResult
+      | ((_, err) : _) <- erFailed execResult = Left $ CommandFailed "graph" 1 err
+      | [] <- erFailed execResult = extractRootOutput graph (erResults execResult)
+
+    extractRootOutput :: ActionGraph -> Map ActionKey ActionResult -> Either BuildError BuildResult
+    extractRootOutput graph results
+      | [] <- agRoots graph = Left $ CommandFailed "graph" 1 "no root action"
+      | (rootKey : _) <- agRoots graph =
+          maybe
+            (Left $ CommandFailed "graph" 1 "root action not in results")
+            (Right . BuildSuccess . map T.unpack . arOutputs)
+            (Map.lookup rootKey results)
 
 -- | Build all targets in a package in parallel
 buildAllTargets ::
