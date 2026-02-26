@@ -41,10 +41,10 @@ main = do
   hSetBuffering stderr LineBuffering
   args <- getArgs
   case args of
-    [] -> usage
+    [] -> usage >> exitFailure -- No command specified
     ["--version"] -> version
     ["-V"] -> version
-    ["--help"] -> usage
+    ["--help"] -> usage -- Explicit help request exits 0
     ["-h"] -> usage
     ("--complete" : rest) -> cmdComplete rest
     ("complete" : rest) -> cmdCompleteScript rest
@@ -56,6 +56,7 @@ main = do
     (cmd : _) -> do
       TIO.putStrLn $ "Unknown command: " <> T.pack cmd
       usage
+      exitFailure
 
 version :: IO ()
 version = do
