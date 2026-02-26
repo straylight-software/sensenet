@@ -117,8 +117,9 @@ in
           CUDA_HOME = "${pkgs.nvidia-sdk}";
           CUDA_PATH = "${pkgs.nvidia-sdk}";
           NVIDIA_SDK = "${pkgs.nvidia-sdk}";
-          # LD_LIBRARY_PATH for runtime loading of CUDA libs (hasktorch, etc.)
-          LD_LIBRARY_PATH = "${pkgs.nvidia-sdk}/lib";
+          # LD_LIBRARY_PATH for runtime loading of CUDA libs (hasktorch, TensorRT, etc.)
+          # Include /run/opengl-driver/lib for NixOS driver access
+          LD_LIBRARY_PATH = "${pkgs.nvidia-sdk}/lib:/run/opengl-driver/lib";
         };
 
         # sensenet CLI env vars
