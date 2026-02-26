@@ -40,11 +40,9 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
-
 import HyperConsole
 import HyperConsole.Theme
 import SenseNet.Build (BuildError, BuildResult, ProgressCallback, ProgressEvent (..))
-
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Dashboard State
@@ -52,63 +50,84 @@ import SenseNet.Build (BuildError, BuildResult, ProgressCallback, ProgressEvent 
 
 -- | Target status in the dashboard
 data TargetStatus
-  = TQueued                         -- ^ Waiting to start
-  | TBuilding UTCTime               -- ^ Currently building, started at time
-  | TCompleted UTCTime Int          -- ^ Finished successfully, start time + duration ms
-  | TFailed UTCTime Int Text        -- ^ Failed with error
-  | TCached                         -- ^ Cache hit
+  = -- | Waiting to start
+    TQueued
+  | -- | Currently building, started at time
+    TBuilding UTCTime
+  | -- | Finished successfully, start time + duration ms
+    TCompleted UTCTime Int
+  | -- | Failed with error
+    TFailed UTCTime Int Text
+  | -- | Cache hit
+    TCached
   deriving stock (Eq, Show)
 
 -- | A build target for display
 data Target = Target
-  { targetId       :: Text            -- ^ e.g. "//sigil-trtllm:test-rope"
-  , targetStatus   :: TargetStatus    -- ^ Current build status
+  { -- | e.g. "//sigil-trtllm:test-rope"
+    targetId :: Text,
+    -- | Current build status
+    targetStatus :: TargetStatus
   }
   deriving stock (Eq, Show)
 
 -- | Build phase
 data Phase
-  = PhaseDiscovery      -- ^ Scanning for BUILD.dhall files
-  | PhaseParsing        -- ^ Parsing dhall files
-  | PhaseGraph          -- ^ Building dependency graph
-  | PhaseCacheCheck     -- ^ Checking cache
-  | PhaseBuilding       -- ^ Executing builds
-  | PhaseComplete       -- ^ All done
+  = -- | Scanning for BUILD.dhall files
+    PhaseDiscovery
+  | -- | Parsing dhall files
+    PhaseParsing
+  | -- | Building dependency graph
+    PhaseGraph
+  | -- | Checking cache
+    PhaseCacheCheck
+  | -- | Executing builds
+    PhaseBuilding
+  | -- | All done
+    PhaseComplete
   deriving stock (Eq, Show)
 
 -- | Log line with styling
 data LogLine = LogLine
-  { logText  :: Text
-  , logStyle :: Style
+  { logText :: Text,
+    logStyle :: Style
   }
   deriving stock (Eq, Show)
 
 -- | Complete dashboard state
 data DashboardState = DashboardState
-  { dsTargets     :: Map Text Target     -- ^ All known targets
-  , dsPhase       :: Phase               -- ^ Current phase
-  , dsLogs        :: [LogLine]           -- ^ Log history (newest last)
-  , dsStartTime   :: Maybe UTCTime       -- ^ When build started
-  , dsTotal       :: Int                 -- ^ Total actions (from graph)
-  , dsCompleted   :: Int                 -- ^ Completed actions
-  , dsCached      :: Int                 -- ^ Cache hits
-  , dsFailed      :: Int                 -- ^ Failed actions
+  { -- | All known targets
+    dsTargets :: Map Text Target,
+    -- | Current phase
+    dsPhase :: Phase,
+    -- | Log history (newest last)
+    dsLogs :: [LogLine],
+    -- | When build started
+    dsStartTime :: Maybe UTCTime,
+    -- | Total actions (from graph)
+    dsTotal :: Int,
+    -- | Completed actions
+    dsCompleted :: Int,
+    -- | Cache hits
+    dsCached :: Int,
+    -- | Failed actions
+    dsFailed :: Int
   }
   deriving stock (Show)
 
 -- | Initial empty state
 initDashboardState :: DashboardState
-initDashboardState = DashboardState
-  { dsTargets   = Map.empty
-  , dsPhase     = PhaseDiscovery
-  , dsLogs      = []
-  , dsStartTime = Nothing
-  , dsTotal     = 0
-  , dsCompleted = 0
-  , dsCached    = 0
-  , dsFailed    = 0
-  }
-
+initDashboardState =
+  DashboardState
+    { dsTargets = Map.empty,
+      dsPhase = PhaseDiscovery,
+      dsLogs = [],
+      dsStartTime = Nothing,
+      dsTotal = 0,
+      dsCompleted = 0,
+      dsCached = 0,
+      dsFailed = 0
+    }
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Event Handling
@@ -122,158 +141,131 @@ handleProgressEvent now event state = case event of
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressDiscovering path ->
     addLog razorAccent ("◌ scanning " <> path) $
-    state { dsPhase = PhaseDiscovery }
-
+      state {dsPhase = PhaseDiscovery}
   ProgressFoundPackage pkg ->
     addLog razorMuted ("◉ found " <> pkg) state
-
   -- ══════════════════════════════════════════════════════════════════════════
   -- Dhall parsing phase
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressDhallParsing path ->
     addLog razorAccent ("◌ parsing " <> path) $
-    state { dsPhase = PhaseParsing }
-
+      state {dsPhase = PhaseParsing}
   ProgressDhallParsed path ->
     addLog razorMuted ("◉ parsed " <> path) state
-
   ProgressDhallImport imp ->
     addLog razorDim ("  ↳ import " <> imp) state
-
   ProgressDhallNormalizing target ->
     addLog razorAccent ("◌ eval " <> target) state
-
   ProgressDhallEvaluated target nRules ->
     addLog razorInfo ("◉ eval " <> target <> " (" <> T.pack (show nRules) <> " rules)") state
-
   -- ══════════════════════════════════════════════════════════════════════════
   -- Toolchains
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressToolchainLoading path ->
     addLog razorAccent ("◌ toolchains " <> path) state
-
   ProgressToolchainCached path ->
     addLog razorMuted ("○ toolchains (cached) " <> path) state
-
   ProgressToolchainLoaded path n ->
     addLog razorInfo ("◉ toolchains " <> path <> " (" <> T.pack (show n) <> ")") state
-
   -- ══════════════════════════════════════════════════════════════════════════
   -- Dependency resolution
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressResolvingDeps target ->
     addLog razorAccent ("◌ deps " <> target) state
-
   ProgressCrossPackageDep pkg ->
     addLog razorDim ("  ↳ cross-pkg " <> pkg) state
-
   ProgressDepsResolved target n ->
     addLog razorInfo ("◉ deps " <> target <> " (" <> T.pack (show n) <> ")") state
-
   -- ══════════════════════════════════════════════════════════════════════════
   -- Nix resolution
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressNixResolving ref ->
     addLog razorAccent ("◌ nix " <> ref) state
-
   ProgressNixResolved ref _storePath ->
     addLog razorInfo ("◉ nix " <> ref) state
-
   -- ══════════════════════════════════════════════════════════════════════════
   -- Graph construction
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressBuildingGraph target ->
     addLog razorAccent ("◌ graph " <> target) $
-    state { dsPhase = PhaseGraph }
-
+      state {dsPhase = PhaseGraph}
   ProgressGraphAction action ->
     -- Register target as queued
     let tid = action
         target = Target tid TQueued
-    in state { dsTargets = Map.insert tid target (dsTargets state) }
-
+     in state {dsTargets = Map.insert tid target (dsTargets state)}
   ProgressGraphBuilt n ->
     addLog razorInfo ("◉ graph (" <> T.pack (show n) <> " actions)") $
-    state { dsTotal = n }
-
+      state {dsTotal = n}
   -- ══════════════════════════════════════════════════════════════════════════
   -- Cache checks
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressCacheCheck action ->
     addLog razorDim ("? " <> action) $
-    state { dsPhase = PhaseCacheCheck }
-
+      state {dsPhase = PhaseCacheCheck}
   ProgressCacheHit action ->
     addLog razorAccent ("✓ hit " <> action) state
-
   ProgressCacheMiss action ->
     addLog razorMiss ("✗ miss " <> action) state
-
   -- ══════════════════════════════════════════════════════════════════════════
   -- Execution
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressStarting name _cur total ->
     let target = Target name (TBuilding now)
-        newState = state
-          { dsPhase = PhaseBuilding
-          , dsTotal = max total (dsTotal state)
-          , dsTargets = Map.insert name target (dsTargets state)
-          , dsStartTime = case dsStartTime state of
-              Nothing -> Just now
-              x -> x
-          }
-    in addLog razorAccent ("→ " <> name) newState
-
+        newState =
+          state
+            { dsPhase = PhaseBuilding,
+              dsTotal = max total (dsTotal state),
+              dsTargets = Map.insert name target (dsTargets state),
+              dsStartTime = case dsStartTime state of
+                Nothing -> Just now
+                x -> x
+            }
+     in addLog razorAccent ("→ " <> name) newState
   ProgressCached name _cur total ->
     let target = Target name TCached
-    in addLog razorMuted ("○ " <> name <> " (cached)") $
-       state
-         { dsTotal = max total (dsTotal state)
-         , dsCompleted = dsCompleted state + 1
-         , dsCached = dsCached state + 1
-         , dsTargets = Map.insert name target (dsTargets state)
-         }
-
+     in addLog razorMuted ("○ " <> name <> " (cached)") $
+          state
+            { dsTotal = max total (dsTotal state),
+              dsCompleted = dsCompleted state + 1,
+              dsCached = dsCached state + 1,
+              dsTargets = Map.insert name target (dsTargets state)
+            }
   ProgressCompleted name _cur total _memKB ->
     let durationMs = case Map.lookup name (dsTargets state) of
           Just (Target _ (TBuilding startT)) -> round (diffUTCTime now startT * 1000)
           _ -> 0
         target = Target name (TCompleted now durationMs)
-    in addLog razorAccent ("✓ " <> name) $
-       state
-         { dsTotal = max total (dsTotal state)
-         , dsCompleted = dsCompleted state + 1
-         , dsTargets = Map.insert name target (dsTargets state)
-         }
-
+     in addLog razorAccent ("✓ " <> name) $
+          state
+            { dsTotal = max total (dsTotal state),
+              dsCompleted = dsCompleted state + 1,
+              dsTargets = Map.insert name target (dsTargets state)
+            }
   ProgressFailed name _cur _total err ->
     let durationMs = case Map.lookup name (dsTargets state) of
           Just (Target _ (TBuilding startT)) -> round (diffUTCTime now startT * 1000)
           _ -> 0
         target = Target name (TFailed now durationMs err)
-    in addLog razorMiss ("✗ " <> name <> ": " <> err) $
-       state
-         { dsFailed = dsFailed state + 1
-         , dsTargets = Map.insert name target (dsTargets state)
-         }
-
+     in addLog razorMiss ("✗ " <> name <> ": " <> err) $
+          state
+            { dsFailed = dsFailed state + 1,
+              dsTargets = Map.insert name target (dsTargets state)
+            }
   -- ══════════════════════════════════════════════════════════════════════════
   -- Finalization
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressWritingOutput path ->
     addLog razorDim ("◌ write " <> path) state
-
   ProgressCacheStore action ->
     addLog razorDim ("◌ cache " <> action) state
-
   ProgressPhaseComplete phase duration ->
     addLog razorInfo ("◉ " <> phase <> " (" <> T.pack (show (round (duration * 1000) :: Int)) <> "ms)") state
 
 -- | Add a log line to state
 addLog :: Style -> Text -> DashboardState -> DashboardState
 addLog style txt state =
-  state { dsLogs = dsLogs state ++ [LogLine txt style] }
-
+  state {dsLogs = dsLogs state ++ [LogLine txt style]}
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- TUI Build Entry Point
@@ -303,7 +295,7 @@ buildWithTUI _target buildAction =
 
     -- Mark complete
     now <- getCurrentTime
-    atomicModifyIORef' stateRef $ \s -> (s { dsPhase = PhaseComplete }, ())
+    atomicModifyIORef' stateRef $ \s -> (s {dsPhase = PhaseComplete}, ())
 
     -- Final render
     finalState <- readIORef stateRef
@@ -350,7 +342,6 @@ buildWithTUI _target buildAction =
       ProgressCacheStore a -> TIO.putStrLn $ "◌ cache " <> a
       ProgressPhaseComplete ph d -> TIO.putStrLn $ "◉ " <> ph <> " (" <> T.pack (show (round (d * 1000) :: Int)) <> "ms)"
 
-
 -- ════════════════════════════════════════════════════════════════════════════
 -- Render Loop
 -- ════════════════════════════════════════════════════════════════════════════
@@ -361,15 +352,13 @@ renderLoop console dims stateRef = forever $ do
   now <- getCurrentTime
   state <- readIORef stateRef
   render console (dashboardWidget dims now state)
-  threadDelay 25000  -- ~40fps
-
+  threadDelay 25000 -- ~40fps
 
 -- | Progress callback that updates dashboard state
 dashboardCallback :: IORef DashboardState -> ProgressCallback
 dashboardCallback stateRef event = do
   now <- getCurrentTime
   atomicModifyIORef' stateRef $ \s -> (handleProgressEvent now event s, ())
-
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Dashboard Widget
@@ -382,20 +371,20 @@ dashboardWidget dims now state = case dsPhase state of
   PhaseBuilding -> buildingWidget dims now state
   _ -> preambleWidget dims state
 
-
 -- ════════════════════════════════════════════════════════════════════════════
 -- Preamble Widget (discovery, parsing, graph building)
 -- ════════════════════════════════════════════════════════════════════════════
 
 preambleWidget :: Dimensions -> DashboardState -> Widget
 preambleWidget dims state =
-  vboxWith [Exact 3, Exact 1, Fill 1, Exact 1, Exact 1, Exact 1]
-    [ headerWidget
-    , space 0 1
-    , logStreamWidget dims (dsLogs state)
-    , space 0 1
-    , preambleStatusWidget (dsPhase state) (dsLogs state)
-    , footerWidget
+  vboxWith
+    [Exact 3, Exact 1, Fill 1, Exact 1, Exact 1, Exact 1]
+    [ headerWidget,
+      space 0 1,
+      logStreamWidget dims (dsLogs state),
+      space 0 1,
+      preambleStatusWidget (dsPhase state) (dsLogs state),
+      footerWidget
     ]
 
 logStreamWidget :: Dimensions -> [LogLine] -> Widget
@@ -405,24 +394,29 @@ logStreamWidget dims logs =
       renderLine :: Int -> LogLine -> Widget
       renderLine i (LogLine txt style) =
         let opacity = if i < 3 then dim style else style
-        in textStyled opacity txt
-  in vbox (zipWith renderLine [0..] (reverse visible))
+         in textStyled opacity txt
+   in vbox (zipWith renderLine [0 ..] (reverse visible))
 
 preambleStatusWidget :: Phase -> [LogLine] -> Widget
 preambleStatusWidget phase logs =
-  let statusText = case phase of
+  let countLogs pat = length . filter (T.isInfixOf pat . logText)
+      hits = countLogs "hit" logs
+      misses = countLogs "miss" logs
+      statusText = case phase of
         PhaseDiscovery -> "scanning..."
         PhaseParsing -> T.pack (show (countLogs "parsed" logs)) <> " files parsed"
         PhaseGraph -> "building graph..."
-        PhaseCacheCheck -> T.pack (show (countLogs "miss" logs)) <> " cache misses"
+        PhaseCacheCheck ->
+          let total = hits + misses
+           in if total > 0
+                then T.pack (show hits) <> " hits, " <> T.pack (show misses) <> " misses"
+                else "checking cache..."
         PhaseBuilding -> "building..."
         PhaseComplete -> "complete"
-      countLogs pat = length . filter (T.isInfixOf pat . logText)
-  in hbox
-       [ fill razorRule '─'
-       , textStyled razorDim (" " <> statusText <> " ")
-       ]
-
+   in hbox
+        [ fill razorRule '─',
+          textStyled razorDim (" " <> statusText <> " ")
+        ]
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Building Widget
@@ -430,13 +424,14 @@ preambleStatusWidget phase logs =
 
 buildingWidget :: Dimensions -> UTCTime -> DashboardState -> Widget
 buildingWidget _dims now state =
-  vboxWith [Exact 3, Exact 1, Exact 4, Exact 1, Fill 1, Exact 1]
-    [ headerWidget
-    , space 0 1
-    , statsRowWidget now state
-    , space 0 1
-    , activeTargetsWidget now state
-    , footerWidget
+  vboxWith
+    [Exact 3, Exact 1, Exact 4, Exact 1, Fill 1, Exact 1]
+    [ headerWidget,
+      space 0 1,
+      statsRowWidget now state,
+      space 0 1,
+      activeTargetsWidget now state,
+      footerWidget
     ]
 
 statsRowWidget :: UTCTime -> DashboardState -> Widget
@@ -444,32 +439,46 @@ statsRowWidget now state =
   let total = dsTotal state
       done = dsCompleted state
       cached = dsCached state
+      failed = dsFailed state
       elapsed :: Int
       elapsed = maybe 0 (\t -> round (diffUTCTime now t * 1000)) (dsStartTime state)
       cacheRate = if done > 0 then (cached * 100) `div` done else 0
-      cacheStyle = if cacheRate > 50 then razorAccent else razorMiss
-  in hboxWith [Fill 1, Fill 1, Fill 1]
-    [ statCard "TARGETS" (T.pack (show done)) (Just ("/ " <> T.pack (show total))) razorBright
-    , statCard "ELAPSED" (formatElapsed elapsed) (Just "s") razorBright
-    , statCard "CACHE HITS" (T.pack (show cacheRate)) (Just "%") cacheStyle
-    ]
+      cacheStyle = if cacheRate > 50 then razorAccent else if cached > 0 then razorInfo else razorMuted
+      -- Show failed count if any
+      targetSuffix =
+        if failed > 0
+          then " (" <> T.pack (show failed) <> " failed)"
+          else "/ " <> T.pack (show total)
+      targetStyle = if failed > 0 then razorMiss else razorBright
+   in hboxWith
+        [Fill 1, Fill 1, Fill 1]
+        [ statCard "TARGETS" (T.pack (show done)) (Just targetSuffix) targetStyle,
+          statCard "ELAPSED" (formatElapsed elapsed) (Just "s") razorBright,
+          statCard "CACHE" (T.pack (show cached)) (Just ("/" <> T.pack (show done) <> " " <> T.pack (show cacheRate) <> "%")) cacheStyle
+        ]
 
 statCard :: Text -> Text -> Maybe Text -> Style -> Widget
 statCard label value mUnit valueStyle =
   borderedStyled razorRule $
     padded 0 1 0 1 $
       vbox
-        [ textStyled razorMuted label
-        , hbox $
-            [ textStyled (bold valueStyle) value ] ++
-            maybe [] (\u -> [textStyled razorMuted u]) mUnit
+        [ textStyled razorMuted label,
+          hbox $
+            [textStyled (bold valueStyle) value]
+              ++ maybe [] (\u -> [textStyled razorMuted u]) mUnit
         ]
 
 activeTargetsWidget :: UTCTime -> DashboardState -> Widget
 activeTargetsWidget now state =
-  let active = [(tid, t) | (tid, t@(Target _ (TBuilding _))) <- Map.toList (dsTargets state)]
-      rows = take 12 $ map (targetRowWidget now) active
-  in vbox rows
+  let -- Show building targets first, then recently completed/cached
+      building = [(tid, t) | (tid, t@(Target _ (TBuilding _))) <- Map.toList (dsTargets state)]
+      cached = [(tid, t) | (tid, t@(Target _ TCached)) <- Map.toList (dsTargets state)]
+      completed = [(tid, t) | (tid, t@(Target _ (TCompleted _ _))) <- Map.toList (dsTargets state)]
+      failed = [(tid, t) | (tid, t@(Target _ (TFailed _ _ _))) <- Map.toList (dsTargets state)]
+      -- Show failed first, then building, then recent cached/completed
+      allTargets = failed ++ building ++ take 4 cached ++ take 4 completed
+      rows = take 12 $ map (targetRowWidget now) allTargets
+   in vbox rows
 
 targetRowWidget :: UTCTime -> (Text, Target) -> Widget
 targetRowWidget now (tid, Target _ status) =
@@ -477,19 +486,19 @@ targetRowWidget now (tid, Target _ status) =
         TQueued -> ("○", razorDim, razorDim, "")
         TBuilding startT ->
           let elapsed = round (diffUTCTime now startT * 1000) :: Int
-          in ("→", razorAccent, razorBright, formatMs elapsed)
+           in ("→", razorAccent, razorBright, formatMs elapsed)
         TCompleted _ durationMs -> ("✓", razorAccent, razorMuted, formatMs durationMs)
         TFailed _ durationMs _ -> ("✗", razorMiss, razorMiss, formatMs durationMs)
         TCached -> ("◆", razorAccent, razorMuted, "cached")
 
       paddedName = padTextRight 50 tid
-  in hboxWith [Exact 2, Exact 50, Fill 1, Exact 7]
-       [ textStyled glyphStyle (glyph <> " ")
-       , textStyled nameStyle paddedName
-       , fill razorDim '─'
-       , textStyled razorMuted (" " <> padTextLeft 6 timeStr)
-       ]
-
+   in hboxWith
+        [Exact 2, Exact 50, Fill 1, Exact 7]
+        [ textStyled glyphStyle (glyph <> " "),
+          textStyled nameStyle paddedName,
+          fill razorDim '─',
+          textStyled razorMuted (" " <> padTextLeft 6 timeStr)
+        ]
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Complete Widget
@@ -501,28 +510,29 @@ completeWidget _dims now state =
       elapsed = maybe 0 (\t -> round (diffUTCTime now t * 1000)) (dsStartTime state)
       failed = dsFailed state
       resultStyle = if failed > 0 then razorMiss else razorAccent
-      resultText = if failed > 0
-        then "BUILD FAILED · " <> T.pack (show failed) <> " ERRORS"
-        else "BUILD COMPLETE"
-  in vboxWith [Exact 3, Exact 1, Exact 4, Exact 1, Fill 1, Exact 1, Exact 1, Exact 1]
-    [ headerWidget
-    , space 0 1
-    , statsRowWidget now state
-    , space 0 1
-    , activeTargetsWidget now state
-    , space 0 1
-    , centered $
-        hbox
-          [ textStyled resultStyle (if failed > 0 then "✗ " else "✓ ")
-          , textStyled razorBright resultText
-          , textStyled razorMuted " · "
-          , textStyled razorBright (T.pack (show (dsCompleted state)) <> " TARGETS")
-          , textStyled razorMuted " · "
-          , textStyled razorBright (formatMs elapsed)
-          ]
-    , footerWidget
-    ]
-
+      resultText =
+        if failed > 0
+          then "BUILD FAILED · " <> T.pack (show failed) <> " ERRORS"
+          else "BUILD COMPLETE"
+   in vboxWith
+        [Exact 3, Exact 1, Exact 4, Exact 1, Fill 1, Exact 1, Exact 1, Exact 1]
+        [ headerWidget,
+          space 0 1,
+          statsRowWidget now state,
+          space 0 1,
+          activeTargetsWidget now state,
+          space 0 1,
+          centered $
+            hbox
+              [ textStyled resultStyle (if failed > 0 then "✗ " else "✓ "),
+                textStyled razorBright resultText,
+                textStyled razorMuted " · ",
+                textStyled razorBright (T.pack (show (dsCompleted state)) <> " TARGETS"),
+                textStyled razorMuted " · ",
+                textStyled razorBright (formatMs elapsed)
+              ],
+          footerWidget
+        ]
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Header / Footer
@@ -531,24 +541,23 @@ completeWidget _dims now state =
 headerWidget :: Widget
 headerWidget =
   vbox
-    [ textStyled razorMuted "STRAYLIGHT SOFTWARE · BUILD MONITOR"
-    , hbox
-        [ textStyled razorMuted "> "
-        , textStyled (bold razorBright) "sensenet build "
-        , textStyled razorBright "// ..."
-        , textStyled razorAccent " █"
-        ]
-    , textStyled razorDim "dhall → nix → exec"
+    [ textStyled razorMuted "STRAYLIGHT SOFTWARE · BUILD MONITOR",
+      hbox
+        [ textStyled razorMuted "> ",
+          textStyled (bold razorBright) "sensenet build ",
+          textStyled razorBright "// ...",
+          textStyled razorAccent " █"
+        ],
+      textStyled razorDim "dhall → nix → exec"
     ]
 
 footerWidget :: Widget
 footerWidget =
   hbox
-    [ textStyled razorMuted "SENSENET · DHALL + NIX + CAS"
-    , fill defaultStyle ' '
-    , textStyled razorDim "the one rectilinear chamber in the complex"
+    [ textStyled razorMuted "SENSENET · DHALL + NIX + CAS",
+      fill defaultStyle ' ',
+      textStyled razorDim "the one rectilinear chamber in the complex"
     ]
-
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Helpers
@@ -557,23 +566,23 @@ footerWidget =
 padTextRight :: Int -> Text -> Text
 padTextRight w t =
   let len = T.length t
-  in if len >= w then T.take w t else t <> T.replicate (w - len) " "
+   in if len >= w then T.take w t else t <> T.replicate (w - len) " "
 
 padTextLeft :: Int -> Text -> Text
 padTextLeft w t =
   let len = T.length t
-  in if len >= w then t else T.replicate (w - len) " " <> t
+   in if len >= w then t else T.replicate (w - len) " " <> t
 
 formatMs :: Int -> Text
 formatMs ms =
   let s = fromIntegral ms / 1000.0 :: Double
       whole = floor s :: Int
       frac = round ((s - fromIntegral whole) * 10) :: Int
-  in T.pack (show whole) <> "." <> T.pack (show (frac `mod` 10)) <> "s"
+   in T.pack (show whole) <> "." <> T.pack (show (frac `mod` 10)) <> "s"
 
 formatElapsed :: Int -> Text
 formatElapsed ms =
   let s = fromIntegral ms / 1000.0 :: Double
       whole = floor s :: Int
       frac = round ((s - fromIntegral whole) * 10) :: Int
-  in T.pack (show whole) <> "." <> T.pack (show (frac `mod` 10))
+   in T.pack (show whole) <> "." <> T.pack (show (frac `mod` 10))

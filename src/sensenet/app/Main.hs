@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -14,7 +15,7 @@ module Main where
 
 import Control.Concurrent.Async (forConcurrently)
 import Control.Exception (IOException, try)
-import Control.Monad (forM, forM_, unless)
+import Control.Monad (forM, forM_, unless, when)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy qualified as BL
@@ -110,6 +111,7 @@ usage = do
         "  --stub                 Dry run: show what would be built",
         "  --no-tui               Disable TUI output (plain text only)",
         "  -v, --verbose          Enable structured logging (Katip JSON output)",
+        "  --remote               Enable remote execution via NativeLink (requires -fremote build)",
         "",
         "Shell completion:",
         "  eval \"$(sensenet complete bash)\"   # Add to ~/.bashrc",
@@ -139,7 +141,8 @@ data BuildOpts = BuildOpts
   { boJobs :: !JobsSpec,
     boStub :: !Bool, -- --stub: dry run, don't actually build
     boNoTui :: !Bool, -- --no-tui: disable TUI (currently no-op, no TUI yet)
-    boVerbose :: !Bool -- --verbose/-v: enable structured logging
+    boVerbose :: !Bool, -- --verbose/-v: enable structured logging
+    boRemote :: !Bool -- --remote: enable remote execution via NativeLink
   }
 
 defaultBuildOpts :: BuildOpts
@@ -148,7 +151,8 @@ defaultBuildOpts =
     { boJobs = JobsDefault,
       boStub = False,
       boNoTui = False,
-      boVerbose = False
+      boVerbose = False,
+      boRemote = False
     }
 
 -- | Parse build options from args
@@ -162,6 +166,7 @@ parseBuildOpts = go defaultBuildOpts
     go opts ("--no-tui" : rest) = go opts {boNoTui = True} rest
     go opts ("--verbose" : rest) = go opts {boVerbose = True} rest
     go opts ("-v" : rest) = go opts {boVerbose = True} rest
+    go opts ("--remote" : rest) = go opts {boRemote = True} rest
     go opts ("-j" : n : rest)
       | all isDigit n = go opts {boJobs = JobsExact (read n)} rest
     go opts (arg : rest)
@@ -188,6 +193,17 @@ cmdBuild [] = do
 cmdBuild args = do
   let (opts, rest) = parseBuildOpts args
   mJobs <- resolveJobs opts.boJobs
+
+  -- Check remote flag
+  when opts.boRemote $ do
+#ifdef REMOTE_ENABLED
+    TIO.putStrLn "remote: NativeLink remote execution enabled"
+#else
+    TIO.putStrLn "warning: --remote specified but sensenet was built without -fremote"
+    TIO.putStrLn "         Remote execution is disabled. Falling back to local execution."
+    TIO.putStrLn "         Rebuild with: nix build .#sensenet (not .#sensenet-local)"
+#endif
+
   case rest of
     [] -> do
       TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
@@ -606,29 +622,27 @@ cmdTargets = Output.withAutoPresenter $ \presenter -> do
   Output.emitResultIO presenter $ Output.TextResult $ T.intercalate "\n" targets
 
 cmdClean :: Bool -> IO ()
-cmdClean full = Output.withAutoPresenter $ \presenter -> do
+cmdClean full = do
   -- Remove build outputs
   let outDir = "sensenet-out"
   outExists <- doesDirectoryExist outDir
   if outExists
     then do
-      Output.emitProgressIO presenter $ Output.ProgressMsg "Removing sensenet-out/"
+      TIO.putStrLn "removing sensenet-out/"
       removeDirectoryRecursive outDir
-    else Output.emitProgressIO presenter $ Output.ProgressMsg "sensenet-out/ does not exist"
+    else TIO.putStrLn "sensenet-out/ does not exist"
 
   -- With --full, also remove the action cache
-  if full
-    then do
-      cacheDir <- getXdgDirectory XdgCache "sensenet"
-      cacheExists <- doesDirectoryExist cacheDir
-      if cacheExists
-        then do
-          Output.emitProgressIO presenter $ Output.ProgressMsg $ "Removing " <> T.pack cacheDir <> "/"
-          removeDirectoryRecursive cacheDir
-        else Output.emitProgressIO presenter $ Output.ProgressMsg $ T.pack cacheDir <> "/ does not exist"
-    else pure ()
+  when full $ do
+    cacheDir <- getXdgDirectory XdgCache "sensenet"
+    cacheExists <- doesDirectoryExist cacheDir
+    if cacheExists
+      then do
+        TIO.putStrLn $ "removing " <> T.pack cacheDir <> "/"
+        removeDirectoryRecursive cacheDir
+      else TIO.putStrLn $ T.pack cacheDir <> "/ does not exist"
 
-  Output.emitResultIO presenter $ Output.TextResult "Clean"
+  TIO.putStrLn "clean"
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Query Command
@@ -953,7 +967,7 @@ completeBuild word
 -- | Complete build options
 completeBuildOpts :: String -> IO ()
 completeBuildOpts prefix = do
-  let opts = ["-j", "--jobs=", "--all-cores", "--stub", "--no-tui", "-v", "--verbose"]
+  let opts = ["-j", "--jobs=", "--all-cores", "--stub", "--no-tui", "-v", "--verbose", "--remote"]
       matches = filter (prefix `isPrefixOf`) opts
   mapM_ putStrLn matches
 
