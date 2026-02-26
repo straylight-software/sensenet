@@ -14,7 +14,7 @@ module Main where
 
 import Control.Concurrent.Async (forConcurrently)
 import Control.Exception (IOException, try)
-import Control.Monad (forM, unless)
+import Control.Monad (forM, forM_, unless)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy qualified as BL
@@ -295,33 +295,50 @@ buildPatternResult :: Maybe Int -> ProgressCallback -> TC.Toolchains -> FilePath
 buildPatternResult mJobs callback tc projectRoot = \case
   SingleTarget pkgPath targetName -> do
     let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
-    pkgResult <- try $ Dhall.parsePackageFile projectRoot dhallPath'
-    case pkgResult of
-      Left (e :: IOException) ->
-        pure $ Left $ PackageError $ "Cannot read package: " <> T.pack (show e)
-      Right pkg ->
-        buildWithProgress mJobs callback tc projectRoot pkg targetName
-  AllInPackage pkgPath -> do
-    let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+    -- Emit Dhall parsing event
+    callback $ ProgressDhallParsing $ T.pack dhallPath'
     pkgResult <- try $ Dhall.parsePackageFile projectRoot dhallPath'
     case pkgResult of
       Left (e :: IOException) ->
         pure $ Left $ PackageError $ "Cannot read package: " <> T.pack (show e)
       Right pkg -> do
+        callback $ ProgressDhallEvaluated ("//" <> pkgPath) (length pkg.rules)
+        buildWithProgress mJobs callback tc projectRoot pkg targetName
+  AllInPackage pkgPath -> do
+    let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+    -- Emit Dhall parsing event
+    callback $ ProgressDhallParsing $ T.pack dhallPath'
+    pkgResult <- try $ Dhall.parsePackageFile projectRoot dhallPath'
+    case pkgResult of
+      Left (e :: IOException) ->
+        pure $ Left $ PackageError $ "Cannot read package: " <> T.pack (show e)
+      Right pkg -> do
+        callback $ ProgressDhallEvaluated ("//" <> pkgPath) (length pkg.rules)
         result <- buildAllTargetsWithProgress mJobs callback tc projectRoot pkg
         pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
   Recursive subPath -> do
     -- Build all packages under this path with progress
     let startDir = if T.null subPath then projectRoot else projectRoot <> "/" <> T.unpack subPath
+    -- Emit discovery event
+    callback $ ProgressDiscovering $ "//" <> subPath <> "..."
     files <- discoverUnder projectRoot startDir
     if null files
       then pure $ Left $ CommandFailed "recursive" 1 $ "No BUILD.dhall files found under //" <> subPath <> "..."
       else do
-        pkgsResult <- try $ forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
+        -- Emit found packages
+        forM_ files $ \f -> callback $ ProgressFoundPackage $ T.pack $ dhallPath f
+        -- Parse each package with events
+        pkgsResult <- try $ forM files $ \f -> do
+          callback $ ProgressDhallParsing $ T.pack $ dhallPath f
+          pkg <- Dhall.parsePackageFile projectRoot (dhallPath f)
+          callback $ ProgressDhallEvaluated (T.pack $ "//" <> dhallRelPath f) (length pkg.rules)
+          pure pkg
         case pkgsResult of
           Left (e :: IOException) ->
             pure $ Left $ PackageError $ "Cannot read packages: " <> T.pack (show e)
           Right pkgs -> do
+            -- Emit graph building event
+            callback $ ProgressBuildingGraph $ "//" <> subPath <> "..."
             result <- buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs
             pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
 
@@ -385,6 +402,8 @@ buildSinglePattern presenter mJobs pat = do
       let startDir = if T.null subPath then projectRoot else projectRoot <> "/" <> T.unpack subPath
           target = if T.null subPath then "//..." else "//" <> subPath <> "..."
           callback = progressToOutput presenter
+      -- Emit discovery event
+      callback $ ProgressDiscovering target
       files <- discoverUnder projectRoot startDir
       if null files
         then do
@@ -393,8 +412,16 @@ buildSinglePattern presenter mJobs pat = do
               "No BUILD.dhall files found under " <> target
           exitFailure
         else do
-          -- Parse all BUILD.dhall files in parallel for better performance
-          pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
+          -- Emit found packages
+          forM_ files $ \f -> callback $ ProgressFoundPackage $ T.pack $ dhallRelPath f
+          -- Parse all BUILD.dhall files with events
+          pkgs <- forM files $ \f -> do
+            callback $ ProgressDhallParsing $ T.pack $ dhallPath f
+            pkg <- Dhall.parsePackageFile projectRoot (dhallPath f)
+            callback $ ProgressDhallEvaluated (T.pack $ "//" <> dhallRelPath f) (length pkg.rules)
+            pure pkg
+          -- Emit graph building event
+          callback $ ProgressBuildingGraph target
           Output.emitProgressIO presenter $ Output.Building target
           -- Build all packages with a unified action graph for maximum parallelism
           result <- buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs
