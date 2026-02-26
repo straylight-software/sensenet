@@ -110,6 +110,7 @@ test-suite sensenet-test
         Test.SenseNet.Integration
         Test.SenseNet.Psychotic
         Test.SenseNet.Savage
+        Test.SenseNet.Security
         Test.SenseNet.TUI
     build-depends:
         async,

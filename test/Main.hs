@@ -28,6 +28,7 @@ import Test.SenseNet.Filesystem qualified as Filesystem
 import Test.SenseNet.Integration qualified as Integration
 import Test.SenseNet.Psychotic qualified as Psychotic
 import Test.SenseNet.Savage qualified as Savage
+import Test.SenseNet.Security qualified as Security
 import Test.SenseNet.TUI qualified as TUI
 import Test.Tasty
 
@@ -42,6 +43,8 @@ tests =
       testGroup "Unit" [DICE.tests, Build.tests, TUI.tests],
       -- Integration tests
       testGroup "Integration" [Integration.tests, DhallNix.tests],
+      -- Security tests (import restrictions, credential protection)
+      testGroup "Security" [Security.tests],
       -- Adversarial tests
       testGroup "Adversarial" [Adversarial.tests, Crashers.tests, DhallTorture.tests],
       -- Bootstrap tests
