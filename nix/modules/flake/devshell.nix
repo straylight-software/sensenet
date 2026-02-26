@@ -193,8 +193,10 @@ in
               pkgs.buck2
               ghc-with-all-deps
 
-              # sensenet CLI - typed build system wrapping Buck2
-              config.packages.sensenet
+              # sensenet CLI - typed build system
+              # Use sensenet-local (no -fremote) since Remote/NativeLink files
+              # may not be committed yet. Switch to sensenet once they are.
+              config.packages.sensenet-local
 
               # ════════════════════════════════════════════════════════════════
               # LSP servers - go-to-definition works out of the box
