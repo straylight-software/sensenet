@@ -56,8 +56,7 @@ let
     unordered-containers
     vector
   ];
-in
-let
+
   sensenet-unwrapped = mkDerivation {
     pname = "sensenet";
     version = "0.4.0";
