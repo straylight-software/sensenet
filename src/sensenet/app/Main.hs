@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- |
 -- sensenet — the best build system in the world
@@ -12,10 +13,13 @@ module Main where
 -- SenseNet.DICE used by Build module
 
 import Control.Concurrent.Async (forConcurrently)
+import Control.Exception (IOException, try)
+import Control.Monad (unless)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (isDigit)
+import Data.Either (partitionEithers)
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -266,40 +270,54 @@ buildSinglePattern presenter mJobs pat = do
     SingleTarget pkgPath targetName -> do
       let target = "//" <> pkgPath <> ":" <> targetName
           dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
-      pkg <- Dhall.parsePackageFile projectRoot dhallPath
-      Output.emitProgressIO presenter $ Output.Building target
-      -- Use buildWithProgress for typed progress output
-      let callback = progressToOutput presenter
-      result <- buildWithProgress mJobs callback tc projectRoot pkg targetName
-      case result of
-        Left err -> do
-          Output.emitErrorIO presenter $ buildErrorToOutput target err
+      pkgResult <- try $ Dhall.parsePackageFile projectRoot dhallPath
+      case pkgResult of
+        Left (e :: IOException) -> do
+          Output.emitErrorIO presenter $
+            Output.ConfigError $
+              "Cannot read package: " <> T.pack (show e)
           exitFailure
-        Right (BuildSuccess outputs) -> do
-          Output.emitResultIO presenter $ Output.BuildSuccess target (map T.pack outputs) 0
-          exitSuccess
-        Right (BuildCached outputs) -> do
-          Output.emitProgressIO presenter $ Output.Cached target
-          Output.emitResultIO presenter $ Output.BuildSuccess target (map T.pack outputs) 0
-          exitSuccess
+        Right pkg -> do
+          Output.emitProgressIO presenter $ Output.Building target
+          -- Use buildWithProgress for typed progress output
+          let callback = progressToOutput presenter
+          result <- buildWithProgress mJobs callback tc projectRoot pkg targetName
+          case result of
+            Left err -> do
+              Output.emitErrorIO presenter $ buildErrorToOutput target err
+              exitFailure
+            Right (BuildSuccess outputs) -> do
+              Output.emitResultIO presenter $ Output.BuildSuccess target (map T.pack outputs) 0
+              exitSuccess
+            Right (BuildCached outputs) -> do
+              Output.emitProgressIO presenter $ Output.Cached target
+              Output.emitResultIO presenter $ Output.BuildSuccess target (map T.pack outputs) 0
+              exitSuccess
     AllInPackage pkgPath -> do
       let target = "//" <> pkgPath <> ":all"
           dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
           callback = progressToOutput presenter
-      pkg <- Dhall.parsePackageFile projectRoot dhallPath'
-      Output.emitProgressIO presenter $ Output.Building target
-      result <- buildAllTargetsWithProgress mJobs callback tc projectRoot pkg
-      case result of
-        Left err -> do
-          Output.emitErrorIO presenter $ buildErrorToOutput target err
+      pkgResult <- try $ Dhall.parsePackageFile projectRoot dhallPath'
+      case pkgResult of
+        Left (e :: IOException) -> do
+          Output.emitErrorIO presenter $
+            Output.ConfigError $
+              "Cannot read package: " <> T.pack (show e)
           exitFailure
-        Right n -> do
-          Output.emitResultIO presenter $
-            Output.BuildSuccess
-              target
-              [T.pack (show n) <> " targets"]
-              0
-          exitSuccess
+        Right pkg -> do
+          Output.emitProgressIO presenter $ Output.Building target
+          result <- buildAllTargetsWithProgress mJobs callback tc projectRoot pkg
+          case result of
+            Left err -> do
+              Output.emitErrorIO presenter $ buildErrorToOutput target err
+              exitFailure
+            Right n -> do
+              Output.emitResultIO presenter $
+                Output.BuildSuccess
+                  target
+                  [T.pack (show n) <> " targets"]
+                  0
+              exitSuccess
     Recursive subPath -> do
       let startDir = if T.null subPath then projectRoot else projectRoot <> "/" <> T.unpack subPath
           target = if T.null subPath then "//..." else "//" <> subPath <> "..."
@@ -532,12 +550,17 @@ cmdQuery args = Output.withAutoPresenter $ \presenter -> do
       -- Parse all packages in parallel for better performance
       files <- discover projectRoot
       pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
-      -- Process each query
+      -- Process each query, tracking errors
       results <- mapM (runQuery presenter opts pkgs) queries
-      -- Merge results
-      let merged = mergeQueryResults results
-      -- Output
-      outputQueryResult presenter opts merged
+      let (errors, successes) = partitionEithers results
+      -- Emit errors
+      mapM_ (Output.emitErrorIO presenter) errors
+      -- Output successful results (if any)
+      unless (null successes) $ do
+        let merged = mergeQueryResults successes
+        outputQueryResult presenter opts merged
+      -- Exit with failure if any errors occurred
+      unless (null errors) exitFailure
 
 mergeQueryResults :: [QueryResult] -> QueryResult
 mergeQueryResults rs = case rs of
@@ -571,18 +594,17 @@ outputQueryResult presenter opts = \case
     -- Sanitize label for graphviz
     sanitize = T.replace "\"" "\\\""
 
-runQuery :: Output.Presenter -> QueryOpts -> [Package] -> String -> IO QueryResult
-runQuery presenter opts pkgs queryStr = do
+runQuery :: Output.Presenter -> QueryOpts -> [Package] -> String -> IO (Either Output.Error QueryResult)
+runQuery _presenter opts pkgs queryStr = do
   case parseQueryExpr (T.pack queryStr) of
-    Nothing -> do
-      Output.emitErrorIO presenter $ Output.ConfigError $ "Invalid query: " <> T.pack queryStr
-      pure $ QRStrings []
+    Nothing ->
+      pure $ Left $ Output.ConfigError $ "Invalid query: " <> T.pack queryStr
     Just (pat, mSel) -> do
       -- Find matching targets
       let targets = findTargets pkgs pat
       case mSel of
-        Nothing -> pure $ QRStrings $ map (formatTarget pkgs) targets
-        Just sel -> executeSelector opts pkgs targets sel
+        Nothing -> pure $ Right $ QRStrings $ map (formatTarget pkgs) targets
+        Just sel -> Right <$> executeSelector opts pkgs targets sel
 
 -- | Find targets matching a pattern
 findTargets :: [Package] -> TargetPattern -> [(Package, Rule)]
