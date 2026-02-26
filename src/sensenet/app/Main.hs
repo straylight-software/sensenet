@@ -22,12 +22,11 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import GHC.Conc (getNumProcessors)
-import SenseNet.Build (BuildError (..), BuildLog, BuildResult (..), ProgressCallback, ProgressEvent (..), buildAllPackagesJ, buildAllTargetsJ, buildWithDepsJ, buildWithProgress, noLog, withLogging)
+import SenseNet.Build (BuildError (..), BuildResult (..), ProgressCallback, ProgressEvent (..), buildAllPackagesWithProgress, buildAllTargetsWithProgress, buildWithProgress)
 import SenseNet.Complete qualified as Complete
 import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
 import SenseNet.IR (Dep (..), Package (..), Rule (..), ruleDeps, ruleKind, ruleName, ruleSrcs)
-import SenseNet.Log qualified as Log
 import SenseNet.Output qualified as Output
 import SenseNet.Toolchains qualified as TC
 import System.Directory (XdgDirectory (..), doesDirectoryExist, getCurrentDirectory, getXdgDirectory, removeDirectoryRecursive)
@@ -177,13 +176,6 @@ resolveJobs JobsDefault = do
 resolveJobs JobsUnlimited = pure Nothing
 resolveJobs (JobsExact n) = pure $ Just n
 
--- | Create BuildLog from verbose flag
--- When verbose is True, initialize Katip logging
--- When False, use noLog (no structured logging output)
-resolveLogging :: Bool -> IO BuildLog
-resolveLogging False = pure noLog
-resolveLogging True = withLogging <$> Log.initLogging
-
 cmdBuild :: [String] -> IO ()
 cmdBuild [] = do
   TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
@@ -191,7 +183,8 @@ cmdBuild [] = do
 cmdBuild args = Output.withAutoPresenter $ \presenter -> do
   let (opts, rest) = parseBuildOpts args
   mJobs <- resolveJobs opts.boJobs
-  blog <- resolveLogging opts.boVerbose
+  -- Note: Katip logging (--verbose) is deprecated in favor of typed output
+  -- The presenter now handles all output formatting based on context
   case rest of
     [] -> do
       TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
@@ -214,18 +207,19 @@ cmdBuild args = Output.withAutoPresenter $ \presenter -> do
               TIO.putStrLn $ "[stub] Would build " <> T.pack (show (length validTargets)) <> " target(s):"
               mapM_ (TIO.putStrLn . ("[stub]   " <>) . showPattern) validTargets
               exitSuccess
-            else buildTargets presenter mJobs blog validTargets
+            else buildTargets presenter mJobs validTargets
 
-buildTargets :: Output.Presenter -> Maybe Int -> BuildLog -> [TargetPattern] -> IO ()
-buildTargets presenter mJobs blog patterns = case patterns of
+buildTargets :: Output.Presenter -> Maybe Int -> [TargetPattern] -> IO ()
+buildTargets presenter mJobs patterns = case patterns of
   [] -> exitSuccess
-  [pattern] -> buildSinglePattern presenter mJobs blog pattern
+  [pattern] -> buildSinglePattern presenter mJobs pattern
   _ -> do
     -- Multiple targets: build each one
     projectRoot <- getCurrentDirectory
     tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
+    let callback = progressToOutput presenter
     Output.emitProgressIO presenter $ Output.ProgressCount 0 (length patterns)
-    results <- mapM (buildPatternResult mJobs blog tc projectRoot) patterns
+    results <- mapM (buildPatternResult mJobs callback tc projectRoot) patterns
     let failures = length [() | Left _ <- results]
         successes = length [() | Right _ <- results]
     if failures > 0
@@ -242,24 +236,30 @@ buildTargets presenter mJobs blog patterns = case patterns of
             "Built " <> T.pack (show successes) <> " targets"
         exitSuccess
 
-buildPatternResult :: Maybe Int -> BuildLog -> TC.Toolchains -> FilePath -> TargetPattern -> IO (Either BuildError BuildResult)
-buildPatternResult mJobs blog tc projectRoot = \case
+buildPatternResult :: Maybe Int -> ProgressCallback -> TC.Toolchains -> FilePath -> TargetPattern -> IO (Either BuildError BuildResult)
+buildPatternResult mJobs callback tc projectRoot = \case
   SingleTarget pkgPath targetName -> do
     let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
     pkg <- Dhall.parsePackageFile projectRoot dhallPath
-    buildWithDepsJ mJobs blog tc projectRoot pkg targetName
+    buildWithProgress mJobs callback tc projectRoot pkg targetName
   AllInPackage pkgPath -> do
     let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
     pkg <- Dhall.parsePackageFile projectRoot dhallPath
-    result <- buildAllTargetsJ mJobs blog tc projectRoot pkg
+    result <- buildAllTargetsWithProgress mJobs callback tc projectRoot pkg
     pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
-  Recursive _ -> do
-    -- For recursive, just return success for now
-    -- TODO: implement properly
-    pure $ Right $ BuildSuccess ["recursive build"]
+  Recursive subPath -> do
+    -- Build all packages under this path with progress
+    let startDir = if T.null subPath then projectRoot else projectRoot <> "/" <> T.unpack subPath
+    files <- discoverUnder projectRoot startDir
+    if null files
+      then pure $ Left $ CommandFailed "recursive" 1 $ "No BUILD.dhall files found under //" <> subPath <> "..."
+      else do
+        pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
+        result <- buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs
+        pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
 
-buildSinglePattern :: Output.Presenter -> Maybe Int -> BuildLog -> TargetPattern -> IO ()
-buildSinglePattern presenter mJobs blog pat = do
+buildSinglePattern :: Output.Presenter -> Maybe Int -> TargetPattern -> IO ()
+buildSinglePattern presenter mJobs pat = do
   projectRoot <- getCurrentDirectory
   tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
   case pat of
@@ -285,10 +285,10 @@ buildSinglePattern presenter mJobs blog pat = do
     AllInPackage pkgPath -> do
       let target = "//" <> pkgPath <> ":all"
           dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+          callback = progressToOutput presenter
       pkg <- Dhall.parsePackageFile projectRoot dhallPath'
       Output.emitProgressIO presenter $ Output.Building target
-      Output.emitProgressIO presenter $ Output.ProgressCount 0 (length pkg.rules)
-      result <- buildAllTargetsJ mJobs blog tc projectRoot pkg
+      result <- buildAllTargetsWithProgress mJobs callback tc projectRoot pkg
       case result of
         Left err -> do
           Output.emitErrorIO presenter $ buildErrorToOutput target err
@@ -303,6 +303,7 @@ buildSinglePattern presenter mJobs blog pat = do
     Recursive subPath -> do
       let startDir = if T.null subPath then projectRoot else projectRoot <> "/" <> T.unpack subPath
           target = if T.null subPath then "//..." else "//" <> subPath <> "..."
+          callback = progressToOutput presenter
       files <- discoverUnder projectRoot startDir
       if null files
         then do
@@ -313,11 +314,9 @@ buildSinglePattern presenter mJobs blog pat = do
         else do
           -- Parse all BUILD.dhall files in parallel for better performance
           pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
-          let totalTargets = sum [length pkg.rules | pkg <- pkgs]
           Output.emitProgressIO presenter $ Output.Building target
-          Output.emitProgressIO presenter $ Output.ProgressCount 0 totalTargets
           -- Build all packages with a unified action graph for maximum parallelism
-          result <- buildAllPackagesJ mJobs blog tc projectRoot pkgs
+          result <- buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs
           case result of
             Left err -> do
               Output.emitErrorIO presenter $ buildErrorToOutput target err
@@ -379,13 +378,14 @@ cmdRun args = Output.withAutoPresenter $ \presenter -> do
           exitFailure
         Just (SingleTarget pkgPath targetName) -> do
           let target = "//" <> pkgPath <> ":" <> targetName
+              callback = progressToOutput presenter
           projectRoot <- getCurrentDirectory
           tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
           let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
           pkg <- Dhall.parsePackageFile projectRoot dhallPath'
           -- Build the target first
           Output.emitProgressIO presenter $ Output.Building target
-          result <- buildWithDepsJ Nothing noLog tc projectRoot pkg targetName
+          result <- buildWithProgress Nothing callback tc projectRoot pkg targetName
           case result of
             Left err -> do
               Output.emitErrorIO presenter $ buildErrorToOutput target err

@@ -29,6 +29,8 @@ module SenseNet.Build
 
     -- * Build with Progress
     buildWithProgress,
+    buildAllTargetsWithProgress,
+    buildAllPackagesWithProgress,
     ProgressCallback,
     ProgressEvent (..),
 
@@ -296,6 +298,59 @@ buildWithProgress mJobs callback tc projectRoot pkg targetName
             (Left $ CommandFailed "graph" 1 "root action not in results")
             (Right . BuildSuccess . map T.unpack . arOutputs)
             (Map.lookup rootKey results)
+
+-- | Build all targets in a package with progress callback
+buildAllTargetsWithProgress ::
+  Maybe Int ->
+  ProgressCallback ->
+  Toolchains ->
+  FilePath ->
+  Package ->
+  IO (Either BuildError Int)
+buildAllTargetsWithProgress mJobs callback tc projectRoot pkg = do
+  let outDir = projectRoot </> "sensenet-out" </> pkg.path
+  createDirectoryIfMissing True outDir
+
+  graphResult <- buildAllActionGraph tc projectRoot pkg outDir
+  case graphResult of
+    Left err -> pure $ Left err
+    Right graph -> do
+      cache <- newCache
+      execResult <- executeGraphWithProgress mJobs callback cache runAction graph
+      case erFailed execResult of
+        ((_, err) : _) -> pure $ Left $ CommandFailed "graph" 1 err
+        [] -> pure $ Right $ erExecuted execResult + erCacheHits execResult
+
+-- | Build all packages with progress callback
+buildAllPackagesWithProgress ::
+  Maybe Int ->
+  ProgressCallback ->
+  Toolchains ->
+  FilePath ->
+  [Package] ->
+  IO (Either BuildError Int)
+buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs = do
+  -- Build unresolved actions for all packages
+  actionResults <- forM pkgs $ \pkg -> do
+    let outDir = projectRoot </> "sensenet-out" </> pkg.path
+    createDirectoryIfMissing True outDir
+    buildAllActionsUnresolved tc projectRoot pkg outDir
+
+  case [err | Left err <- actionResults] of
+    (err : _) -> pure $ Left err
+    [] -> do
+      let allTriples = concat [triples | Right triples <- actionResults]
+          nameToKey = Map.fromList [(aName a, actionKey a) | (_, _, a) <- allTriples]
+          resolvedActions = [resolveDepsForRule nameToKey pkg r a | (pkg, r, a) <- allTriples]
+          graph = foldl (\g a -> addAction a g) emptyGraph resolvedActions
+          rootKeys = [actionKey a | a <- resolvedActions]
+          unifiedGraph = graph {agRoots = rootKeys}
+
+      cache <- newCache
+      execResult <- executeGraphWithProgress mJobs callback cache runAction unifiedGraph
+      case erFailed execResult of
+        ((_, err) : _) -> pure $ Left $ CommandFailed "graph" 1 err
+        [] -> pure $ Right $ erExecuted execResult + erCacheHits execResult
 
 -- | Build all targets in a package in parallel
 buildAllTargets ::
