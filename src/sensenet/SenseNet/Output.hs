@@ -139,6 +139,8 @@ data Result
     QueryResult !Value
   | -- | Raw text result (for pipelines)
     TextResult !Text
+  | -- | JSON result (for structured queries)
+    JsonResult !Value
   deriving stock (Eq, Show, Generic)
 
 instance ToJSON Result where
@@ -154,6 +156,8 @@ instance ToJSON Result where
       object ["kind" .= ("query" :: Text), "value" .= v]
     TextResult t ->
       object ["kind" .= ("text" :: Text), "text" .= t]
+    JsonResult v ->
+      object ["kind" .= ("json" :: Text), "value" .= v]
 
 -- | Progress updates during execution
 data Progress
@@ -169,6 +173,8 @@ data Progress
     Action !Text !Text -- target, action name
   | -- | Spinner tick (for animations)
     Tick !Int
+  | -- | Generic progress message
+    ProgressMsg !Text
   deriving stock (Eq, Show, Generic)
 
 instance ToJSON Progress where
@@ -186,6 +192,7 @@ instance ToJSON Progress where
     Action t a ->
       object ["kind" .= ("action" :: Text), "target" .= t, "action" .= a]
     Tick n -> object ["kind" .= ("tick" :: Text), "tick" .= n]
+    ProgressMsg msg -> object ["kind" .= ("message" :: Text), "message" .= msg]
 
 -- | Diagnostic severity levels
 data DiagnosticLevel
@@ -289,6 +296,7 @@ renderResultTerminal = \case
     mapM_ (\o -> TIO.putStrLn $ "  → " <> o) outputs
   QueryResult v -> BL.putStr (encode v) >> putStrLn ""
   TextResult t -> TIO.putStrLn t
+  JsonResult v -> BL.putStr (encode v) >> putStrLn ""
 
 renderProgressTerminal :: Progress -> IO ()
 renderProgressTerminal = \case
@@ -316,6 +324,7 @@ renderProgressTerminal = \case
     TIO.putStrLn $ "  " <> action <> ": " <> target
     ANSI.setSGR [ANSI.Reset]
   Tick _ -> pure () -- ticks handled by HyperConsole in TUI mode
+  ProgressMsg msg -> TIO.putStrLn msg
 
 renderDiagnosticTerminal :: Diagnostic -> IO ()
 renderDiagnosticTerminal (Diagnostic lvl msg ctx) = do

@@ -414,7 +414,7 @@ cmdRun args = Output.withAutoPresenter $ \presenter -> do
       exitWith exitCode
 
 cmdTargets :: IO ()
-cmdTargets = do
+cmdTargets = Output.withAutoPresenter $ \presenter -> do
   projectRoot <- pure "."
   files <- discover projectRoot
   pkgs <- mapM (\f -> Dhall.parsePackageFile projectRoot (dhallPath f)) files
@@ -425,18 +425,18 @@ cmdTargets = do
         | pkg <- pkgs,
           rule <- getRules pkg
         ]
-  mapM_ TIO.putStrLn targets
+  Output.emitResultIO presenter $ Output.TextResult $ T.intercalate "\n" targets
 
 cmdClean :: Bool -> IO ()
-cmdClean full = do
+cmdClean full = Output.withAutoPresenter $ \presenter -> do
   -- Remove build outputs
   let outDir = "sensenet-out"
   outExists <- doesDirectoryExist outDir
   if outExists
     then do
-      TIO.putStrLn "Removing sensenet-out/"
+      Output.emitProgressIO presenter $ Output.ProgressMsg "Removing sensenet-out/"
       removeDirectoryRecursive outDir
-    else TIO.putStrLn "sensenet-out/ does not exist"
+    else Output.emitProgressIO presenter $ Output.ProgressMsg "sensenet-out/ does not exist"
 
   -- With --full, also remove the action cache
   if full
@@ -445,12 +445,12 @@ cmdClean full = do
       cacheExists <- doesDirectoryExist cacheDir
       if cacheExists
         then do
-          TIO.putStrLn $ "Removing " <> T.pack cacheDir <> "/"
+          Output.emitProgressIO presenter $ Output.ProgressMsg $ "Removing " <> T.pack cacheDir <> "/"
           removeDirectoryRecursive cacheDir
-        else TIO.putStrLn $ T.pack cacheDir <> "/ does not exist"
+        else Output.emitProgressIO presenter $ Output.ProgressMsg $ T.pack cacheDir <> "/ does not exist"
     else pure ()
 
-  TIO.putStrLn "✓ Clean"
+  Output.emitResultIO presenter $ Output.TextResult "Clean"
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Query Command
@@ -521,7 +521,7 @@ cmdQuery [] = do
   TIO.putStrLn ""
   TIO.putStrLn "Selectors: #deps, #rdeps, #inputs, #kind/<type>, #attrs"
   exitFailure
-cmdQuery args = do
+cmdQuery args = Output.withAutoPresenter $ \presenter -> do
   let (opts, rest) = parseQueryOpts args
   case rest of
     [] -> do
@@ -533,11 +533,11 @@ cmdQuery args = do
       files <- discover projectRoot
       pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
       -- Process each query
-      results <- mapM (runQuery opts pkgs) queries
+      results <- mapM (runQuery presenter opts pkgs) queries
       -- Merge results
       let merged = mergeQueryResults results
       -- Output
-      outputQueryResult opts merged
+      outputQueryResult presenter opts merged
 
 mergeQueryResults :: [QueryResult] -> QueryResult
 mergeQueryResults rs = case rs of
@@ -546,31 +546,36 @@ mergeQueryResults rs = case rs of
   (QRValues _ : _) -> QRValues [v | QRValues vs <- rs, v <- vs]
   _ -> QRStrings [s | QRStrings ss <- rs, s <- ss]
 
-outputQueryResult :: QueryOpts -> QueryResult -> IO ()
-outputQueryResult opts = \case
+outputQueryResult :: Output.Presenter -> QueryOpts -> QueryResult -> IO ()
+outputQueryResult presenter opts = \case
   QRStrings strs ->
     if qoJson opts
-      then TIO.putStrLn $ TE.decodeUtf8 $ BL.toStrict $ Aeson.encode strs
-      else mapM_ TIO.putStrLn strs
+      then Output.emitResultIO presenter $ Output.JsonResult $ Aeson.toJSON strs
+      else Output.emitResultIO presenter $ Output.TextResult $ T.intercalate "\n" strs
   QRValues vals ->
     if qoJson opts
-      then TIO.putStrLn $ TE.decodeUtf8 $ BL.toStrict $ Aeson.encode vals
-      else mapM_ (TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . Aeson.encode) vals
+      then Output.emitResultIO presenter $ Output.JsonResult $ Aeson.toJSON vals
+      else mapM_ (\v -> Output.emitResultIO presenter $ Output.TextResult $ TE.decodeUtf8 $ BL.toStrict $ Aeson.encode v) vals
   QRGraph edges -> do
-    TIO.putStrLn "digraph deps {"
-    TIO.putStrLn "  rankdir=LR;"
-    TIO.putStrLn "  node [shape=box];"
-    mapM_ (\(f, t) -> TIO.putStrLn $ "  \"" <> sanitize f <> "\" -> \"" <> sanitize t <> "\";") edges
-    TIO.putStrLn "}"
+    -- GraphViz dot output - emit as text
+    let dotOutput =
+          T.unlines
+            [ "digraph deps {",
+              "  rankdir=LR;",
+              "  node [shape=box];",
+              T.unlines $ map (\(f, t) -> "  \"" <> sanitize f <> "\" -> \"" <> sanitize t <> "\";") edges,
+              "}"
+            ]
+    Output.emitResultIO presenter $ Output.TextResult dotOutput
   where
     -- Sanitize label for graphviz
     sanitize = T.replace "\"" "\\\""
 
-runQuery :: QueryOpts -> [Package] -> String -> IO QueryResult
-runQuery opts pkgs queryStr = do
+runQuery :: Output.Presenter -> QueryOpts -> [Package] -> String -> IO QueryResult
+runQuery presenter opts pkgs queryStr = do
   case parseQueryExpr (T.pack queryStr) of
     Nothing -> do
-      TIO.putStrLn $ "Invalid query: " <> T.pack queryStr
+      Output.emitErrorIO presenter $ Output.ConfigError $ "Invalid query: " <> T.pack queryStr
       pure $ QRStrings []
     Just (pat, mSel) -> do
       -- Find matching targets
