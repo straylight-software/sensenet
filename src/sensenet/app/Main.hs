@@ -14,7 +14,7 @@ module Main where
 
 import Control.Concurrent.Async (forConcurrently)
 import Control.Exception (IOException, try)
-import Control.Monad (unless)
+import Control.Monad (forM, unless)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy qualified as BL
@@ -218,12 +218,16 @@ buildTargets presenter mJobs patterns = case patterns of
   [] -> exitSuccess
   [pattern] -> buildSinglePattern presenter mJobs pattern
   _ -> do
-    -- Multiple targets: build each one
+    -- Multiple patterns: build each one sequentially
+    -- Use a quiet callback since each pattern has its own graph with own counter
+    -- (would show confusing [1/1] [1/1] [1/1] otherwise)
     projectRoot <- getCurrentDirectory
     tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
-    let callback = progressToOutput presenter
-    Output.emitProgressIO presenter $ Output.ProgressCount 0 (length patterns)
-    results <- mapM (buildPatternResult mJobs callback tc projectRoot) patterns
+    let quietCallback = const $ pure () -- suppress per-action progress
+    results <- forM (zip [1 ..] patterns) $ \(i, pat) -> do
+      Output.emitProgressIO presenter $ Output.ProgressCount i (length patterns)
+      Output.emitProgressIO presenter $ Output.Building (showPattern pat)
+      buildPatternResult mJobs quietCallback tc projectRoot pat
     let failures = length [() | Left _ <- results]
         successes = length [() | Right _ <- results]
     if failures > 0
@@ -243,14 +247,22 @@ buildTargets presenter mJobs patterns = case patterns of
 buildPatternResult :: Maybe Int -> ProgressCallback -> TC.Toolchains -> FilePath -> TargetPattern -> IO (Either BuildError BuildResult)
 buildPatternResult mJobs callback tc projectRoot = \case
   SingleTarget pkgPath targetName -> do
-    let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
-    pkg <- Dhall.parsePackageFile projectRoot dhallPath
-    buildWithProgress mJobs callback tc projectRoot pkg targetName
+    let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+    pkgResult <- try $ Dhall.parsePackageFile projectRoot dhallPath'
+    case pkgResult of
+      Left (e :: IOException) ->
+        pure $ Left $ PackageError $ "Cannot read package: " <> T.pack (show e)
+      Right pkg ->
+        buildWithProgress mJobs callback tc projectRoot pkg targetName
   AllInPackage pkgPath -> do
-    let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
-    pkg <- Dhall.parsePackageFile projectRoot dhallPath
-    result <- buildAllTargetsWithProgress mJobs callback tc projectRoot pkg
-    pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
+    let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+    pkgResult <- try $ Dhall.parsePackageFile projectRoot dhallPath'
+    case pkgResult of
+      Left (e :: IOException) ->
+        pure $ Left $ PackageError $ "Cannot read package: " <> T.pack (show e)
+      Right pkg -> do
+        result <- buildAllTargetsWithProgress mJobs callback tc projectRoot pkg
+        pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
   Recursive subPath -> do
     -- Build all packages under this path with progress
     let startDir = if T.null subPath then projectRoot else projectRoot <> "/" <> T.unpack subPath
@@ -258,9 +270,13 @@ buildPatternResult mJobs callback tc projectRoot = \case
     if null files
       then pure $ Left $ CommandFailed "recursive" 1 $ "No BUILD.dhall files found under //" <> subPath <> "..."
       else do
-        pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
-        result <- buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs
-        pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
+        pkgsResult <- try $ forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
+        case pkgsResult of
+          Left (e :: IOException) ->
+            pure $ Left $ PackageError $ "Cannot read packages: " <> T.pack (show e)
+          Right pkgs -> do
+            result <- buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs
+            pure $ fmap (BuildSuccess . (\n -> [show n <> " targets"])) result
 
 buildSinglePattern :: Output.Presenter -> Maybe Int -> TargetPattern -> IO ()
 buildSinglePattern presenter mJobs pat = do
@@ -408,16 +424,23 @@ cmdRun args = Output.withAutoPresenter $ \presenter -> do
           projectRoot <- getCurrentDirectory
           tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
           let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
-          pkg <- Dhall.parsePackageFile projectRoot dhallPath'
-          -- Build the target first
-          Output.emitProgressIO presenter $ Output.Building target
-          result <- buildWithProgress Nothing callback tc projectRoot pkg targetName
-          case result of
-            Left err -> do
-              Output.emitErrorIO presenter $ buildErrorToOutput target err
+          pkgResult <- try $ Dhall.parsePackageFile projectRoot dhallPath'
+          case pkgResult of
+            Left (e :: IOException) -> do
+              Output.emitErrorIO presenter $
+                Output.ConfigError $
+                  "Cannot read package: " <> T.pack (show e)
               exitFailure
-            Right (BuildSuccess outputs) -> runBinary outputs progArgs
-            Right (BuildCached outputs) -> runBinary outputs progArgs
+            Right pkg -> do
+              -- Build the target first
+              Output.emitProgressIO presenter $ Output.Building target
+              result <- buildWithProgress Nothing callback tc projectRoot pkg targetName
+              case result of
+                Left err -> do
+                  Output.emitErrorIO presenter $ buildErrorToOutput target err
+                  exitFailure
+                Right (BuildSuccess outputs) -> runBinary outputs progArgs
+                Right (BuildCached outputs) -> runBinary outputs progArgs
         Just _ -> do
           Output.emitErrorIO presenter $
             Output.ConfigError
