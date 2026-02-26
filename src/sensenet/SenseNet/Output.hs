@@ -6,14 +6,14 @@
 
 -- |
 -- Module      : SenseNet.Output
--- Description : Typed output protocol - no stdout, no stderr
+-- Description : Typed output protocol - structured output for all contexts
 --
 -- "The sky above the port was the color of television,
 --  tuned to a dead channel."
 --
 --                                      — Neuromancer
 --
--- = The End of stdio
+-- = The End of stdout/stderr Split
 --
 -- Unix gave us stdout and stderr in an era when stdout went to a printer
 -- and stderr went to the operator's console. Two physical destinations.
@@ -24,7 +24,7 @@
 -- merge them. @2>&1@ is the most common shell idiom because the separation
 -- is almost never what anyone wants.
 --
--- This module replaces all of it with typed output:
+-- This module provides typed output that adapts to context:
 --
 -- @
 -- data Output
@@ -34,22 +34,30 @@
 --   | Error !Error           -- Failures
 -- @
 --
--- The producer emits typed facts. The consumer decides presentation:
+-- = Context-Aware Presentation
 --
---   * Terminal → HyperConsole renders with colors, progress bars
---   * Agent → JSON stream of results and errors only
---   * Log → Everything, timestamped
---   * Pipeline → Results only, raw
+-- The producer emits typed facts. The presenter decides rendering:
 --
--- No stdout. No stderr. No @2>&1@.
+--   * __Terminal__ (TTY) → Colors, Unicode glyphs, progress bars
+--   * __Pipe__ (non-TTY) → Plain text, works with grep/jq/wc
+--   * __Agent__ (SENSENET_AGENT=1) → JSON lines protocol for programmatic consumers
+--
+-- Shell pipelines get raw text that works naturally:
+--
+-- @
+-- sensenet targets | grep rust        # works
+-- sensenet query ... --json | jq      # works
+-- @
+--
+-- Agents (weapon, sigil, etc.) opt into the typed protocol explicitly.
 --
 -- = Usage
 --
 -- @
--- runWithOutput TerminalPresenter $ do
---   emit $ Progress (Building "//core:lib")
+-- withAutoPresenter $ \\presenter -> do
+--   emitProgressIO presenter $ Building "//core:lib"
 --   result <- buildTarget target
---   emit $ Result (BuildSuccess result)
+--   emitResultIO presenter $ BuildSuccess result
 -- @
 module SenseNet.Output
   ( -- * Output Types
@@ -72,6 +80,7 @@ module SenseNet.Output
     -- * Presentation
     Presenter (..),
     terminalPresenter,
+    pipePresenter,
     agentPresenter,
     nullPresenter,
 
@@ -278,6 +287,15 @@ agentPresenter = Presenter $ \output -> case output of
       Warning -> BL.putStr (encode output) >> putStrLn ""
       _ -> pure ()
 
+-- | Pipe presenter - raw text output for shell pipelines
+-- Like terminal but without ANSI colors (works with grep, jq, wc, etc.)
+pipePresenter :: Presenter
+pipePresenter = Presenter $ \output -> case output of
+  OutputResult r -> renderResultPipe r
+  OutputProgress p -> renderProgressPipe p
+  OutputDiagnostic d -> renderDiagnosticPipe d
+  OutputError e -> renderErrorPipe e
+
 -- | Null presenter - discard everything
 nullPresenter :: Presenter
 nullPresenter = Presenter $ \_ -> pure ()
@@ -353,6 +371,49 @@ renderErrorTerminal err = do
     InternalError msg -> TIO.hPutStrLn stderr $ "internal: " <> msg
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- Pipe Rendering (no ANSI colors)
+-- ════════════════════════════════════════════════════════════════════════════
+
+renderResultPipe :: Result -> IO ()
+renderResultPipe = \case
+  BuildSuccess target outputs duration -> do
+    TIO.putStrLn $ target <> " built in " <> T.pack (show duration)
+    mapM_ (\o -> TIO.putStrLn $ "  " <> o) outputs
+  QueryResult v -> BL.putStr (encode v) >> putStrLn ""
+  TextResult t -> TIO.putStrLn t
+  JsonResult v -> BL.putStr (encode v) >> putStrLn ""
+
+renderProgressPipe :: Progress -> IO ()
+renderProgressPipe = \case
+  Building target -> TIO.putStrLn $ "Building " <> target
+  Cached target -> TIO.putStrLn $ "Cached " <> target
+  Built target duration -> TIO.putStrLn $ target <> " (" <> T.pack (show duration) <> ")"
+  ProgressCount current total -> TIO.putStrLn $ "[" <> T.pack (show current) <> "/" <> T.pack (show total) <> "]"
+  Action target action -> TIO.putStrLn $ "  " <> action <> ": " <> target
+  Tick _ -> pure ()
+  ProgressMsg msg -> TIO.putStrLn msg
+
+renderDiagnosticPipe :: Diagnostic -> IO ()
+renderDiagnosticPipe (Diagnostic lvl msg ctx) = do
+  let prefix = case lvl of
+        Debug -> "debug: "
+        Info -> ""
+        Warning -> "warning: "
+  case ctx of
+    Just c -> TIO.hPutStrLn stderr $ c <> ": " <> prefix <> msg
+    Nothing -> TIO.hPutStrLn stderr $ prefix <> msg
+
+renderErrorPipe :: Error -> IO ()
+renderErrorPipe = \case
+  BuildFailed target msg details -> do
+    TIO.hPutStrLn stderr $ "error: " <> target <> ": " <> msg
+    case details of
+      Just d -> TIO.hPutStrLn stderr d
+      Nothing -> pure ()
+  ConfigError msg -> TIO.hPutStrLn stderr $ "error: " <> msg
+  InternalError msg -> TIO.hPutStrLn stderr $ "error: internal: " <> msg
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- Output Monad
 -- ════════════════════════════════════════════════════════════════════════════
 
@@ -421,11 +482,14 @@ detectContext = do
           else ContextPipe
 
 -- | Get the appropriate presenter for a context
+--
+-- Terminal and Pipe both get raw text output (works with grep, jq, etc.)
+-- Only explicit Agent mode gets the typed JSON protocol
 presenterForContext :: OutputContext -> Presenter
 presenterForContext = \case
   ContextTerminal -> terminalPresenter
-  ContextPipe -> agentPresenter -- pipes get JSON
-  ContextAgent -> agentPresenter
+  ContextPipe -> pipePresenter -- raw output for shell pipelines
+  ContextAgent -> agentPresenter -- typed JSON protocol for agents
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Direct IO Helpers (for gradual migration)
