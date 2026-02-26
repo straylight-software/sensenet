@@ -28,6 +28,7 @@ import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
 import SenseNet.IR (Dep (..), Package (..), Rule (..), ruleDeps, ruleKind, ruleName, ruleSrcs)
 import SenseNet.Log qualified as Log
+import SenseNet.Output qualified as Output
 import SenseNet.Toolchains qualified as TC
 import System.Directory (XdgDirectory (..), doesDirectoryExist, getCurrentDirectory, getXdgDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
@@ -187,7 +188,7 @@ cmdBuild :: [String] -> IO ()
 cmdBuild [] = do
   TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
   exitFailure
-cmdBuild args = do
+cmdBuild args = Output.withAutoPresenter $ \presenter -> do
   let (opts, rest) = parseBuildOpts args
   mJobs <- resolveJobs opts.boJobs
   blog <- resolveLogging opts.boVerbose
@@ -201,8 +202,9 @@ cmdBuild args = do
           invalidTargets = [t | (t, Nothing) <- parsedTargets]
       if not (null invalidTargets)
         then do
-          TIO.putStrLn $ "Invalid target(s): " <> T.pack (unwords invalidTargets)
-          TIO.putStrLn "Expected: //path/to/pkg:target, //path/to/pkg:all, or //..."
+          Output.emitErrorIO presenter $
+            Output.ConfigError $
+              "Invalid target(s): " <> T.pack (unwords invalidTargets) <> "\nExpected: //path/to/pkg:target, //path/to/pkg:all, or //..."
           exitFailure
         else do
           let validTargets = [p | (_, Just p) <- parsedTargets]
@@ -212,26 +214,32 @@ cmdBuild args = do
               TIO.putStrLn $ "[stub] Would build " <> T.pack (show (length validTargets)) <> " target(s):"
               mapM_ (TIO.putStrLn . ("[stub]   " <>) . showPattern) validTargets
               exitSuccess
-            else buildTargets mJobs blog validTargets
+            else buildTargets presenter mJobs blog validTargets
 
-buildTargets :: Maybe Int -> BuildLog -> [TargetPattern] -> IO ()
-buildTargets mJobs blog patterns = case patterns of
+buildTargets :: Output.Presenter -> Maybe Int -> BuildLog -> [TargetPattern] -> IO ()
+buildTargets presenter mJobs blog patterns = case patterns of
   [] -> exitSuccess
-  [pattern] -> buildSinglePattern mJobs blog pattern
+  [pattern] -> buildSinglePattern presenter mJobs blog pattern
   _ -> do
     -- Multiple targets: build each one
     projectRoot <- getCurrentDirectory
     tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
-    TIO.putStrLn $ "Building " <> T.pack (show (length patterns)) <> " targets"
+    Output.emitProgressIO presenter $ Output.ProgressCount 0 (length patterns)
     results <- mapM (buildPatternResult mJobs blog tc projectRoot) patterns
     let failures = length [() | Left _ <- results]
         successes = length [() | Right _ <- results]
     if failures > 0
       then do
-        TIO.putStrLn $ "✗ " <> T.pack (show failures) <> " failed, " <> T.pack (show successes) <> " succeeded"
+        Output.emitErrorIO presenter $
+          Output.BuildFailed
+            "multi"
+            (T.pack (show failures) <> " failed, " <> T.pack (show successes) <> " succeeded")
+            Nothing
         exitFailure
       else do
-        TIO.putStrLn $ "✓ Built " <> T.pack (show successes) <> " targets"
+        Output.emitResultIO presenter $
+          Output.TextResult $
+            "Built " <> T.pack (show successes) <> " targets"
         exitSuccess
 
 buildPatternResult :: Maybe Int -> BuildLog -> TC.Toolchains -> FilePath -> TargetPattern -> IO (Either BuildError BuildResult)
@@ -250,60 +258,88 @@ buildPatternResult mJobs blog tc projectRoot = \case
     -- TODO: implement properly
     pure $ Right $ BuildSuccess ["recursive build"]
 
-buildSinglePattern :: Maybe Int -> BuildLog -> TargetPattern -> IO ()
-buildSinglePattern mJobs blog pat = do
+buildSinglePattern :: Output.Presenter -> Maybe Int -> BuildLog -> TargetPattern -> IO ()
+buildSinglePattern presenter mJobs blog pat = do
   projectRoot <- getCurrentDirectory
   tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
   case pat of
     SingleTarget pkgPath targetName -> do
-      let dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+      let target = "//" <> pkgPath <> ":" <> targetName
+          dhallPath = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
       pkg <- Dhall.parsePackageFile projectRoot dhallPath
-      TIO.putStrLn $ "Building //" <> pkgPath <> ":" <> targetName
+      Output.emitProgressIO presenter $ Output.Building target
       result <- buildWithDepsJ mJobs blog tc projectRoot pkg targetName
       case result of
         Left err -> do
-          TIO.putStrLn $ "✗ " <> showError err
+          Output.emitErrorIO presenter $ buildErrorToOutput target err
           exitFailure
         Right (BuildSuccess outputs) -> do
-          TIO.putStrLn $ "✓ Built: " <> T.intercalate ", " (map T.pack outputs)
+          Output.emitResultIO presenter $ Output.BuildSuccess target (map T.pack outputs) 0
           exitSuccess
         Right (BuildCached outputs) -> do
-          TIO.putStrLn $ "✓ Cached: " <> T.intercalate ", " (map T.pack outputs)
+          Output.emitProgressIO presenter $ Output.Cached target
+          Output.emitResultIO presenter $ Output.BuildSuccess target (map T.pack outputs) 0
           exitSuccess
     AllInPackage pkgPath -> do
-      let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
+      let target = "//" <> pkgPath <> ":all"
+          dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
       pkg <- Dhall.parsePackageFile projectRoot dhallPath'
-      TIO.putStrLn $ "Building //" <> pkgPath <> ":all (" <> T.pack (show (length pkg.rules)) <> " targets)"
+      Output.emitProgressIO presenter $ Output.Building target
+      Output.emitProgressIO presenter $ Output.ProgressCount 0 (length pkg.rules)
       result <- buildAllTargetsJ mJobs blog tc projectRoot pkg
       case result of
         Left err -> do
-          TIO.putStrLn $ "✗ " <> showError err
+          Output.emitErrorIO presenter $ buildErrorToOutput target err
           exitFailure
         Right n -> do
-          TIO.putStrLn $ "✓ Built " <> T.pack (show n) <> " targets"
+          Output.emitResultIO presenter $
+            Output.BuildSuccess
+              target
+              [T.pack (show n) <> " targets"]
+              0
           exitSuccess
     Recursive subPath -> do
       let startDir = if T.null subPath then projectRoot else projectRoot <> "/" <> T.unpack subPath
+          target = if T.null subPath then "//..." else "//" <> subPath <> "..."
       files <- discoverUnder projectRoot startDir
       if null files
         then do
-          TIO.putStrLn $ "No BUILD.dhall files found under //" <> subPath <> "..."
+          Output.emitErrorIO presenter $
+            Output.ConfigError $
+              "No BUILD.dhall files found under " <> target
           exitFailure
         else do
           -- Parse all BUILD.dhall files in parallel for better performance
           pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
           let totalTargets = sum [length pkg.rules | pkg <- pkgs]
-              pathPrefix = if T.null subPath then "//" else "//" <> subPath <> "/"
-          TIO.putStrLn $ "Building " <> pathPrefix <> "... (" <> T.pack (show (length pkgs)) <> " packages, " <> T.pack (show totalTargets) <> " targets)"
+          Output.emitProgressIO presenter $ Output.Building target
+          Output.emitProgressIO presenter $ Output.ProgressCount 0 totalTargets
           -- Build all packages with a unified action graph for maximum parallelism
           result <- buildAllPackagesJ mJobs blog tc projectRoot pkgs
           case result of
             Left err -> do
-              TIO.putStrLn $ "✗ " <> showError err
+              Output.emitErrorIO presenter $ buildErrorToOutput target err
               exitFailure
             Right n -> do
-              TIO.putStrLn $ "✓ Built " <> T.pack (show n) <> " targets across " <> T.pack (show (length pkgs)) <> " packages"
+              Output.emitResultIO presenter $
+                Output.BuildSuccess
+                  target
+                  [T.pack (show n) <> " targets across " <> T.pack (show (length pkgs)) <> " packages"]
+                  0
               exitSuccess
+
+-- | Convert BuildError to typed Output.Error
+buildErrorToOutput :: Text -> BuildError -> Output.Error
+buildErrorToOutput target = \case
+  TargetNotFound name -> Output.BuildFailed target ("Target not found: " <> name) Nothing
+  CommandFailed cmd code err ->
+    Output.BuildFailed
+      target
+      ("Command failed: " <> cmd <> " (exit " <> T.pack (show code) <> ")")
+      (Just err)
+  DependencyFailed dep err -> Output.BuildFailed target ("Dependency failed: " <> dep) (Just err)
+  SourceNotFound path -> Output.BuildFailed target ("Source not found: " <> T.pack path) Nothing
+  PackageError err -> Output.BuildFailed target "Package error" (Just err)
 
 -- | Run command: build target then execute it
 cmdRun :: [String] -> IO ()

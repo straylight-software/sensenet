@@ -79,6 +79,15 @@ module SenseNet.Output
     OutputContext (..),
     detectContext,
     presenterForContext,
+
+    -- * Direct IO Helpers
+
+    -- | For gradual migration - emit directly in IO
+    emitIO,
+    emitResultIO,
+    emitProgressIO,
+    emitErrorIO,
+    withAutoPresenter,
   )
 where
 
@@ -92,6 +101,7 @@ import Data.Text.IO qualified as TIO
 import Data.Time.Clock (NominalDiffTime)
 import GHC.Generics (Generic)
 import System.Console.ANSI qualified as ANSI
+import System.Environment (lookupEnv)
 import System.IO (hIsTerminalDevice, stderr, stdout)
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -382,16 +392,24 @@ data OutputContext
   deriving stock (Eq, Show)
 
 -- | Detect the output context from environment
+--
+-- Checks in order:
+--   1. SENSENET_AGENT=1 → ContextAgent (set by weapon, sigil, etc)
+--   2. stdout is TTY → ContextTerminal (human at terminal)
+--   3. otherwise → ContextPipe (piped to another program)
 detectContext :: IO OutputContext
 detectContext = do
   -- Check for agent environment variable first
-  -- (would be set by weapon, sigil, etc)
-  -- For now, just check if stdout is a TTY
-  isTTY <- hIsTerminalDevice stdout
-  pure $
-    if isTTY
-      then ContextTerminal
-      else ContextPipe
+  mAgent <- lookupEnv "SENSENET_AGENT"
+  case mAgent of
+    Just "1" -> pure ContextAgent
+    Just "true" -> pure ContextAgent
+    _ -> do
+      isTTY <- hIsTerminalDevice stdout
+      pure $
+        if isTTY
+          then ContextTerminal
+          else ContextPipe
 
 -- | Get the appropriate presenter for a context
 presenterForContext :: OutputContext -> Presenter
@@ -399,3 +417,30 @@ presenterForContext = \case
   ContextTerminal -> terminalPresenter
   ContextPipe -> agentPresenter -- pipes get JSON
   ContextAgent -> agentPresenter
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Direct IO Helpers (for gradual migration)
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Emit output directly in IO with a given presenter
+emitIO :: Presenter -> Output -> IO ()
+emitIO p = present p
+
+-- | Emit a result directly in IO
+emitResultIO :: Presenter -> Result -> IO ()
+emitResultIO p = emitIO p . OutputResult
+
+-- | Emit progress directly in IO
+emitProgressIO :: Presenter -> Progress -> IO ()
+emitProgressIO p = emitIO p . OutputProgress
+
+-- | Emit an error directly in IO
+emitErrorIO :: Presenter -> Error -> IO ()
+emitErrorIO p = emitIO p . OutputError
+
+-- | Run an IO action with auto-detected presenter
+-- Detects context and passes the appropriate presenter to the action
+withAutoPresenter :: (Presenter -> IO a) -> IO a
+withAutoPresenter action = do
+  ctx <- detectContext
+  action (presenterForContext ctx)
