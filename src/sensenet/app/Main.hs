@@ -346,7 +346,7 @@ cmdRun :: [String] -> IO ()
 cmdRun [] = do
   TIO.putStrLn "Usage: sensenet run //path/to/pkg:target [-- args...]"
   exitFailure
-cmdRun args = do
+cmdRun args = Output.withAutoPresenter $ \presenter -> do
   -- Split args at "--" to separate target from program args
   let (targetArgs, progArgs) = case break (== "--") args of
         (before, []) -> (before, [])
@@ -358,30 +358,39 @@ cmdRun args = do
     [targetStr] -> do
       case parseTarget (T.pack targetStr) of
         Nothing -> do
-          TIO.putStrLn $ "Invalid target: " <> T.pack targetStr
+          Output.emitErrorIO presenter $
+            Output.ConfigError $
+              "Invalid target: " <> T.pack targetStr
           exitFailure
         Just (SingleTarget pkgPath targetName) -> do
+          let target = "//" <> pkgPath <> ":" <> targetName
           projectRoot <- getCurrentDirectory
           tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
           let dhallPath' = projectRoot <> "/" <> T.unpack pkgPath <> "/BUILD.dhall"
           pkg <- Dhall.parsePackageFile projectRoot dhallPath'
           -- Build the target first
+          Output.emitProgressIO presenter $ Output.Building target
           result <- buildWithDepsJ Nothing noLog tc projectRoot pkg targetName
           case result of
             Left err -> do
-              TIO.putStrLn $ "✗ Build failed: " <> showError err
+              Output.emitErrorIO presenter $ buildErrorToOutput target err
               exitFailure
             Right (BuildSuccess outputs) -> runBinary outputs progArgs
             Right (BuildCached outputs) -> runBinary outputs progArgs
         Just _ -> do
-          TIO.putStrLn "run requires a single target (//pkg:target), not a pattern"
+          Output.emitErrorIO presenter $
+            Output.ConfigError
+              "run requires a single target (//pkg:target), not a pattern"
           exitFailure
     _ -> do
-      TIO.putStrLn "run requires exactly one target"
+      Output.emitErrorIO presenter $
+        Output.ConfigError
+          "run requires exactly one target"
       exitFailure
   where
     runBinary :: [FilePath] -> [String] -> IO ()
     runBinary [] _ = do
+      -- Note: this runs outside presenter scope, use direct output
       TIO.putStrLn "✗ No output binary found"
       exitFailure
     runBinary (bin : _) progArgs' = do
