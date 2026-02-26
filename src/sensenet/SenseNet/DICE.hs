@@ -579,10 +579,10 @@ executeGraphWithProgress mJobs callback cache runner graph = do
 
   pendingVar <- newMVar depCount
   progressVar <- newMVar 0
-
+  doneVar <- newMVar 0 -- Tracks completed count (for ordered progress display)
   let ready0 = [k | k <- allKeys, Map.findWithDefault 0 k depCount == 0]
 
-  processWavesWithCallback semMaybe total progressVar callback cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar ready0
+  processWavesWithCallback semMaybe total progressVar doneVar callback cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar ready0
 
   results <- readMVar resultsVar
   hits <- readMVar hitsVar
@@ -601,7 +601,8 @@ executeGraphWithProgress mJobs callback cache runner graph = do
 processWavesWithCallback ::
   Maybe QSem ->
   Int ->
-  MVar Int ->
+  MVar Int -> -- progressVar (started count)
+  MVar Int -> -- doneVar (completed count)
   ProgressCallback ->
   ActionCache ->
   (Action -> IO ActionResult) ->
@@ -614,8 +615,8 @@ processWavesWithCallback ::
   MVar (Map ActionKey Int) ->
   [ActionKey] ->
   IO ()
-processWavesWithCallback _ _ _ _ _ _ _ _ _ _ _ _ _ [] = pure ()
-processWavesWithCallback semMaybe total progressVar callback cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar readyKeys = do
+processWavesWithCallback _ _ _ _ _ _ _ _ _ _ _ _ _ _ [] = pure ()
+processWavesWithCallback semMaybe total progressVar doneVar callback cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar readyKeys = do
   newlyReady <- forConcurrently readyKeys $ \key -> do
     let action = agActions graph Map.! key
         runWithLimit = case semMaybe of
@@ -623,6 +624,7 @@ processWavesWithCallback semMaybe total progressVar callback cache runner graph 
           Just sem -> bracket_ (waitQSem sem) (signalQSem sem)
 
     runWithLimit $ do
+      -- n is the "started" index - only used for ProgressStarting
       n <- modifyMVar progressVar $ \p -> pure (p + 1, p + 1)
 
       cached <- checkCache cache key
@@ -635,7 +637,9 @@ processWavesWithCallback semMaybe total progressVar callback cache runner graph 
 
       case cacheValid of
         Just result -> do
-          callback $ ProgressCached (aName action) n total
+          -- Increment done counter BEFORE callback for proper ordering
+          done <- modifyMVar doneVar $ \d -> pure (d + 1, d + 1)
+          callback $ ProgressCached (aName action) done total
           modifyMVar_ resultsVar $ pure . Map.insert key result
           modifyMVar_ hitsVar $ pure . (+ 1)
           modifyMVar_ completedVar $ pure . Set.insert key
@@ -647,19 +651,22 @@ processWavesWithCallback semMaybe total progressVar callback cache runner graph 
           if arExitCode result == 0
             then do
               storeCache cache key result
-              callback $ ProgressCompleted (aName action) n total (arPeakMemoryKB result)
+              -- Increment done counter BEFORE callback for proper ordering
+              done <- modifyMVar doneVar $ \d -> pure (d + 1, d + 1)
+              callback $ ProgressCompleted (aName action) done total (arPeakMemoryKB result)
               modifyMVar_ resultsVar $ pure . Map.insert key result
               modifyMVar_ executedVar $ pure . (+ 1)
               modifyMVar_ completedVar $ pure . Set.insert key
               findNewlyReady graph completedVar pendingVar key
             else do
+              -- For failures, use the started index since we didn't complete
               let errMsg = "exit " <> T.pack (show (arExitCode result)) <> ": " <> T.take 200 (arStderr result)
               callback $ ProgressFailed (aName action) n total errMsg
               modifyMVar_ failedVar $ pure . ((key, errMsg) :)
               pure []
 
   let nextReady = Set.toList $ Set.fromList $ concat newlyReady
-  processWavesWithCallback semMaybe total progressVar callback cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar nextReady
+  processWavesWithCallback semMaybe total progressVar doneVar callback cache runner graph resultsVar hitsVar executedVar failedVar completedVar pendingVar nextReady
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Cache (persistent, file-based)

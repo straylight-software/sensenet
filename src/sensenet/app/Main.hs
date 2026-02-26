@@ -361,13 +361,21 @@ buildErrorToOutput target = \case
   PackageError err -> Output.BuildFailed target "Package error" (Just err)
 
 -- | Create a ProgressCallback that emits typed Output via presenter
+--
+-- Note: We don't emit ProgressCount on ProgressStarting because concurrent
+-- execution causes out-of-order starts ([4/45] [1/45] [5/45]). Instead we
+-- show progress only on completion events where order matters less.
 progressToOutput :: Output.Presenter -> ProgressCallback
 progressToOutput presenter = \case
-  ProgressStarting _name cur total ->
+  ProgressStarting _name _cur _total ->
+    -- Don't emit count on start - concurrent execution causes chaos
+    -- The "Building //..." message already shown covers this
+    pure ()
+  ProgressCached name cur total -> do
     Output.emitProgressIO presenter $ Output.ProgressCount cur total
-  ProgressCached name _cur _total ->
     Output.emitProgressIO presenter $ Output.Cached name
-  ProgressCompleted name _cur _total _memKB ->
+  ProgressCompleted name cur total _memKB -> do
+    Output.emitProgressIO presenter $ Output.ProgressCount cur total
     -- Note: duration not available here, would need to track
     Output.emitProgressIO presenter $ Output.Built name 0
   ProgressFailed name _cur _total err ->
