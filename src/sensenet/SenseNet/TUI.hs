@@ -5,29 +5,28 @@
 
 -- |
 -- Module      : SenseNet.TUI
--- Description : Superconsole-style TUI for sensenet builds
+-- Description : Razorgirl dashboard TUI for sensenet builds
 --
 -- "The sky above the port was the color of television,
 --  tuned to a dead channel."
 --
 --                                      — Neuromancer
 --
--- This module provides a superconsole-style TUI for build progress:
+-- Full ono-sendai razorgirl aesthetic build monitor with:
 --
---   * __Emit area__ (top) — Completed builds scroll up
---   * __Canvas area__ (bottom) — In-place updating display:
---       - Progress bar with count
---       - Currently executing actions
---       - Summary statistics
+--   * __Preamble phase__ — Streaming log of discovery, dhall eval, graph build
+--   * __Build phase__ — Target groups with progress bars
+--   * __Complete phase__ — Summary with timing
 --
--- The canvas redraws in-place while the emit area grows upward.
+-- Uses HyperConsole for flicker-free rendering in tmux.
 module SenseNet.TUI
   ( -- * TUI Build
     buildWithTUI,
 
-    -- * TUI State
-    TUIState (..),
-    initialTUIState,
+    -- * Dashboard State (for testing)
+    DashboardState (..),
+    initDashboardState,
+    handleProgressEvent,
   )
 where
 
@@ -37,391 +36,544 @@ import Control.Monad (forever)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
-import HyperConsole.Layout (Constraint (Exact, Fill))
-import HyperConsole.Terminal (Console, emit, render, withConsoleFallback)
-import HyperConsole.Theme qualified as Theme
-import HyperConsole.Widget (Line, Span (..), Widget, progress, textStyled, vbox, vboxWith, (<+>))
+
+import HyperConsole
+import HyperConsole.Theme
 import SenseNet.Build (BuildError, BuildResult, ProgressCallback, ProgressEvent (..))
 
+
 -- ════════════════════════════════════════════════════════════════════════════
--- TUI State
+-- Dashboard State
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | State for the TUI
-data TUIState = TUIState
-  { -- | The root target being built (e.g., "//..." or "//src/examples:all")
-    tuiTarget :: !Text,
-    -- | Total number of actions
-    tuiTotal :: !Int,
-    -- | Number of completed actions
-    tuiCompleted :: !Int,
-    -- | Number of cached actions
-    tuiCached :: !Int,
-    -- | Currently building targets (name -> start time)
-    tuiActive :: !(Map Text UTCTime),
-    -- | When the build started
-    tuiStartTime :: !UTCTime,
-    -- | Animation tick counter
-    tuiTick :: !Int
+-- | Target status in the dashboard
+data TargetStatus
+  = TQueued                         -- ^ Waiting to start
+  | TBuilding UTCTime               -- ^ Currently building, started at time
+  | TCompleted UTCTime Int          -- ^ Finished successfully, start time + duration ms
+  | TFailed UTCTime Int Text        -- ^ Failed with error
+  | TCached                         -- ^ Cache hit
+  deriving stock (Eq, Show)
+
+-- | A build target for display
+data Target = Target
+  { targetId       :: Text            -- ^ e.g. "//sigil-trtllm:test-rope"
+  , targetStatus   :: TargetStatus    -- ^ Current build status
   }
-  deriving (Show)
+  deriving stock (Eq, Show)
 
--- | Initial TUI state
-initialTUIState :: Text -> UTCTime -> TUIState
-initialTUIState target startTime =
-  TUIState
-    { tuiTarget = target,
-      tuiTotal = 0,
-      tuiCompleted = 0,
-      tuiCached = 0,
-      tuiActive = Map.empty,
-      tuiStartTime = startTime,
-      tuiTick = 0
-    }
+-- | Build phase
+data Phase
+  = PhaseDiscovery      -- ^ Scanning for BUILD.dhall files
+  | PhaseParsing        -- ^ Parsing dhall files
+  | PhaseGraph          -- ^ Building dependency graph
+  | PhaseCacheCheck     -- ^ Checking cache
+  | PhaseBuilding       -- ^ Executing builds
+  | PhaseComplete       -- ^ All done
+  deriving stock (Eq, Show)
+
+-- | Log line with styling
+data LogLine = LogLine
+  { logText  :: Text
+  , logStyle :: Style
+  }
+  deriving stock (Eq, Show)
+
+-- | Complete dashboard state
+data DashboardState = DashboardState
+  { dsTargets     :: Map Text Target     -- ^ All known targets
+  , dsPhase       :: Phase               -- ^ Current phase
+  , dsLogs        :: [LogLine]           -- ^ Log history (newest last)
+  , dsStartTime   :: Maybe UTCTime       -- ^ When build started
+  , dsTotal       :: Int                 -- ^ Total actions (from graph)
+  , dsCompleted   :: Int                 -- ^ Completed actions
+  , dsCached      :: Int                 -- ^ Cache hits
+  , dsFailed      :: Int                 -- ^ Failed actions
+  }
+  deriving stock (Show)
+
+-- | Initial empty state
+initDashboardState :: DashboardState
+initDashboardState = DashboardState
+  { dsTargets   = Map.empty
+  , dsPhase     = PhaseDiscovery
+  , dsLogs      = []
+  , dsStartTime = Nothing
+  , dsTotal     = 0
+  , dsCompleted = 0
+  , dsCached    = 0
+  , dsFailed    = 0
+  }
+
 
 -- ════════════════════════════════════════════════════════════════════════════
--- TUI Build
+-- Event Handling
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Run a build action with superconsole-style TUI progress display
---
--- Falls back to simple output if not running in a TTY.
-buildWithTUI ::
-  Text ->
-  -- | Root target label
-  (ProgressCallback -> IO (Either BuildError BuildResult)) ->
-  -- | Build action that takes a progress callback
-  IO (Either BuildError BuildResult)
-buildWithTUI target buildAction =
-  withConsoleFallback fallback $ \console -> do
-    -- Initialize state
-    startTime <- getCurrentTime
-    stateRef <- newIORef (initialTUIState target startTime)
-    tickRef <- newIORef (0 :: Int)
-
-    -- Start render loop (~30fps for smooth animations)
-    renderThread <- async $ renderLoop console stateRef tickRef
-
-    -- Create progress callback that updates state
-    let callback = tuiCallback console stateRef
-
-    -- Run the build
-    result <- buildAction callback
-
-    -- Stop render loop
-    cancel renderThread
-
-    -- Final render to show completion
-    finalState <- readIORef stateRef
-    now <- getCurrentTime
-    render console (buildWidget finalState now)
-
-    -- Print final summary below the canvas
-    TIO.putStrLn ""
-
-    pure result
-  where
-    -- Fallback for non-TTY: use verbose text callback from DICE
-    fallback = buildAction verboseCallback
-
-    -- Simple text callback that shows all events
-    verboseCallback = \case
-      -- Discovery
-      ProgressDiscovering p -> TIO.putStrLn $ "◌ scanning " <> p
-      ProgressFoundPackage p -> TIO.putStrLn $ "◉ found " <> p
-      -- Dhall
-      ProgressDhallParsing p -> TIO.putStrLn $ "◌ parsing " <> p
-      ProgressDhallParsed p -> TIO.putStrLn $ "◉ parsed " <> p
-      ProgressDhallImport i -> TIO.putStrLn $ "  ↳ import " <> i
-      ProgressDhallNormalizing t -> TIO.putStrLn $ "◌ eval " <> t
-      ProgressDhallEvaluated t n -> TIO.putStrLn $ "◉ eval " <> t <> " (" <> T.pack (show n) <> " rules)"
-      -- Toolchains
-      ProgressToolchainLoading p -> TIO.putStrLn $ "◌ toolchains " <> p
-      ProgressToolchainCached p -> TIO.putStrLn $ "○ toolchains (cached) " <> p
-      ProgressToolchainLoaded p n -> TIO.putStrLn $ "◉ toolchains " <> p <> " (" <> T.pack (show n) <> ")"
-      -- Dependencies
-      ProgressResolvingDeps t -> TIO.putStrLn $ "◌ deps " <> t
-      ProgressCrossPackageDep p -> TIO.putStrLn $ "  ↳ cross-pkg " <> p
-      ProgressDepsResolved t n -> TIO.putStrLn $ "◉ deps " <> t <> " (" <> T.pack (show n) <> ")"
-      -- Nix
-      ProgressNixResolving r -> TIO.putStrLn $ "◌ nix " <> r
-      ProgressNixResolved r _ -> TIO.putStrLn $ "◉ nix " <> r
-      -- Graph
-      ProgressBuildingGraph t -> TIO.putStrLn $ "◌ graph " <> t
-      ProgressGraphAction a -> TIO.putStrLn $ "  + " <> a
-      ProgressGraphBuilt n -> TIO.putStrLn $ "◉ graph (" <> T.pack (show n) <> " actions)"
-      -- Cache
-      ProgressCacheCheck a -> TIO.putStrLn $ "? cache " <> a
-      ProgressCacheHit a -> TIO.putStrLn $ "✓ hit " <> a
-      ProgressCacheMiss a -> TIO.putStrLn $ "✗ miss " <> a
-      -- Execution
-      ProgressStarting nm _ _ -> TIO.putStrLn $ "→ " <> nm
-      ProgressCached nm _ _ -> TIO.putStrLn $ "○ " <> nm <> " (cached)"
-      ProgressCompleted nm _ _ _ -> TIO.putStrLn $ "✓ " <> nm
-      ProgressFailed nm _ _ e -> TIO.putStrLn $ "✗ " <> nm <> ": " <> e
-      -- Finalization
-      ProgressWritingOutput p -> TIO.putStrLn $ "◌ write " <> p
-      ProgressCacheStore a -> TIO.putStrLn $ "◌ cache " <> a
-      ProgressPhaseComplete ph d -> TIO.putStrLn $ "◉ " <> ph <> " (" <> T.pack (show (round (d * 1000) :: Int)) <> "ms)"
-
--- | Render loop - updates display at ~30fps
-renderLoop :: Console -> IORef TUIState -> IORef Int -> IO ()
-renderLoop console stateRef tickRef = forever $ do
-  -- Increment tick
-  tick <- atomicModifyIORef' tickRef (\t -> (t + 1, t + 1))
-
-  -- Get current time for elapsed calculation
-  now <- getCurrentTime
-
-  -- Update state with new tick
-  state <- readIORef stateRef
-  let state' = state {tuiTick = tick}
-
-  -- Render
-  render console (buildWidget state' now)
-
-  -- Sleep ~33ms (30fps)
-  threadDelay 33333
-
--- | Progress callback that updates TUI state
---
--- Every event emits a line that scrolls up in the emit area, providing
--- maximum visibility into the build process.
-tuiCallback :: Console -> IORef TUIState -> ProgressCallback
-tuiCallback console stateRef = \case
+-- | Process a ProgressEvent and update dashboard state
+handleProgressEvent :: UTCTime -> ProgressEvent -> DashboardState -> DashboardState
+handleProgressEvent now event state = case event of
   -- ══════════════════════════════════════════════════════════════════════════
-  -- Discovery phase - show every file being scanned
+  -- Discovery phase
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressDiscovering path ->
-    emit console (infoLine "◌" "scanning" path)
+    addLog razorAccent ("◌ scanning " <> path) $
+    state { dsPhase = PhaseDiscovery }
+
   ProgressFoundPackage pkg ->
-    emit console (successLine "◉" "found" pkg)
+    addLog razorMuted ("◉ found " <> pkg) state
+
   -- ══════════════════════════════════════════════════════════════════════════
-  -- Dhall phase - show parsing, imports, normalization
+  -- Dhall parsing phase
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressDhallParsing path ->
-    emit console (infoLine "◌" "parsing" path)
+    addLog razorAccent ("◌ parsing " <> path) $
+    state { dsPhase = PhaseParsing }
+
   ProgressDhallParsed path ->
-    emit console (successLine "◉" "parsed" path)
+    addLog razorMuted ("◉ parsed " <> path) state
+
   ProgressDhallImport imp ->
-    emit console (mutedLine "  ↳" "import" imp)
+    addLog razorDim ("  ↳ import " <> imp) state
+
   ProgressDhallNormalizing target ->
-    emit console (infoLine "◌" "eval" target)
+    addLog razorAccent ("◌ eval " <> target) state
+
   ProgressDhallEvaluated target nRules ->
-    emit console (successLine "◉" "eval" (target <> " (" <> T.pack (show nRules) <> " rules)"))
+    addLog razorInfo ("◉ eval " <> target <> " (" <> T.pack (show nRules) <> " rules)") state
+
   -- ══════════════════════════════════════════════════════════════════════════
   -- Toolchains
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressToolchainLoading path ->
-    emit console (infoLine "◌" "toolchains" path)
+    addLog razorAccent ("◌ toolchains " <> path) state
+
   ProgressToolchainCached path ->
-    emit console (cachedLine "○" "toolchains" path)
+    addLog razorMuted ("○ toolchains (cached) " <> path) state
+
   ProgressToolchainLoaded path n ->
-    emit console (successLine "◉" "toolchains" (path <> " (" <> T.pack (show n) <> ")"))
+    addLog razorInfo ("◉ toolchains " <> path <> " (" <> T.pack (show n) <> ")") state
+
   -- ══════════════════════════════════════════════════════════════════════════
   -- Dependency resolution
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressResolvingDeps target ->
-    emit console (infoLine "◌" "deps" target)
+    addLog razorAccent ("◌ deps " <> target) state
+
   ProgressCrossPackageDep pkg ->
-    emit console (mutedLine "  ↳" "cross-pkg" pkg)
+    addLog razorDim ("  ↳ cross-pkg " <> pkg) state
+
   ProgressDepsResolved target n ->
-    emit console (successLine "◉" "deps" (target <> " (" <> T.pack (show n) <> ")"))
+    addLog razorInfo ("◉ deps " <> target <> " (" <> T.pack (show n) <> ")") state
+
   -- ══════════════════════════════════════════════════════════════════════════
   -- Nix resolution
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressNixResolving ref ->
-    emit console (infoLine "◌" "nix" ref)
+    addLog razorAccent ("◌ nix " <> ref) state
+
   ProgressNixResolved ref _storePath ->
-    emit console (successLine "◉" "nix" ref)
+    addLog razorInfo ("◉ nix " <> ref) state
+
   -- ══════════════════════════════════════════════════════════════════════════
   -- Graph construction
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressBuildingGraph target ->
-    emit console (infoLine "◌" "graph" target)
+    addLog razorAccent ("◌ graph " <> target) $
+    state { dsPhase = PhaseGraph }
+
   ProgressGraphAction action ->
-    emit console (mutedLine "  +" "" action)
-  ProgressGraphBuilt n -> do
-    emit console (successLine "◉" "graph" (T.pack (show n) <> " actions"))
-    -- Update total when graph is built
-    atomicModifyIORef' stateRef $ \s ->
-      (s {tuiTotal = n}, ())
+    -- Register target as queued
+    let tid = action
+        target = Target tid TQueued
+    in state { dsTargets = Map.insert tid target (dsTargets state) }
+
+  ProgressGraphBuilt n ->
+    addLog razorInfo ("◉ graph (" <> T.pack (show n) <> " actions)") $
+    state { dsTotal = n }
 
   -- ══════════════════════════════════════════════════════════════════════════
   -- Cache checks
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressCacheCheck action ->
-    emit console (mutedLine "?" "cache" action)
+    addLog razorDim ("? " <> action) $
+    state { dsPhase = PhaseCacheCheck }
+
   ProgressCacheHit action ->
-    emit console (cachedLine "✓" "hit" action)
+    addLog razorAccent ("✓ hit " <> action) state
+
   ProgressCacheMiss action ->
-    emit console (mutedLine "✗" "miss" action)
+    addLog razorMiss ("✗ miss " <> action) state
+
   -- ══════════════════════════════════════════════════════════════════════════
-  -- Execution - these update the canvas state
+  -- Execution
   -- ══════════════════════════════════════════════════════════════════════════
-  ProgressStarting name _cur total -> do
-    now <- getCurrentTime
-    emit console (infoLine "→" "exec" name)
-    atomicModifyIORef' stateRef $ \s ->
-      ( s
-          { tuiTotal = max total (tuiTotal s),
-            tuiActive = Map.insert name now (tuiActive s)
-          },
-        ()
-      )
-  ProgressCached name _cur total -> do
-    emit console (cachedLine "○" "" (name <> " (cached)"))
-    atomicModifyIORef' stateRef $ \s ->
-      ( s
-          { tuiTotal = max total (tuiTotal s),
-            tuiCompleted = tuiCompleted s + 1,
-            tuiCached = tuiCached s + 1,
-            tuiActive = Map.delete name (tuiActive s)
-          },
-        ()
-      )
-  ProgressCompleted name _cur total _memKB -> do
-    emit console (successLine "✓" "" name)
-    atomicModifyIORef' stateRef $ \s ->
-      ( s
-          { tuiTotal = max total (tuiTotal s),
-            tuiCompleted = tuiCompleted s + 1,
-            tuiActive = Map.delete name (tuiActive s)
-          },
-        ()
-      )
-  ProgressFailed name _cur _total err -> do
-    emit console (errorLine "✗" name err)
-    atomicModifyIORef' stateRef $ \s ->
-      ( s {tuiActive = Map.delete name (tuiActive s)},
-        ()
-      )
+  ProgressStarting name _cur total ->
+    let target = Target name (TBuilding now)
+        newState = state
+          { dsPhase = PhaseBuilding
+          , dsTotal = max total (dsTotal state)
+          , dsTargets = Map.insert name target (dsTargets state)
+          , dsStartTime = case dsStartTime state of
+              Nothing -> Just now
+              x -> x
+          }
+    in addLog razorAccent ("→ " <> name) newState
+
+  ProgressCached name _cur total ->
+    let target = Target name TCached
+    in addLog razorMuted ("○ " <> name <> " (cached)") $
+       state
+         { dsTotal = max total (dsTotal state)
+         , dsCompleted = dsCompleted state + 1
+         , dsCached = dsCached state + 1
+         , dsTargets = Map.insert name target (dsTargets state)
+         }
+
+  ProgressCompleted name _cur total _memKB ->
+    let durationMs = case Map.lookup name (dsTargets state) of
+          Just (Target _ (TBuilding startT)) -> round (diffUTCTime now startT * 1000)
+          _ -> 0
+        target = Target name (TCompleted now durationMs)
+    in addLog razorAccent ("✓ " <> name) $
+       state
+         { dsTotal = max total (dsTotal state)
+         , dsCompleted = dsCompleted state + 1
+         , dsTargets = Map.insert name target (dsTargets state)
+         }
+
+  ProgressFailed name _cur _total err ->
+    let durationMs = case Map.lookup name (dsTargets state) of
+          Just (Target _ (TBuilding startT)) -> round (diffUTCTime now startT * 1000)
+          _ -> 0
+        target = Target name (TFailed now durationMs err)
+    in addLog razorMiss ("✗ " <> name <> ": " <> err) $
+       state
+         { dsFailed = dsFailed state + 1
+         , dsTargets = Map.insert name target (dsTargets state)
+         }
 
   -- ══════════════════════════════════════════════════════════════════════════
   -- Finalization
   -- ══════════════════════════════════════════════════════════════════════════
   ProgressWritingOutput path ->
-    emit console (mutedLine "◌" "write" path)
+    addLog razorDim ("◌ write " <> path) state
+
   ProgressCacheStore action ->
-    emit console (mutedLine "◌" "cache" action)
+    addLog razorDim ("◌ cache " <> action) state
+
   ProgressPhaseComplete phase duration ->
-    emit console (successLine "◉" phase (T.pack (show (round (duration * 1000) :: Int)) <> "ms"))
+    addLog razorInfo ("◉ " <> phase <> " (" <> T.pack (show (round (duration * 1000) :: Int)) <> "ms)") state
 
--- | Info line (in progress) - frost1 color
-infoLine :: Text -> Text -> Text -> Line
-infoLine glyph verb name =
-  Seq.fromList $
-    [Span Theme.themeAccent (glyph <> " ")]
-      ++ [Span Theme.themeSecondary (verb <> " ") | not (T.null verb)]
-      ++ [Span Theme.themePrimary name]
+-- | Add a log line to state
+addLog :: Style -> Text -> DashboardState -> DashboardState
+addLog style txt state =
+  state { dsLogs = dsLogs state ++ [LogLine txt style] }
 
--- | Success line - green
-successLine :: Text -> Text -> Text -> Line
-successLine glyph verb name =
-  Seq.fromList $
-    [Span Theme.themeSuccess (glyph <> " ")]
-      ++ [Span Theme.themeSecondary (verb <> " ") | not (T.null verb)]
-      ++ [Span Theme.themePrimary name]
 
--- | Cached line - dim cyan
-cachedLine :: Text -> Text -> Text -> Line
-cachedLine glyph verb name =
-  Seq.fromList $
-    [Span Theme.themeStatusCached (glyph <> " ")]
-      ++ [Span Theme.themeSecondary (verb <> " ") | not (T.null verb)]
-      ++ [Span Theme.themePrimary name]
+-- ════════════════════════════════════════════════════════════════════════════
+-- TUI Build Entry Point
+-- ════════════════════════════════════════════════════════════════════════════
 
--- | Muted line (secondary info) - dim
-mutedLine :: Text -> Text -> Text -> Line
-mutedLine glyph verb name =
-  Seq.fromList $
-    [Span Theme.themeMuted (glyph <> " ")]
-      ++ [Span Theme.themeMuted (verb <> " ") | not (T.null verb)]
-      ++ [Span Theme.themeMuted name]
+-- | Run a build action with the razorgirl dashboard
+--
+-- Falls back to simple output if not running in a TTY.
+buildWithTUI ::
+  Text ->
+  (ProgressCallback -> IO (Either BuildError BuildResult)) ->
+  IO (Either BuildError BuildResult)
+buildWithTUI _target buildAction =
+  withConsoleFallback fallback $ \console -> do
+    -- Initialize state
+    stateRef <- newIORef initDashboardState
+    dims <- getTerminalSize
 
--- | Error line - red
-errorLine :: Text -> Text -> Text -> Line
-errorLine glyph name err =
-  Seq.fromList
-    [ Span Theme.themeError (glyph <> " "),
-      Span Theme.themePrimary name,
-      Span Theme.themeError (": " <> err)
+    -- Start render loop (~40fps for smooth progress bars)
+    renderThread <- async $ renderLoop console dims stateRef
+
+    -- Create progress callback that updates state
+    let callback = dashboardCallback stateRef
+
+    -- Run the build
+    result <- buildAction callback
+
+    -- Mark complete
+    now <- getCurrentTime
+    atomicModifyIORef' stateRef $ \s -> (s { dsPhase = PhaseComplete }, ())
+
+    -- Final render
+    finalState <- readIORef stateRef
+    render console (dashboardWidget dims now finalState)
+
+    -- Stop render loop
+    cancel renderThread
+
+    -- Print newline after dashboard
+    TIO.putStrLn ""
+
+    pure result
+  where
+    -- Fallback for non-TTY: use verbose text callback
+    fallback = buildAction verboseCallback
+
+    verboseCallback = \case
+      ProgressDiscovering p -> TIO.putStrLn $ "◌ scanning " <> p
+      ProgressFoundPackage p -> TIO.putStrLn $ "◉ found " <> p
+      ProgressDhallParsing p -> TIO.putStrLn $ "◌ parsing " <> p
+      ProgressDhallParsed p -> TIO.putStrLn $ "◉ parsed " <> p
+      ProgressDhallImport i -> TIO.putStrLn $ "  ↳ import " <> i
+      ProgressDhallNormalizing t -> TIO.putStrLn $ "◌ eval " <> t
+      ProgressDhallEvaluated t n -> TIO.putStrLn $ "◉ eval " <> t <> " (" <> T.pack (show n) <> " rules)"
+      ProgressToolchainLoading p -> TIO.putStrLn $ "◌ toolchains " <> p
+      ProgressToolchainCached p -> TIO.putStrLn $ "○ toolchains (cached) " <> p
+      ProgressToolchainLoaded p n -> TIO.putStrLn $ "◉ toolchains " <> p <> " (" <> T.pack (show n) <> ")"
+      ProgressResolvingDeps t -> TIO.putStrLn $ "◌ deps " <> t
+      ProgressCrossPackageDep p -> TIO.putStrLn $ "  ↳ cross-pkg " <> p
+      ProgressDepsResolved t n -> TIO.putStrLn $ "◉ deps " <> t <> " (" <> T.pack (show n) <> ")"
+      ProgressNixResolving r -> TIO.putStrLn $ "◌ nix " <> r
+      ProgressNixResolved r _ -> TIO.putStrLn $ "◉ nix " <> r
+      ProgressBuildingGraph t -> TIO.putStrLn $ "◌ graph " <> t
+      ProgressGraphAction a -> TIO.putStrLn $ "  + " <> a
+      ProgressGraphBuilt n -> TIO.putStrLn $ "◉ graph (" <> T.pack (show n) <> " actions)"
+      ProgressCacheCheck a -> TIO.putStrLn $ "? cache " <> a
+      ProgressCacheHit a -> TIO.putStrLn $ "✓ hit " <> a
+      ProgressCacheMiss a -> TIO.putStrLn $ "✗ miss " <> a
+      ProgressStarting nm _ _ -> TIO.putStrLn $ "→ " <> nm
+      ProgressCached nm _ _ -> TIO.putStrLn $ "○ " <> nm <> " (cached)"
+      ProgressCompleted nm _ _ _ -> TIO.putStrLn $ "✓ " <> nm
+      ProgressFailed nm _ _ e -> TIO.putStrLn $ "✗ " <> nm <> ": " <> e
+      ProgressWritingOutput p -> TIO.putStrLn $ "◌ write " <> p
+      ProgressCacheStore a -> TIO.putStrLn $ "◌ cache " <> a
+      ProgressPhaseComplete ph d -> TIO.putStrLn $ "◉ " <> ph <> " (" <> T.pack (show (round (d * 1000) :: Int)) <> "ms)"
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Render Loop
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Render loop - updates display at ~40fps
+renderLoop :: Console -> Dimensions -> IORef DashboardState -> IO ()
+renderLoop console dims stateRef = forever $ do
+  now <- getCurrentTime
+  state <- readIORef stateRef
+  render console (dashboardWidget dims now state)
+  threadDelay 25000  -- ~40fps
+
+
+-- | Progress callback that updates dashboard state
+dashboardCallback :: IORef DashboardState -> ProgressCallback
+dashboardCallback stateRef event = do
+  now <- getCurrentTime
+  atomicModifyIORef' stateRef $ \s -> (handleProgressEvent now event s, ())
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Dashboard Widget
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Main dashboard widget
+dashboardWidget :: Dimensions -> UTCTime -> DashboardState -> Widget
+dashboardWidget dims now state = case dsPhase state of
+  PhaseComplete -> completeWidget dims now state
+  PhaseBuilding -> buildingWidget dims now state
+  _ -> preambleWidget dims state
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Preamble Widget (discovery, parsing, graph building)
+-- ════════════════════════════════════════════════════════════════════════════
+
+preambleWidget :: Dimensions -> DashboardState -> Widget
+preambleWidget dims state =
+  vboxWith [Exact 3, Exact 1, Fill 1, Exact 1, Exact 1, Exact 1]
+    [ headerWidget
+    , space 0 1
+    , logStreamWidget dims (dsLogs state)
+    , space 0 1
+    , preambleStatusWidget (dsPhase state) (dsLogs state)
+    , footerWidget
     ]
 
+logStreamWidget :: Dimensions -> [LogLine] -> Widget
+logStreamWidget dims logs =
+  let visibleCount = max 12 (height dims - 10)
+      visible = take visibleCount (reverse logs)
+      renderLine :: Int -> LogLine -> Widget
+      renderLine i (LogLine txt style) =
+        let opacity = if i < 3 then dim style else style
+        in textStyled opacity txt
+  in vbox (zipWith renderLine [0..] (reverse visible))
+
+preambleStatusWidget :: Phase -> [LogLine] -> Widget
+preambleStatusWidget phase logs =
+  let statusText = case phase of
+        PhaseDiscovery -> "scanning..."
+        PhaseParsing -> T.pack (show (countLogs "parsed" logs)) <> " files parsed"
+        PhaseGraph -> "building graph..."
+        PhaseCacheCheck -> T.pack (show (countLogs "miss" logs)) <> " cache misses"
+        PhaseBuilding -> "building..."
+        PhaseComplete -> "complete"
+      countLogs pat = length . filter (T.isInfixOf pat . logText)
+  in hbox
+       [ fill razorRule '─'
+       , textStyled razorDim (" " <> statusText <> " ")
+       ]
+
+
 -- ════════════════════════════════════════════════════════════════════════════
--- Widgets - Superconsole Style
+-- Building Widget
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Main build widget (superconsole style)
---
--- Layout:
---   Jobs completed: 45. Time elapsed: 2.3s. Cache hits: 100%
---   [████████████████████████████░░░░░░░░░░░░░░░] 28/45
---     ◉ //src/foo:bar (1.2s)
---     ◉ //src/baz:qux (0.8s)
-buildWidget :: TUIState -> UTCTime -> Widget
-buildWidget TUIState {..} now =
-  vboxWith constraints [summaryWidget, progressWidget, activeListWidget]
-  where
-    -- Layout constraints: summary and progress are 1 line each, active list fills
-    constraints = [Exact 1, Exact 1, Fill 1]
+buildingWidget :: Dimensions -> UTCTime -> DashboardState -> Widget
+buildingWidget _dims now state =
+  vboxWith [Exact 3, Exact 1, Exact 4, Exact 1, Fill 1, Exact 1]
+    [ headerWidget
+    , space 0 1
+    , statsRowWidget now state
+    , space 0 1
+    , activeTargetsWidget now state
+    , footerWidget
+    ]
 
-    -- Summary line: "Jobs completed: N. Time elapsed: Xs. Cache hits: N%"
-    elapsed = realToFrac (diffUTCTime now tuiStartTime) :: Double
-    cacheHitPct =
-      if tuiCompleted > 0
-        then (tuiCached * 100) `div` tuiCompleted
-        else 0
-    summaryWidget =
-      textStyled Theme.themeSecondary $
-        "Jobs completed: "
-          <> T.pack (show tuiCompleted)
-          <> ". Time elapsed: "
-          <> formatDuration elapsed
-          <> ". Cache hits: "
-          <> T.pack (show cacheHitPct)
-          <> "%"
+statsRowWidget :: UTCTime -> DashboardState -> Widget
+statsRowWidget now state =
+  let total = dsTotal state
+      done = dsCompleted state
+      cached = dsCached state
+      elapsed :: Int
+      elapsed = maybe 0 (\t -> round (diffUTCTime now t * 1000)) (dsStartTime state)
+      cacheRate = if done > 0 then (cached * 100) `div` done else 0
+      cacheStyle = if cacheRate > 50 then razorAccent else razorMiss
+  in hboxWith [Fill 1, Fill 1, Fill 1]
+    [ statCard "TARGETS" (T.pack (show done)) (Just ("/ " <> T.pack (show total))) razorBright
+    , statCard "ELAPSED" (formatElapsed elapsed) (Just "s") razorBright
+    , statCard "CACHE HITS" (T.pack (show cacheRate)) (Just "%") cacheStyle
+    ]
 
-    -- Progress bar: [████████░░░░░░░░] N/M
-    pct =
-      if tuiTotal > 0
-        then fromIntegral tuiCompleted / fromIntegral tuiTotal
-        else 0
-    progressWidget =
-      textStyled Theme.themeAccent "["
-        <+> progress Theme.themeProgressFilled Theme.themeProgressEmpty pct
-        <+> textStyled Theme.themeAccent "] "
-        <+> textStyled Theme.themeProgressText (T.pack (show tuiCompleted) <> "/" <> T.pack (show tuiTotal))
+statCard :: Text -> Text -> Maybe Text -> Style -> Widget
+statCard label value mUnit valueStyle =
+  borderedStyled razorRule $
+    padded 0 1 0 1 $
+      vbox
+        [ textStyled razorMuted label
+        , hbox $
+            [ textStyled (bold valueStyle) value ] ++
+            maybe [] (\u -> [textStyled razorMuted u]) mUnit
+        ]
 
-    -- Active builds list (up to 8)
-    activeItems = take 8 $ Map.toList tuiActive
-    activeListWidget = vbox $ map (activeItemWidget now tuiTick) activeItems
+activeTargetsWidget :: UTCTime -> DashboardState -> Widget
+activeTargetsWidget now state =
+  let active = [(tid, t) | (tid, t@(Target _ (TBuilding _))) <- Map.toList (dsTargets state)]
+      rows = take 12 $ map (targetRowWidget now) active
+  in vbox rows
 
--- | Widget for a single active build item
-activeItemWidget :: UTCTime -> Int -> (Text, UTCTime) -> Widget
-activeItemWidget now tick (name, startTime) =
-  textStyled Theme.themeAccent ("  " <> spinnerFrame tick <> " ")
-    <+> textStyled Theme.themeSecondary name
-    <+> textStyled Theme.themeMuted (" (" <> formatDuration elapsed <> ")")
-  where
-    elapsed = realToFrac (diffUTCTime now startTime) :: Double
+targetRowWidget :: UTCTime -> (Text, Target) -> Widget
+targetRowWidget now (tid, Target _ status) =
+  let (glyph, glyphStyle, nameStyle, timeStr) = case status of
+        TQueued -> ("○", razorDim, razorDim, "")
+        TBuilding startT ->
+          let elapsed = round (diffUTCTime now startT * 1000) :: Int
+          in ("→", razorAccent, razorBright, formatMs elapsed)
+        TCompleted _ durationMs -> ("✓", razorAccent, razorMuted, formatMs durationMs)
+        TFailed _ durationMs _ -> ("✗", razorMiss, razorMiss, formatMs durationMs)
+        TCached -> ("◆", razorAccent, razorMuted, "cached")
 
--- | Spinner animation (Braille pattern)
-spinnerFrame :: Int -> Text
-spinnerFrame tick =
-  let frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" :: Text
-   in T.singleton $ T.index frames (tick `mod` T.length frames)
+      paddedName = padTextRight 50 tid
+  in hboxWith [Exact 2, Exact 50, Fill 1, Exact 7]
+       [ textStyled glyphStyle (glyph <> " ")
+       , textStyled nameStyle paddedName
+       , fill razorDim '─'
+       , textStyled razorMuted (" " <> padTextLeft 6 timeStr)
+       ]
 
--- | Format duration as "Xs" or "Xm Ys"
-formatDuration :: Double -> Text
-formatDuration secs
-  | secs < 60 = T.pack (show (round secs :: Int)) <> "s"
-  | otherwise =
-      let mins = floor (secs / 60) :: Int
-          remSecs = round (secs - fromIntegral mins * 60) :: Int
-       in T.pack (show mins) <> "m " <> T.pack (show remSecs) <> "s"
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Complete Widget
+-- ════════════════════════════════════════════════════════════════════════════
+
+completeWidget :: Dimensions -> UTCTime -> DashboardState -> Widget
+completeWidget _dims now state =
+  let elapsed :: Int
+      elapsed = maybe 0 (\t -> round (diffUTCTime now t * 1000)) (dsStartTime state)
+      failed = dsFailed state
+      resultStyle = if failed > 0 then razorMiss else razorAccent
+      resultText = if failed > 0
+        then "BUILD FAILED · " <> T.pack (show failed) <> " ERRORS"
+        else "BUILD COMPLETE"
+  in vboxWith [Exact 3, Exact 1, Exact 4, Exact 1, Fill 1, Exact 1, Exact 1, Exact 1]
+    [ headerWidget
+    , space 0 1
+    , statsRowWidget now state
+    , space 0 1
+    , activeTargetsWidget now state
+    , space 0 1
+    , centered $
+        hbox
+          [ textStyled resultStyle (if failed > 0 then "✗ " else "✓ ")
+          , textStyled razorBright resultText
+          , textStyled razorMuted " · "
+          , textStyled razorBright (T.pack (show (dsCompleted state)) <> " TARGETS")
+          , textStyled razorMuted " · "
+          , textStyled razorBright (formatMs elapsed)
+          ]
+    , footerWidget
+    ]
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Header / Footer
+-- ════════════════════════════════════════════════════════════════════════════
+
+headerWidget :: Widget
+headerWidget =
+  vbox
+    [ textStyled razorMuted "STRAYLIGHT SOFTWARE · BUILD MONITOR"
+    , hbox
+        [ textStyled razorMuted "> "
+        , textStyled (bold razorBright) "sensenet build "
+        , textStyled razorBright "// ..."
+        , textStyled razorAccent " █"
+        ]
+    , textStyled razorDim "dhall → nix → exec"
+    ]
+
+footerWidget :: Widget
+footerWidget =
+  hbox
+    [ textStyled razorMuted "SENSENET · DHALL + NIX + CAS"
+    , fill defaultStyle ' '
+    , textStyled razorDim "the one rectilinear chamber in the complex"
+    ]
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Helpers
+-- ════════════════════════════════════════════════════════════════════════════
+
+padTextRight :: Int -> Text -> Text
+padTextRight w t =
+  let len = T.length t
+  in if len >= w then T.take w t else t <> T.replicate (w - len) " "
+
+padTextLeft :: Int -> Text -> Text
+padTextLeft w t =
+  let len = T.length t
+  in if len >= w then t else T.replicate (w - len) " " <> t
+
+formatMs :: Int -> Text
+formatMs ms =
+  let s = fromIntegral ms / 1000.0 :: Double
+      whole = floor s :: Int
+      frac = round ((s - fromIntegral whole) * 10) :: Int
+  in T.pack (show whole) <> "." <> T.pack (show (frac `mod` 10)) <> "s"
+
+formatElapsed :: Int -> Text
+formatElapsed ms =
+  let s = fromIntegral ms / 1000.0 :: Double
+      whole = floor s :: Int
+      frac = round ((s - fromIntegral whole) * 10) :: Int
+  in T.pack (show whole) <> "." <> T.pack (show (frac `mod` 10))

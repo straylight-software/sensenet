@@ -385,11 +385,11 @@
     "hyperconsole-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1772102860,
-        "narHash": "sha256-tf2D9jycsWfvhdRXyC+kMgiSgZmQOQa+vloQaav4krs=",
+        "lastModified": 1772126773,
+        "narHash": "sha256-zrCpcYa2DoL+A0Qp2mqa/MQ0fCJzzHoOidRxkJv9q0g=",
         "owner": "straylight-software",
         "repo": "hyperconsole",
-        "rev": "6fca0c7f25a73a00299da470a65f30dcbd32c9f1",
+        "rev": "41a459c79a6a5b63f3426578c0f29de98a614b2c",
         "type": "github"
       },
       "original": {
