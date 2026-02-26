@@ -54,6 +54,12 @@
     # nix2gpu - OCI container builder for Nix
     nix2gpu.url = "github:fleek-sh/nix2gpu";
 
+    # HyperConsole - Terminal TUI rendering library (straylight)
+    hyperconsole-src = {
+      url = "github:straylight-software/hyperconsole";
+      flake = false;
+    };
+
     # nix-compile - Type inference and static analysis for Nix
     # TODO: Uncomment when repository is public
     # nix-compile = {
@@ -121,9 +127,11 @@
             inherit (ghc912)
               mkDerivation
               aeson
+              ansi-terminal
               async
               base
               bytestring
+              colour
               containers
               crypton
               deepseq
@@ -133,9 +141,11 @@
               filepath
               hashable
               hostname
+              hyperconsole
               katip
               memory
               microlens
+              mtl
               process
               text
               text-short

@@ -382,6 +382,22 @@
         "type": "github"
       }
     },
+    "hyperconsole-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1772102860,
+        "narHash": "sha256-tf2D9jycsWfvhdRXyC+kMgiSgZmQOQa+vloQaav4krs=",
+        "owner": "straylight-software",
+        "repo": "hyperconsole",
+        "rev": "6fca0c7f25a73a00299da470a65f30dcbd32c9f1",
+        "type": "github"
+      },
+      "original": {
+        "owner": "straylight-software",
+        "repo": "hyperconsole",
+        "type": "github"
+      }
+    },
     "import-tree": {
       "locked": {
         "lastModified": 1763762820,
@@ -756,6 +772,7 @@
         "crane": "crane",
         "flake-parts": "flake-parts",
         "ghc-source-gen-src": "ghc-source-gen-src",
+        "hyperconsole-src": "hyperconsole-src",
         "llvm-project": "llvm-project",
         "nativelink": "nativelink",
         "nix2gpu": "nix2gpu",

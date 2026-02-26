@@ -32,6 +32,7 @@ import SenseNet.Dhall qualified as Dhall
 import SenseNet.Discover (DhallFile (..), discover, discoverUnder)
 import SenseNet.IR (Dep (..), Package (..), Rule (..), ruleDeps, ruleKind, ruleName, ruleSrcs)
 import SenseNet.Output qualified as Output
+import SenseNet.TUI qualified as TUI
 import SenseNet.Toolchains qualified as TC
 import System.Directory (XdgDirectory (..), doesDirectoryExist, getCurrentDirectory, getXdgDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
@@ -184,11 +185,9 @@ cmdBuild :: [String] -> IO ()
 cmdBuild [] = do
   TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
   exitFailure
-cmdBuild args = Output.withAutoPresenter $ \presenter -> do
+cmdBuild args = do
   let (opts, rest) = parseBuildOpts args
   mJobs <- resolveJobs opts.boJobs
-  -- Note: Katip logging (--verbose) is deprecated in favor of typed output
-  -- The presenter now handles all output formatting based on context
   case rest of
     [] -> do
       TIO.putStrLn "Usage: sensenet build //path/to/pkg:target [-j N]"
@@ -199,9 +198,8 @@ cmdBuild args = Output.withAutoPresenter $ \presenter -> do
           invalidTargets = [t | (t, Nothing) <- parsedTargets]
       if not (null invalidTargets)
         then do
-          Output.emitErrorIO presenter $
-            Output.ConfigError $
-              "Invalid target(s): " <> T.pack (unwords invalidTargets) <> "\nExpected: //path/to/pkg:target, //path/to/pkg:all, or //..."
+          TIO.putStrLn $ "error: Invalid target(s): " <> T.pack (unwords invalidTargets)
+          TIO.putStrLn "Expected: //path/to/pkg:target, //path/to/pkg:all, or //..."
           exitFailure
         else do
           let validTargets = [p | (_, Just p) <- parsedTargets]
@@ -211,7 +209,13 @@ cmdBuild args = Output.withAutoPresenter $ \presenter -> do
               TIO.putStrLn $ "[stub] Would build " <> T.pack (show (length validTargets)) <> " target(s):"
               mapM_ (TIO.putStrLn . ("[stub]   " <>) . showPattern) validTargets
               exitSuccess
-            else buildTargets presenter mJobs validTargets
+            else
+              if opts.boNoTui
+                then -- Non-TUI mode: use presenter-based output
+                  Output.withAutoPresenter $ \presenter ->
+                    buildTargets presenter mJobs validTargets
+                else -- TUI mode: use HyperConsole TUI
+                  buildTargetsTUI mJobs validTargets
 
 buildTargets :: Output.Presenter -> Maybe Int -> [TargetPattern] -> IO ()
 buildTargets presenter mJobs patterns = case patterns of
@@ -243,6 +247,51 @@ buildTargets presenter mJobs patterns = case patterns of
           Output.TextResult $
             "Built " <> T.pack (show successes) <> " targets"
         exitSuccess
+
+-- | Build targets using the TUI (HyperConsole)
+buildTargetsTUI :: Maybe Int -> [TargetPattern] -> IO ()
+buildTargetsTUI mJobs patterns = case patterns of
+  [] -> exitSuccess
+  [pattern] -> buildSinglePatternTUI mJobs pattern
+  _ -> do
+    -- For multiple patterns, use TUI for the whole thing
+    -- Build them sequentially but with TUI progress for each
+    projectRoot <- getCurrentDirectory
+    tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
+    let target = T.intercalate ", " (map showPattern patterns)
+    result <- TUI.buildWithTUI target $ \callback -> do
+      results <- forM patterns $ \pat ->
+        buildPatternResult mJobs callback tc projectRoot pat
+      let failures = length [() | Left _ <- results]
+      if failures > 0
+        then pure $ Left $ PackageError $ T.pack (show failures) <> " targets failed"
+        else pure $ Right $ BuildSuccess [show (length results) <> " targets"]
+    case result of
+      Left err -> do
+        TIO.putStrLn $ "error: " <> showError err
+        exitFailure
+      Right _ -> exitSuccess
+
+-- | Build a single pattern using the TUI
+buildSinglePatternTUI :: Maybe Int -> TargetPattern -> IO ()
+buildSinglePatternTUI mJobs pat = do
+  projectRoot <- getCurrentDirectory
+  tc <- TC.loadToolchains (TC.defaultToolchainsPath projectRoot)
+  let target = showPattern pat
+  result <- TUI.buildWithTUI target $ \callback ->
+    buildPatternResult mJobs callback tc projectRoot pat
+  case result of
+    Left err -> do
+      TIO.putStrLn $ "error: " <> showError err
+      exitFailure
+    Right (BuildSuccess outputs) -> do
+      TIO.putStrLn $ target <> " built successfully"
+      mapM_ (TIO.putStrLn . ("  -> " <>) . T.pack) outputs
+      exitSuccess
+    Right (BuildCached outputs) -> do
+      TIO.putStrLn $ target <> " (cached)"
+      mapM_ (TIO.putStrLn . ("  -> " <>) . T.pack) outputs
+      exitSuccess
 
 buildPatternResult :: Maybe Int -> ProgressCallback -> TC.Toolchains -> FilePath -> TargetPattern -> IO (Either BuildError BuildResult)
 buildPatternResult mJobs callback tc projectRoot = \case

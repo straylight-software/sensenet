@@ -2,6 +2,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StrictData #-}
 
 -- |
@@ -100,18 +101,22 @@ module SenseNet.Output
   )
 where
 
+import Control.Monad (unless)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (MonadReader, ReaderT, asks, runReaderT)
 import Data.Aeson (ToJSON (..), Value, encode, object, (.=))
 import Data.ByteString.Lazy qualified as BL
+import Data.Colour.SRGB (sRGB24)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock (NominalDiffTime)
 import GHC.Generics (Generic)
+import HyperConsole.Style (Attr (..), Color (..), Style (..))
+import HyperConsole.Theme qualified as Theme
 import System.Console.ANSI qualified as ANSI
 import System.Environment (lookupEnv)
-import System.IO (hIsTerminalDevice, stderr, stdout)
+import System.IO (Handle, hIsTerminalDevice, stderr, stdout)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Output Types
@@ -301,17 +306,77 @@ nullPresenter :: Presenter
 nullPresenter = Presenter $ \_ -> pure ()
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- HyperConsole Style Rendering
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | Apply a HyperConsole style to stdout
+withStyle :: Style -> IO () -> IO ()
+withStyle style action = do
+  applyStyle stdout style
+  action
+  ANSI.setSGR [ANSI.Reset]
+
+-- | Apply a HyperConsole style to stderr
+withStyleErr :: Style -> IO () -> IO ()
+withStyleErr style action = do
+  applyStyle stderr style
+  action
+  ANSI.hSetSGR stderr [ANSI.Reset]
+
+-- | Apply HyperConsole style SGR codes to a handle
+applyStyle :: Handle -> Style -> IO ()
+applyStyle h Style {..} = do
+  let codes =
+        [colorToSGR True styleFg | styleFg /= Default]
+          ++ [colorToSGR False styleBg | styleBg /= Default]
+          ++ map attrToSGR styleAttrs
+  unless (null codes) $ ANSI.hSetSGR h codes
+
+-- | Convert HyperConsole Color to ANSI SGR
+colorToSGR :: Bool -> Color -> ANSI.SGR
+colorToSGR isFg c =
+  let layer = if isFg then ANSI.Foreground else ANSI.Background
+   in case c of
+        Default -> ANSI.SetDefaultColor layer
+        Black -> ANSI.SetColor layer ANSI.Dull ANSI.Black
+        Red -> ANSI.SetColor layer ANSI.Dull ANSI.Red
+        Green -> ANSI.SetColor layer ANSI.Dull ANSI.Green
+        Yellow -> ANSI.SetColor layer ANSI.Dull ANSI.Yellow
+        Blue -> ANSI.SetColor layer ANSI.Dull ANSI.Blue
+        Magenta -> ANSI.SetColor layer ANSI.Dull ANSI.Magenta
+        Cyan -> ANSI.SetColor layer ANSI.Dull ANSI.Cyan
+        White -> ANSI.SetColor layer ANSI.Dull ANSI.White
+        BrightBlack -> ANSI.SetColor layer ANSI.Vivid ANSI.Black
+        BrightRed -> ANSI.SetColor layer ANSI.Vivid ANSI.Red
+        BrightGreen -> ANSI.SetColor layer ANSI.Vivid ANSI.Green
+        BrightYellow -> ANSI.SetColor layer ANSI.Vivid ANSI.Yellow
+        BrightBlue -> ANSI.SetColor layer ANSI.Vivid ANSI.Blue
+        BrightMagenta -> ANSI.SetColor layer ANSI.Vivid ANSI.Magenta
+        BrightCyan -> ANSI.SetColor layer ANSI.Vivid ANSI.Cyan
+        BrightWhite -> ANSI.SetColor layer ANSI.Vivid ANSI.White
+        Color256 n -> ANSI.SetPaletteColor layer n
+        RGB r g b -> ANSI.SetRGBColor layer (sRGB24 r g b)
+
+-- | Convert HyperConsole Attr to ANSI SGR
+attrToSGR :: Attr -> ANSI.SGR
+attrToSGR Bold = ANSI.SetConsoleIntensity ANSI.BoldIntensity
+attrToSGR Dim = ANSI.SetConsoleIntensity ANSI.FaintIntensity
+attrToSGR Italic = ANSI.SetItalicized True
+attrToSGR Underline = ANSI.SetUnderlining ANSI.SingleUnderline
+attrToSGR Blink = ANSI.SetBlinkSpeed ANSI.SlowBlink
+attrToSGR Reverse = ANSI.SetSwapForegroundBackground True
+attrToSGR Strikethrough = ANSI.SetConsoleIntensity ANSI.NormalIntensity
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- Terminal Rendering
 -- ════════════════════════════════════════════════════════════════════════════
 
 renderResultTerminal :: Result -> IO ()
 renderResultTerminal = \case
   BuildSuccess target outputs duration -> do
-    ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
-    TIO.putStr "✓ "
-    ANSI.setSGR [ANSI.Reset]
+    withStyle Theme.themeSuccess $ TIO.putStr (Theme.glyphCheck <> " ")
     TIO.putStrLn $ target <> " built in " <> T.pack (show duration)
-    mapM_ (\o -> TIO.putStrLn $ "  → " <> o) outputs
+    mapM_ (\o -> TIO.putStrLn $ "  " <> Theme.glyphArrow <> " " <> o) outputs
   QueryResult v -> BL.putStr (encode v) >> putStrLn ""
   TextResult t -> TIO.putStrLn t
   JsonResult v -> BL.putStr (encode v) >> putStrLn ""
@@ -319,48 +384,38 @@ renderResultTerminal = \case
 renderProgressTerminal :: Progress -> IO ()
 renderProgressTerminal = \case
   Building target -> do
-    ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.Cyan]
-    TIO.putStr "⟳ "
-    ANSI.setSGR [ANSI.Reset]
+    withStyle Theme.themeAccent $ TIO.putStr (Theme.glyphBuilding <> " ")
     TIO.putStrLn $ "Building " <> target
   Cached target -> do
-    ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.Green]
-    TIO.putStr "◉ "
-    ANSI.setSGR [ANSI.Reset]
+    withStyle Theme.themeStatusCached $ TIO.putStr (Theme.glyphCached <> " ")
     TIO.putStrLn $ "Cached " <> target
   Built target duration -> do
-    ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
-    TIO.putStr "✓ "
-    ANSI.setSGR [ANSI.Reset]
+    withStyle Theme.themeSuccess $ TIO.putStr (Theme.glyphCheck <> " ")
     TIO.putStrLn $ target <> " (" <> T.pack (show duration) <> ")"
   ProgressCount current total -> do
-    ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.White]
-    TIO.putStrLn $ "[" <> T.pack (show current) <> "/" <> T.pack (show total) <> "]"
-    ANSI.setSGR [ANSI.Reset]
+    withStyle Theme.themeProgressText $
+      TIO.putStrLn $
+        "[" <> T.pack (show current) <> "/" <> T.pack (show total) <> "]"
   Action target action -> do
-    ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.Cyan]
-    TIO.putStrLn $ "  " <> action <> ": " <> target
-    ANSI.setSGR [ANSI.Reset]
+    withStyle Theme.themeAccent $
+      TIO.putStrLn $
+        "  " <> action <> ": " <> target
   Tick _ -> pure () -- ticks handled by HyperConsole in TUI mode
   ProgressMsg msg -> TIO.putStrLn msg
 
 renderDiagnosticTerminal :: Diagnostic -> IO ()
 renderDiagnosticTerminal (Diagnostic lvl msg ctx) = do
-  let (color, prefix) = case lvl of
-        Debug -> (ANSI.Dull, "debug: ")
-        Info -> (ANSI.Dull, "")
-        Warning -> (ANSI.Vivid, "warning: ")
-  ANSI.hSetSGR stderr [ANSI.SetColor ANSI.Foreground color ANSI.Yellow]
-  case ctx of
+  let (style, prefix) = case lvl of
+        Debug -> (Theme.themeSecondary, "debug: ")
+        Info -> (Theme.themeSecondary, "")
+        Warning -> (Theme.themeWarning, Theme.glyphWarning <> " warning: ")
+  withStyleErr style $ case ctx of
     Just c -> TIO.hPutStrLn stderr $ c <> ": " <> prefix <> msg
     Nothing -> TIO.hPutStrLn stderr $ prefix <> msg
-  ANSI.hSetSGR stderr [ANSI.Reset]
 
 renderErrorTerminal :: Error -> IO ()
 renderErrorTerminal err = do
-  ANSI.hSetSGR stderr [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Red]
-  TIO.hPutStr stderr "error: "
-  ANSI.hSetSGR stderr [ANSI.Reset]
+  withStyleErr Theme.themeError $ TIO.hPutStr stderr (Theme.glyphError <> " error: ")
   case err of
     BuildFailed target msg details -> do
       TIO.hPutStrLn stderr $ target <> ": " <> msg
@@ -378,16 +433,16 @@ renderResultPipe :: Result -> IO ()
 renderResultPipe = \case
   BuildSuccess target outputs duration -> do
     TIO.putStrLn $ target <> " built in " <> T.pack (show duration)
-    mapM_ (\o -> TIO.putStrLn $ "  " <> o) outputs
+    mapM_ (\o -> TIO.putStrLn $ "  -> " <> o) outputs
   QueryResult v -> BL.putStr (encode v) >> putStrLn ""
   TextResult t -> TIO.putStrLn t
   JsonResult v -> BL.putStr (encode v) >> putStrLn ""
 
 renderProgressPipe :: Progress -> IO ()
 renderProgressPipe = \case
-  Building target -> TIO.putStrLn $ "Building " <> target
-  Cached target -> TIO.putStrLn $ "Cached " <> target
-  Built target duration -> TIO.putStrLn $ target <> " (" <> T.pack (show duration) <> ")"
+  Building target -> TIO.putStrLn $ "* Building " <> target
+  Cached target -> TIO.putStrLn $ "= Cached " <> target
+  Built target duration -> TIO.putStrLn $ "+ " <> target <> " (" <> T.pack (show duration) <> ")"
   ProgressCount current total -> TIO.putStrLn $ "[" <> T.pack (show current) <> "/" <> T.pack (show total) <> "]"
   Action target action -> TIO.putStrLn $ "  " <> action <> ": " <> target
   Tick _ -> pure ()

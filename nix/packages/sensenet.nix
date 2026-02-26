@@ -7,9 +7,11 @@
   installShellFiles,
   # Core deps (from sensenet.cabal)
   aeson,
+  ansi-terminal,
   async,
   base,
   bytestring,
+  colour,
   containers,
   crypton,
   deepseq,
@@ -19,9 +21,11 @@
   filepath,
   hashable,
   hostname,
+  hyperconsole,
   katip,
   memory,
   microlens,
+  mtl,
   process,
   text,
   text-short,
@@ -34,9 +38,11 @@ let
   # Shared dependencies for library and executable
   coreDeps = [
     aeson
+    ansi-terminal
     async
     base
     bytestring
+    colour
     containers
     crypton
     deepseq
@@ -46,9 +52,11 @@ let
     filepath
     hashable
     hostname
+    hyperconsole
     katip
     memory
     microlens
+    mtl
     process
     text
     text-short
