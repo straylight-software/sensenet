@@ -369,5 +369,57 @@ outputDirTests =
   ]
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- TOCTOU ATTACKS
+-- ════════════════════════════════════════════════════════════════════════════
+
+toctouTests :: [TestTree]
+toctouTests =
+  [ testCase "check then use race" $ do
+      -- Classic TOCTOU: check file exists, then use it
+      -- Between check and use, attacker replaces with symlink
+      withSystemTempDirectory "toctou-test" $ \tmpDir -> do
+        let target = tmpDir </> "target.txt"
+        writeFile target "safe content"
+        exists <- doesFileExist target
+        -- In real attack, file could be replaced here
+        when exists $ do
+          content <- readFile target
+          content @?= "safe content"
+  ]
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- HARD LINKS
+-- ════════════════════════════════════════════════════════════════════════════
+
+hardLinkTests :: [TestTree]
+hardLinkTests =
+  [ testCase "placeholder - hard link tests" $ do
+      -- Hard link tests are filesystem-specific
+      return ()
+  ]
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- SPARSE FILES
+-- ════════════════════════════════════════════════════════════════════════════
+
+sparseFileTests :: [TestTree]
+sparseFileTests =
+  [ testCase "placeholder - sparse file tests" $ do
+      -- Sparse file tests are filesystem-specific
+      return ()
+  ]
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- FILE LOCKING
+-- ════════════════════════════════════════════════════════════════════════════
+
+fileLockTests :: [TestTree]
+fileLockTests =
+  [ testCase "placeholder - file lock tests" $ do
+      -- File locking tests are platform-specific
+      return ()
+  ]
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- HELPERS
 -- ════════════════════════════════════════════════════════════════════════════

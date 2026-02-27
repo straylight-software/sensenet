@@ -29,6 +29,7 @@ let Rule =
       | PureScriptApp : PS.App
       | PureScriptBinary : PS.Binary
       | PureScriptLibrary : PS.Library
+      | PureScriptWebApp : PS.WebApp
       | Genrule : G.Genrule
       | NixCxxBinary : NC.NixBinary
       | CratesIo : RC.CratesIo
@@ -51,6 +52,7 @@ in  { Rule
     , purescriptApp = \(r : PS.App) -> Rule.PureScriptApp r
     , purescriptBinary = \(r : PS.Binary) -> Rule.PureScriptBinary r
     , purescriptLibrary = \(r : PS.Library) -> Rule.PureScriptLibrary r
+    , purescriptWebapp = \(r : PS.WebApp) -> Rule.PureScriptWebApp r
     , genrule = \(r : G.Genrule) -> Rule.Genrule r
     , nixCxxBinary = \(r : NC.NixBinary) -> Rule.NixCxxBinary r
     , cratesIo = \(r : RC.CratesIo) -> Rule.CratesIo r

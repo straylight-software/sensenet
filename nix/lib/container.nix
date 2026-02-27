@@ -18,7 +18,6 @@ let
   concat-strings-sep = lib.${"concatStringsSep"};
   filter = lib.${"filter"};
   unique = lib.${"unique"};
-  elem = lib.${"elem"};
 
   # Define toolchain functions in let so they can be referenced
   toolchain-enabled =

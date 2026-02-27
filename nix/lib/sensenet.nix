@@ -1,10 +1,10 @@
-# nix/lib/buck2.nix
+# nix/lib/sensenet.nix
 #
-# Buck2 builder library function.
+# Sensenet builder library function.
 #
 # Usage in downstream flakes:
 #
-#   packages.myapp = sense.lib.buck2.build pkgs {
+#   packages.myapp = sense.lib.sensenet.build pkgs {
 #     src = ./.;
 #     target = "//src:myapp";
 #   };
@@ -22,7 +22,7 @@ let
     ;
 
   # Scripts directory
-  scripts-dir = ./scripts;
+  scripts-dir = ../modules/flake/scripts;
 
   read-file = builtins.readFile;
   versions-major = inputs.nixpkgs.lib.versions.major;
@@ -89,10 +89,10 @@ let
       libsodium-dev = "${pkgs.libsodium.dev or pkgs.libsodium}";
     };
 
-  # For backwards compatibility: generate buckconfig content string
+  # Generate buckconfig content string
   mk-buckconfig = pkgs: read-file (mk-buckconfig-file pkgs);
 
-  # Build packages needed for Buck2
+  # Build packages needed for sensenet builds
   mk-packages =
     pkgs:
     let
@@ -110,10 +110,10 @@ let
 
 in
 {
-  # Build a Buck2 target as a Nix derivation
+  # Build a sensenet target as a Nix derivation
   #
   # Usage:
-  #   sense.lib.buck2.build pkgs {
+  #   sense.lib.sensenet.build pkgs {
   #     src = ./.;
   #     target = "//examples/cxx:fmt_test";
   #     # optional:
@@ -144,13 +144,13 @@ in
         if name != null then
           name
         else if clean-name == "" then
-          "buck2-target"
+          "sensenet-target"
         else
           clean-name;
 
       # Get prelude
-      buck2-prelude =
-        inputs.buck2-prelude or (throw "sense.lib.buck2.build requires inputs.buck2-prelude");
+      sensenet-prelude =
+        inputs.buck2-prelude or (throw "sense.lib.sensenet.build requires inputs.buck2-prelude");
 
       buckconfig-file = mk-buckconfig-file pkgs;
       packages = mk-packages pkgs;
@@ -162,25 +162,25 @@ in
 
       native-build-inputs = packages;
 
-      configure-phase = read-file (scripts-dir + "/buck2-configure.bash");
-      build-phase = read-file (scripts-dir + "/buck2-build.bash");
-      install-phase = read-file (scripts-dir + "/buck2-install.bash");
+      configure-phase = read-file (scripts-dir + "/sensenet-configure.sh");
+      build-phase = read-file (scripts-dir + "/sensenet-build.sh");
+      install-phase = read-file (scripts-dir + "/sensenet-install.sh");
 
       # Environment variables for scripts (passed through as-is)
-      inherit buck2-prelude;
+      inherit sensenet-prelude;
       inherit buckconfig-file;
       inherit output-name;
-      buck2-target = target;
+      sensenet-target = target;
 
       meta = {
-        description = "Buck2 target ${target} built as Nix derivation";
+        description = "Sensenet target ${target} built as Nix derivation";
       };
     };
 
   # Get the buckconfig file for inspection/debugging
   buckconfig-file = mk-buckconfig-file;
 
-  # Get the buckconfig content for inspection/debugging (backwards compat)
+  # Get the buckconfig content for inspection/debugging
   buckconfig = mk-buckconfig;
 
   # Get the build packages list

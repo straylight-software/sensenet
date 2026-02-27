@@ -14,15 +14,14 @@ module SenseNet.Nix
   )
 where
 
-import Control.Exception (SomeException, finally, try)
-import Control.Monad (forM_)
+import Control.Exception (SomeException, try)
 import Data.List (isSuffixOf)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Directory (doesDirectoryExist, listDirectory)
-import System.Environment (getEnvironment, setEnv)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
-import System.Process (readProcessWithExitCode)
+import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
 
 -- | Resolve multiple nix flake refs to compiler/linker flags
 -- Returns list of flags like: ["-isystem", "/nix/store/.../include", "-L/nix/store/.../lib", "-lz"]
@@ -47,7 +46,6 @@ resolveOnePackage ref = do
       let devPath = case devResult of
             Right p -> p
             Left _ -> outPath -- Fall back to out if no dev output
-
       let includePath = T.unpack devPath <> "/include"
           libPath = T.unpack outPath <> "/lib"
           pkgConfigPath = T.unpack devPath <> "/lib/pkgconfig:" <> T.unpack outPath <> "/lib/pkgconfig"
@@ -70,21 +68,23 @@ resolveOutput :: Text -> Text -> IO (Either Text Text)
 resolveOutput ref output = do
   -- Try ref.output first, fall back to ref
   let refWithOutput = ref <> "." <> output
-  result <- try @SomeException $
-    readProcessWithExitCode
-      "nix"
-      ["build", T.unpack refWithOutput, "--print-out-paths", "--no-link"]
-      ""
+  result <-
+    try @SomeException $
+      readProcessWithExitCode
+        "nix"
+        ["build", T.unpack refWithOutput, "--print-out-paths", "--no-link"]
+        ""
   case result of
     Left err -> pure $ Left $ "nix build failed: " <> T.pack (show err)
     Right (ExitSuccess, stdout, _) -> pure $ Right $ T.strip $ T.pack stdout
     Right (ExitFailure _, _, _) -> do
       -- Fall back to base ref
-      result' <- try @SomeException $
-        readProcessWithExitCode
-          "nix"
-          ["build", T.unpack ref, "--print-out-paths", "--no-link"]
-          ""
+      result' <-
+        try @SomeException $
+          readProcessWithExitCode
+            "nix"
+            ["build", T.unpack ref, "--print-out-paths", "--no-link"]
+            ""
       case result' of
         Left err -> pure $ Left $ "nix build failed: " <> T.pack (show err)
         Right (ExitSuccess, stdout', _) -> pure $ Right $ T.strip $ T.pack stdout'
@@ -99,13 +99,15 @@ queryPkgConfig pkgConfigPath ref = do
       -- Strip version suffix if present (e.g., simdjson-4.2.4 -> simdjson)
       basePkg = T.takeWhile (/= '-') $ T.takeWhile (/= '.') pkg
 
+  -- Get current environment and add PKG_CONFIG_PATH
+  baseEnv <- getEnvironment
+  let pkgConfigEnv = Just $ ("PKG_CONFIG_PATH", pkgConfigPath) : filter ((/= "PKG_CONFIG_PATH") . fst) baseEnv
+      mkPkgConfigProc args = (proc "pkg-config" args) {env = pkgConfigEnv}
+
   -- Try pkg-config with the package name
-  result <- try @SomeException $
-    readProcessWithExitCode
-      "pkg-config"
-      ["--libs", T.unpack basePkg]
-      ""
-      `withEnv` [("PKG_CONFIG_PATH", pkgConfigPath)]
+  result <-
+    try @SomeException $
+      readCreateProcessWithExitCode (mkPkgConfigProc ["--libs", T.unpack basePkg]) ""
 
   case result of
     Left _ -> pure ["-l" <> T.unpack basePkg]
@@ -115,29 +117,13 @@ queryPkgConfig pkgConfigPath ref = do
       pcNames <- findPkgConfigNames pkgConfigPath
       case pcNames of
         (pcName : _) -> do
-          result' <- try @SomeException $
-            readProcessWithExitCode
-              "pkg-config"
-              ["--libs", pcName]
-              ""
-              `withEnv` [("PKG_CONFIG_PATH", pkgConfigPath)]
+          result' <-
+            try @SomeException $
+              readCreateProcessWithExitCode (mkPkgConfigProc ["--libs", pcName]) ""
           case result' of
             Right (ExitSuccess, out, _) -> pure $ extractLibFlags out
             _ -> pure ["-l" <> T.unpack basePkg]
         [] -> pure ["-l" <> T.unpack basePkg]
-
--- | Run an action with modified environment
-withEnv :: IO a -> [(String, String)] -> IO a
-withEnv action envVars = do
-  oldEnv <- getEnvironment
-  let keysToRestore = map fst envVars
-      savedValues = [(k, v) | (k, v) <- oldEnv, k `elem` keysToRestore]
-  setEnvVars envVars
-  result <- action `finally` restoreEnv savedValues
-  pure result
-  where
-    setEnvVars = mapM_ (uncurry setEnv)
-    restoreEnv saved = forM_ saved $ \(k, v) -> setEnv k v
 
 -- | Extract -l flags from pkg-config output
 extractLibFlags :: String -> [String]

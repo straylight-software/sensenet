@@ -101,7 +101,7 @@ module SenseNet.Output
   )
 where
 
-import Control.Monad (unless)
+import Control.Monad ()
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (MonadReader, ReaderT, asks, runReaderT)
 import Data.Aeson (ToJSON (..), Value, encode, object, (.=))
@@ -116,7 +116,7 @@ import HyperConsole.Style (Attr (..), Color (..), Style (..))
 import HyperConsole.Theme qualified as Theme
 import System.Console.ANSI qualified as ANSI
 import System.Environment (lookupEnv)
-import System.IO (Handle, hIsTerminalDevice, stderr, stdout)
+import System.IO (hIsTerminalDevice, stderr, stdout)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Output Types
@@ -345,6 +345,7 @@ attrToSGR Reverse = ANSI.SetSwapForegroundBackground True
 attrToSGR Strikethrough = ANSI.SetConsoleIntensity ANSI.NormalIntensity
 
 -- ════════════════════════════════════════════════════════════════════════════
+
 -- | Generate SGR codes for a style
 styleCode :: Style -> Text
 styleCode Style {..} =
@@ -407,6 +408,7 @@ renderErrorTerminal err = do
         Nothing -> pure ()
     ConfigError msg -> TIO.hPutStrLn stderr $ prefix <> msg
     InternalError msg -> TIO.hPutStrLn stderr $ prefix <> "internal: " <> msg
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- Pipe Rendering (no ANSI colors)
 -- ════════════════════════════════════════════════════════════════════════════

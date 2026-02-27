@@ -42,10 +42,10 @@ tests =
         [ testCase "SourceNotFound" $ do
             let err = SourceNotFound "/path/to/missing"
             show err @?= "SourceNotFound \"/path/to/missing\"",
-          testCase "CompileFailed" $ do
-            let err = CompileFailed "gcc" 1 "error: undefined reference"
+          testCase "CommandFailed" $ do
+            let err = CommandFailed "gcc" 1 "error: undefined reference"
             case err of
-              CompileFailed cmd code msg -> do
+              CommandFailed cmd code msg -> do
                 cmd @?= "gcc"
                 code @?= 1
                 T.isInfixOf "undefined" msg @?= True

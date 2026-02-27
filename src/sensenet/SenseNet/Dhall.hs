@@ -26,9 +26,9 @@ where
 
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Dhall (FromDhall)
-import DhallFast.Input (auto, inputFile, input)
-import qualified Data.Text as T
+import DhallFast.Input (auto, input)
 import GHC.Generics (Generic)
 import SenseNet.IR qualified as IR
 import SenseNet.IR.Triple (textToGpu)
@@ -617,13 +617,20 @@ parsePackageFiles projectRoot dhallPaths = do
   let relDirs = map (\p -> makeRelative projectRoot (takeDirectory p)) dhallPaths
       relFiles = map (\p -> makeRelative projectRoot p) dhallPaths
       expr = "[" <> T.intercalate ", " (map (\p -> let p' = T.pack p in if T.isPrefixOf "./" p' || T.isPrefixOf "/" p' then p' else "./" <> p') relFiles) <> "]"
-  
+
   buildFiles <- input auto expr :: IO [BuildFile]
-  
-  pure $ zipWith (\relDir buildFile -> IR.Package
-      { IR.path = relDir,
-        IR.rules = map toIRRule (buildFileTargets buildFile)
-      }) relDirs buildFiles
+
+  pure $
+    zipWith
+      ( \relDir buildFile ->
+          IR.Package
+            { IR.path = relDir,
+              IR.rules = map toIRRule (buildFileTargets buildFile)
+            }
+      )
+      relDirs
+      buildFiles
+
 -- | Parse a BUILD.dhall file and return a Package
 parsePackageFile :: FilePath -> FilePath -> IO IR.Package
 parsePackageFile projectRoot dhallPath = do

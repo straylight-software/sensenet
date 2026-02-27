@@ -30,7 +30,6 @@ let
   concat-map-strings-sep = lib.${"concatMapStringsSep"};
   to-json = builtins.${"toJSON"};
   to-string = builtins.${"toString"};
-  read-file = builtins.${"readFile"};
   unsafe-discard-string-context = builtins.${"unsafeDiscardStringContext"};
 
   cfg = config.sense.oci;
@@ -126,8 +125,12 @@ in
 
         # Get nativelink binary
         nativelink =
-          inputs.nativelink.packages.${system}.default or inputs.nativelink.packages.${system}.nativelink
-            or null;
+          let
+            has-nativelink-pkg =
+              inputs ? nativelink && inputs.nativelink ? packages && inputs.nativelink.packages ? ${system};
+            pkg = inputs.nativelink.packages.${system};
+          in
+          if has-nativelink-pkg then pkg.default or pkg.nativelink else null;
 
         # Build toolchain package list from enabled toolchains
         toolchain-packages =
@@ -143,9 +146,12 @@ in
           container-lib.toolchain.all-packages pkgs fake-cfg;
 
         # Generate toolchain manifest (store paths for runtime fetching)
-        toolchain-manifest = write-text "toolchain-manifest.txt" (
-          concat-map-strings-sep "\n" (pkg: unsafe-discard-string-context (to-string pkg)) toolchain-packages
-        );
+        toolchain-manifest =
+          let
+            to-store-path = pkg: unsafe-discard-string-context (to-string pkg);
+            manifest-content = concat-map-strings-sep "\n" to-store-path toolchain-packages;
+          in
+          write-text "toolchain-manifest.txt" manifest-content;
 
         # NativeLink worker config
         worker-config = write-text "worker.json" (to-json {
@@ -215,6 +221,10 @@ in
         };
 
         # Setup script for minimal containers (fetches toolchain at runtime)
+        toolchain-paths-str = concat-map-strings-sep " " (
+          pkg: unsafe-discard-string-context (to-string pkg)
+        ) toolchain-packages;
+
         setup-script = write-shell-application {
           name = "sensenet-worker-setup";
           runtimeInputs = [
@@ -227,9 +237,7 @@ in
           };
           text = ''
             echo "Fetching toolchain packages from cache.nixos.org..."
-            TOOLCHAIN_PATHS="${
-              concat-map-strings-sep " " (pkg: unsafe-discard-string-context (to-string pkg)) toolchain-packages
-            }"
+            TOOLCHAIN_PATHS="${toolchain-paths-str}"
             for path in $TOOLCHAIN_PATHS; do
               if [[ ! -e "$path" ]]; then
                 echo "Fetching $path..."
@@ -305,19 +313,53 @@ in
         # Packages for inspection / manual use
         # ══════════════════════════════════════════════════════════════════════
 
-        packages = {
-          # Worker config for debugging
-          oci-worker-config = worker-config;
+        packages =
+          let
+            # Container image reference for RE
+            image-ref = "${cfg.registry}:${cfg.tag}";
 
-          # Toolchain manifest
-          oci-toolchain-manifest = toolchain-manifest;
+            # Get specific packages for toolchain paths
+            llvm = pkgs.llvm-git or pkgs.llvmPackages_19.clang;
+            lld = pkgs.llvm-git or pkgs.llvmPackages_19.lld;
 
-          # Setup script (for minimal containers)
-          oci-worker-setup = setup-script;
+            # Generate toolchains.dhall for remote execution
+            # Uses actual Nix store paths that will be present in the container
+            toolchains-remote-dhall = pkgs.replaceVars ./toolchains-remote.dhall.template {
+              imageRef = image-ref;
+              inherit llvm lld;
+              gccInclude = "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}";
+              gccIncludeArch = "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}/x86_64-unknown-linux-gnu";
+              glibcInclude = "${pkgs.glibc.dev}/include";
+              glibcLib = "${pkgs.glibc}/lib";
+              gccLib = "${pkgs.gcc.cc.lib}/lib";
+              inherit (pkgs) rustc;
+              inherit (pkgs) cargo;
+              inherit (pkgs) ghc;
+              inherit (pkgs) lean4;
+              inherit (pkgs) purescript;
+              inherit (pkgs) spago;
+              inherit (pkgs) nodejs;
+              inherit (pkgs) esbuild;
+            };
+          in
+          {
+            # Worker config for debugging
+            oci-worker-config = worker-config;
 
-          # Entrypoint script
-          oci-worker-script = worker-script;
-        };
+            # Toolchain manifest
+            oci-toolchain-manifest = toolchain-manifest;
+
+            # Setup script (for minimal containers)
+            oci-worker-setup = setup-script;
+
+            # Entrypoint script
+            oci-worker-script = worker-script;
+
+            # Remote toolchains.dhall with container image reference
+            # Build with: nix build .#oci-toolchains-remote --print-out-paths
+            # Then copy output to: .sensenet/toolchains.dhall
+            oci-toolchains-remote = toolchains-remote-dhall;
+          };
       };
   };
 }

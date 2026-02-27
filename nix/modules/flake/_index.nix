@@ -14,10 +14,15 @@
     (import ./std.nix { inherit inputs; })
     (import ./nix-compile/default.nix { inherit inputs; })
 
-    # nix2gpu.flakeModule must be imported before nativelink module
+    # nix2gpu.flakeModule must be imported before OCI/nativelink modules
     # (provides perSystem.nix2gpu options)
-    # TODO: Re-enable once nativelink module is fixed
-    # inputs.nix2gpu.flakeModule
+    inputs.nix2gpu.flakeModule
+
+    # OCI container generation for toolchains
+    (import ./oci/flake-module.nix { inherit inputs; })
+
+    # NOTE: Legacy nativelink module disabled - use sense.oci instead
+    # The module references pkgs.sense.script.ghc which doesn't exist
     # (import ./nativelink/flake-module.nix { inherit inputs; })
   ];
 
@@ -26,10 +31,18 @@
   sense.devshell.enable = true;
   sense.devshell.nv.enable = true;
 
-  # Enable NativeLink for remote execution
-  # TODO: Re-enable once nativelink module dependencies are fixed
-  # The module references pkgs.sense.script.ghc which doesn't exist in this repo
-  # sense.nativelink.enable = false;
+  # Enable OCI container generation for toolchains
+  # Build: nix build .#oci-worker-full
+  # Push:  nix run .#oci-worker-full.copyToGithub
+  sense.oci = {
+    enable = true;
+    toolchains = [
+      "cxx"
+      "haskell"
+      "rust"
+    ];
+    registry = "ghcr.io/straylight-software/sensenet";
+  };
 
   # Enable custom LLVM git toolchain for SM120 support
   sense.llvm-git.enable = true;

@@ -10,6 +10,14 @@ bin/
 /sense
 dist-newstyle/
 
+# Compiled binaries (should never be tracked)
+/bench-main
+/bench/dhall-fast-bench
+/bench/integration-test
+/sensenet-stage1
+/sensenet-test
+/test-standalone
+
 # Generated BUCK files (from BUILD.dhall) - zero starlark
 # All BUCK files are generated, users only edit BUILD.dhall
 src/**/BUCK

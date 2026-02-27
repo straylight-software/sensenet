@@ -33,6 +33,13 @@
   unix,
   unordered-containers,
   vector,
+  # NativeLink remote execution deps (enabled via -fremote flag)
+  conduit,
+  grapesy,
+  grpc-spec,
+  network,
+  proto-lens,
+  proto-lens-runtime,
 }:
 let
   # Shared dependencies for library and executable
@@ -64,6 +71,13 @@ let
     unix
     unordered-containers
     vector
+    # NativeLink remote execution deps
+    conduit
+    grapesy
+    grpc-spec
+    network
+    proto-lens
+    proto-lens-runtime
   ];
 
   # Build the Haskell package
@@ -84,7 +98,9 @@ let
     executableSystemDepends = [ ];
     doCheck = false;
     # Parallel GHC compilation + threaded runtime
+    # Enable remote execution support via -fremote flag
     configureFlags = [
+      "--flags=remote"
       "--ghc-options=-j"
       "--ghc-options=-threaded"
       "--ghc-options=-rtsopts"

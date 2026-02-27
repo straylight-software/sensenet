@@ -13,7 +13,7 @@ module Main where
 
 -- SenseNet.DICE used by Build module
 
-import Control.Concurrent.Async (forConcurrently)
+import Control.Concurrent.Async ()
 import Control.Exception (IOException, try)
 import Control.Monad (forM, forM_, unless, when)
 import Data.Aeson (Value (..), object, (.=))

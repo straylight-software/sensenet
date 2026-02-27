@@ -45,7 +45,7 @@ foldr1CrashTests =
       -- This demonstrates the dangerous pattern in Build.hs
       result <- try @ErrorCall $ evaluate $ foldr1 (\a b -> a <> "," <> b) ([] :: [String])
       case result of
-        Left _ -> pure () -- Expected: foldr1 throws on empty list
+        Left _ -> return () -- Expected: foldr1 throws on empty list
         Right _ -> assertFailure "foldr1 should throw on empty list",
     testCase "safe intercalate handles empty list" $ do
       -- This is how the code SHOULD work
@@ -77,17 +77,17 @@ partialFunctionTests =
       -- Build.hs:290 uses `error "buildActionGraph: no actions"`
       result <- try @ErrorCall $ evaluate $ error "test error"
       case result of
-        Left _ -> pure () -- Expected
+        Left _ -> return () -- Expected
         Right _ -> assertFailure "error should throw",
     testCase "head crashes on empty (documents potential issues)" $ do
       result <- try @ErrorCall $ evaluate $ head ([] :: [Int])
       case result of
-        Left _ -> pure ()
+        Left _ -> return ()
         Right _ -> assertFailure "head should throw on empty list",
     testCase "!! crashes on out of bounds" $ do
       result <- try @ErrorCall $ evaluate $ ([1, 2, 3] :: [Int]) !! 10
       case result of
-        Left _ -> pure ()
+        Left _ -> return ()
         Right _ -> assertFailure "!! should throw on out of bounds",
     testCase "safe headOr pattern" $ do
       let headOr :: a -> [a] -> a
@@ -172,4 +172,61 @@ infiniteLoopTests =
       case result2 of
         Left err -> assertFailure $ "should succeed: " ++ err
         Right completed -> length completed @?= 2
+  ]
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Division by Zero
+-- ════════════════════════════════════════════════════════════════════════════
+
+divisionByZeroTests :: [TestTree]
+divisionByZeroTests =
+  [ testCase "division by zero caught" $ do
+      result <- try @SomeException $ evaluate (1 `div` 0 :: Int)
+      case result of
+        Left _ -> return ()  -- Expected: ArithException
+        Right _ -> assertFailure "division by zero should throw"
+  ]
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Stack Overflow (placeholder)
+-- ════════════════════════════════════════════════════════════════════════════
+
+stackOverflowTests :: [TestTree]
+stackOverflowTests =
+  [ testCase "placeholder - stack overflow tests" $ do
+      -- Stack overflow tests are tricky to implement portably
+      return ()
+  ]
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Memory Exhaustion (placeholder)
+-- ════════════════════════════════════════════════════════════════════════════
+
+memoryExhaustionTests :: [TestTree]
+memoryExhaustionTests =
+  [ testCase "placeholder - memory exhaustion tests" $ do
+      -- Memory exhaustion tests require careful setup
+      return ()
+  ]
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- File Handle Exhaustion (placeholder)
+-- ════════════════════════════════════════════════════════════════════════════
+
+fileHandleTests :: [TestTree]
+fileHandleTests =
+  [ testCase "placeholder - file handle tests" $ do
+      -- File handle exhaustion tests are platform-specific
+      return ()
+  ]
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Signal Handling (placeholder)
+-- ════════════════════════════════════════════════════════════════════════════
+
+signalTests :: [TestTree]
+signalTests =
+  [ testCase "placeholder - signal handling tests" $ do
+      -- Signal handling tests require platform-specific setup
+      return ()
   ]

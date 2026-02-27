@@ -1,0 +1,71 @@
+-- AUTO-GENERATED for remote execution
+-- Container image: @imageRef@
+--
+-- Copy this to .sensenet/toolchains.dhall for RE builds:
+--   nix build .#oci-toolchains-remote --print-out-paths
+--   cp <output-path> .sensenet/toolchains.dhall
+--
+let TC = ../dhall/Toolchains.dhall
+
+let containerImage = Some "@imageRef@"
+
+-- C++ toolchain with container image
+let cxxToolchain : TC.Cxx =
+  { image = containerImage
+  , cc = TC.tool "@llvm@/bin/clang"
+  , cxx = TC.tool "@llvm@/bin/clang++"
+  , ar = TC.tool "@lld@/bin/llvm-ar"
+  , ld = TC.tool "@lld@/bin/ld.lld"
+  , paths = TC.paths
+      [ "@gccInclude@"
+      , "@gccIncludeArch@"
+      , "@glibcInclude@"
+      ]
+      [ "@glibcLib@"
+      , "@gccLib@"
+      ]
+  , sysroot = ""
+  , target = "x86_64-unknown-linux-gnu"
+  }
+
+-- Rust toolchain with container image
+let rustToolchain : TC.Rust =
+  { image = containerImage
+  , rustc = TC.tool "@rustc@/bin/rustc"
+  , cargo = TC.tool "@cargo@/bin/cargo"
+  , edition = "2021"
+  , target = "x86_64-unknown-linux-gnu"
+  }
+
+-- Haskell toolchain with container image
+let haskellToolchain : TC.Haskell =
+  { image = containerImage
+  , ghc = TC.tool "@ghc@/bin/ghc"
+  , ghc_pkg = TC.tool "@ghc@/bin/ghc-pkg"
+  , paths = TC.emptyPaths
+  }
+
+-- Lean toolchain with container image
+let leanToolchain : TC.Lean =
+  { image = containerImage
+  , lean = TC.tool "@lean4@/bin/lean"
+  , leanc = TC.tool "@lean4@/bin/leanc"
+  , paths = TC.emptyPaths
+  }
+
+-- PureScript toolchain with container image
+let purescriptToolchain : TC.PureScript =
+  { image = containerImage
+  , purs = TC.tool "@purescript@/bin/purs"
+  , spago = TC.tool "@spago@/bin/spago"
+  , node = TC.tool "@nodejs@/bin/node"
+  , esbuild = TC.tool "@esbuild@/bin/esbuild"
+  }
+
+in  { cxx = cxxToolchain
+    , nv = None TC.Nv
+    , rust = rustToolchain
+    , haskell = haskellToolchain
+    , lean = leanToolchain
+    , purescript = purescriptToolchain
+    } : TC.Toolchains

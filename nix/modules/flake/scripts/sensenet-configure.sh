@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Configure phase for Buck2 builds
+# Configure phase for sensenet builds
 # Environment variables:
-#   BUCKCONFIG_FILE - path to buckconfig file
-#   BUCK2_PRELUDE   - path to buck2 prelude
+#   buckconfig_file   - path to buckconfig file
+#   sensenet_prelude  - path to prelude
 
 runHook preConfigure
 
 # Write .buckconfig.local with Nix store paths
-cp "$BUCKCONFIG_FILE" .buckconfig.local
+cp "$buckconfig_file" .buckconfig.local
 
 # Link prelude if needed
 if [ ! -d "prelude" ] && [ ! -L "prelude" ]; then
-  ln -s "$BUCK2_PRELUDE" prelude
+  ln -s "$sensenet_prelude" prelude
 fi
 
 runHook postConfigure

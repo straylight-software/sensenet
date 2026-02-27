@@ -373,6 +373,8 @@ in
               # - sensenet module: toolchain generation has long inline scripts
               # - nix-compile: has long inline scripts for type checking
               # - test: integration tests have long inline scripts
+              # - bootstrap: no access to Dhall prelude (circular dependency)
+              # - oci: generates Dhall templates with Nix store paths
               excludes = [
                 "nix/prelude/*"
                 "nix/lib/*"
@@ -383,6 +385,8 @@ in
                 "nix/modules/flake/sensenet/*"
                 "nix/modules/flake/nix-compile/*"
                 "nix/modules/flake/buck2/*"
+                "nix/modules/flake/oci/*"
+                "bootstrap/*"
                 "test/*"
                 "flake.nix"
               ];

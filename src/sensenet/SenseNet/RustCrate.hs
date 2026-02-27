@@ -40,12 +40,7 @@ import System.Directory
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Process
-  ( CreateProcess (..),
-    StdStream (..),
-    createProcess,
-    proc,
-    readProcessWithExitCode,
-    waitForProcess,
+  ( readProcessWithExitCode,
   )
 
 -- ════════════════════════════════════════════════════════════════════════════

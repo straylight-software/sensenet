@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE NoFieldSelectors #-}
 
 -- |
@@ -41,6 +42,7 @@ module SenseNet.IR
     PureScriptApp (..),
     PureScriptBinary (..),
     PureScriptLibrary (..),
+    PureScriptWebApp (..),
     SrcSpec (..),
     Genrule (..),
     NixCxxBinary (..),
@@ -284,6 +286,17 @@ data PureScriptLibrary = PureScriptLibrary
   }
   deriving (Show, Eq)
 
+data PureScriptWebApp = PureScriptWebApp
+  { name :: Text,
+    srcs :: SrcSpec,
+    spagoYaml :: Text,
+    main :: Text,
+    indexHtml :: Maybe Text,
+    styleCss :: Maybe Text,
+    vis :: Vis
+  }
+  deriving (Show, Eq)
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- Genrule
 -- ════════════════════════════════════════════════════════════════════════════
@@ -355,6 +368,7 @@ data Rule
   | RPureScriptApp PureScriptApp
   | RPureScriptBinary PureScriptBinary
   | RPureScriptLibrary PureScriptLibrary
+  | RPureScriptWebApp PureScriptWebApp
   | RGenrule Genrule
   | RNixCxxBinary NixCxxBinary
   | RCratesIo CratesIo
@@ -378,6 +392,7 @@ ruleName = \case
   RPureScriptApp r -> r.name
   RPureScriptBinary r -> r.name
   RPureScriptLibrary r -> r.name
+  RPureScriptWebApp r -> r.name
   RGenrule r -> r.name
   RNixCxxBinary r -> r.name
   RCratesIo r -> r.name
@@ -400,6 +415,7 @@ ruleVis = \case
   RPureScriptApp r -> r.vis
   RPureScriptBinary r -> r.vis
   RPureScriptLibrary r -> r.vis
+  RPureScriptWebApp r -> r.vis
   RGenrule r -> r.vis
   RNixCxxBinary r -> r.vis
   RCratesIo r -> r.vis
@@ -422,6 +438,7 @@ ruleDeps = \case
   RPureScriptApp _ -> []
   RPureScriptBinary _ -> []
   RPureScriptLibrary _ -> []
+  RPureScriptWebApp _ -> []
   RGenrule _ -> []
   RNixCxxBinary _ -> [] -- Nix deps are Text, not Dep
   RCratesIo r -> map DepLocal r.deps -- Convert Text deps to DepLocal
@@ -444,6 +461,7 @@ ruleSrcs = \case
   RPureScriptApp r -> srcSpecToList r.srcs
   RPureScriptBinary r -> srcSpecToList r.srcs
   RPureScriptLibrary r -> srcSpecToList r.srcs
+  RPureScriptWebApp r -> srcSpecToList r.srcs
   RGenrule r -> r.srcs
   RNixCxxBinary r -> r.srcs
   RCratesIo _ -> []
@@ -471,6 +489,7 @@ ruleKind = \case
   RPureScriptApp _ -> "purescript_app"
   RPureScriptBinary _ -> "purescript_binary"
   RPureScriptLibrary _ -> "purescript_library"
+  RPureScriptWebApp _ -> "purescript_webapp"
   RGenrule _ -> "genrule"
   RNixCxxBinary _ -> "nix_cxx_binary"
   RCratesIo _ -> "crates_io"

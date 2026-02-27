@@ -71,4 +71,27 @@ let library
         , vis = T.Vis.Public
         }
 
-in  { App, app, Binary, binary, Library, library, SrcSpec }
+-- | PureScript web application using spago (supports extraPackages)
+let WebApp =
+      { name : Text
+      , srcs : SrcSpec
+      , spago_yaml : Text
+      , main : Text
+      , index_html : Optional Text
+      , style_css : Optional Text
+      , vis : T.Vis
+      }
+
+let webapp
+    : Text -> SrcSpec -> Text -> WebApp
+    = \(name : Text) ->
+      \(srcs : SrcSpec) ->
+      \(spago_yaml : Text) ->
+        { name, srcs, spago_yaml
+        , main = "Main"
+        , index_html = Some "index.html"
+        , style_css = Some "style.css"
+        , vis = T.Vis.Public
+        }
+
+in  { App, app, Binary, binary, Library, library, WebApp, webapp, SrcSpec }

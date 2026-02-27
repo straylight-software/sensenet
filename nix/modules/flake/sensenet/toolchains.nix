@@ -194,6 +194,6 @@
 
       [buck2_re_client.platform_properties]
       OSFamily = linux
-      container-image = nix-worker
+      container-image = sensenet-worker
     '';
 }

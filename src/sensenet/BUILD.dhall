@@ -39,6 +39,10 @@ let dhallfast =
 let sensenet-core =
       (A.haskellLibrary "sensenet-core"
         [ "SenseNet/IR.hs"
+        , "SenseNet/IR/Coeffect.hs"
+        , "SenseNet/IR/Common.hs"
+        , "SenseNet/IR/Flag.hs"
+        , "SenseNet/IR/Triple.hs"
         , "SenseNet/Dhall.hs"
         , "SenseNet/Discover.hs"
         , "SenseNet/Toolchains.hs"
@@ -78,15 +82,21 @@ let sensenet-build =
         , "SenseNet/Nix.hs"
         , "SenseNet/PureScript.hs"
         , "SenseNet/RustCrate.hs"
+        , "SenseNet/Output.hs"
+        , "SenseNet/TUI.hs"
+        , "SenseNet/Complete.hs"
         ])
         with packages =
           [ "aeson"
+          , "ansi-terminal"
           , "base"
           , "bytestring"
+          , "colour"
           , "containers"
           , "directory"
           , "filepath"
           , "hostname"
+          , "hyperconsole"
           , "katip"
           , "process"
           , "text"
@@ -127,11 +137,55 @@ let sensenet =
           -- Users can still pass +RTS -N -RTS if needed
           ]
 
+-- Combined library for tests (re-exports all modules)
+let sensenet-lib =
+      (A.haskellLibrary "sensenet-lib"
+        [ "SenseNet/IR.hs"
+        , "SenseNet/IR/Coeffect.hs"
+        , "SenseNet/IR/Common.hs"
+        , "SenseNet/IR/Flag.hs"
+        , "SenseNet/IR/Triple.hs"
+        , "SenseNet/Dhall.hs"
+        , "SenseNet/Discover.hs"
+        , "SenseNet/Toolchains.hs"
+        , "SenseNet/DICE.hs"
+        , "SenseNet/Build.hs"
+        , "SenseNet/Log.hs"
+        , "SenseNet/Nix.hs"
+        , "SenseNet/PureScript.hs"
+        , "SenseNet/RustCrate.hs"
+        , "SenseNet/Output.hs"
+        , "SenseNet/TUI.hs"
+        , "SenseNet/Complete.hs"
+        ])
+        with packages =
+          [ "aeson"
+          , "ansi-terminal"
+          , "async"
+          , "base"
+          , "bytestring"
+          , "colour"
+          , "containers"
+          , "crypton"
+          , "dhall"
+          , "directory"
+          , "filepath"
+          , "hostname"
+          , "hyperconsole"
+          , "katip"
+          , "memory"
+          , "process"
+          , "text"
+          , "time"
+          , "unix"
+          ]
+
 in  { targets =
         [ A.rule.haskellLibrary dhallfast
         , A.rule.haskellLibrary sensenet-core
         , A.rule.haskellLibrary sensenet-dice
         , A.rule.haskellLibrary sensenet-build
+        , A.rule.haskellLibrary sensenet-lib
         , A.rule.haskellBinary sensenet
         ]
     }

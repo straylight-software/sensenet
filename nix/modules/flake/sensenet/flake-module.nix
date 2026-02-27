@@ -6,9 +6,6 @@
 #   - packages.sensenet-<name>: Nix derivation that builds the targets
 #   - devShells.sensenet-<name>: Development shell with toolchains configured
 #
-# Backward compatibility:
-#   - packages.buck2-<name> and devShells.buck2-<name> are also created (deprecated)
-#
 # The package derivation runs buck2 build with __noChroot = true, allowing
 # it to use the buck2 daemon and cache.
 #
@@ -265,7 +262,6 @@
         };
 
       # ── Build all declared projects ──────────────────────────────────────────
-      # sensenet.projects is the primary source (includes merged buck2.projects)
       sensenetprojects = lib.mapAttrs (
         name: proj: mkproject (proj // { inherit name; })
       ) config.sensenet.projects;
@@ -274,15 +270,13 @@
       # ── Primary: sensenet.mkproject ──────────────────────────────────────────
       sensenet.mkproject = mkproject;
 
-      # ── Primary outputs: sensenet-<name> ─────────────────────────────────────
-      packages =
-        lib.mapAttrs' (name: proj: lib.nameValuePair "sensenet-${name}" proj.package) sensenetprojects
-        # Backward compat: buck2-<name> (deprecated)
-        // lib.mapAttrs' (name: proj: lib.nameValuePair "buck2-${name}" proj.package) sensenetprojects;
+      # ── sensenet-<name> outputs ──────────────────────────────────────────────
+      packages = lib.mapAttrs' (
+        name: proj: lib.nameValuePair "sensenet-${name}" proj.package
+      ) sensenetprojects;
 
-      devShells =
-        lib.mapAttrs' (name: proj: lib.nameValuePair "sensenet-${name}" proj.devshell) sensenetprojects
-        # Backward compat: buck2-<name> (deprecated)
-        // lib.mapAttrs' (name: proj: lib.nameValuePair "buck2-${name}" proj.devshell) sensenetprojects;
+      devShells = lib.mapAttrs' (
+        name: proj: lib.nameValuePair "sensenet-${name}" proj.devshell
+      ) sensenetprojects;
     };
 }

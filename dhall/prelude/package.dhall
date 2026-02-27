@@ -59,6 +59,8 @@ in  { -- Rule union (for BUILD.dhall files)
     , purescriptBinary = PS.binary
     , PureScriptLibrary = PS.Library
     , purescriptLibrary = PS.library
+    , PureScriptWebApp = PS.WebApp
+    , purescriptWebapp = PS.webapp
     , SrcSpec = PS.SrcSpec
     -- Toolchains
     , CxxToolchain = TC.CxxToolchain

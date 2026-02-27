@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Fetch toolchain packages from cache.nixos.org
+# TOOLCHAIN_PATHS is set by the Nix derivation
+
+echo "Fetching toolchain packages from cache.nixos.org..."
+for path in $TOOLCHAIN_PATHS; do
+  if [[ ! -e $path ]]; then
+    echo "Fetching $path..."
+    nix-store --realise "$path" || echo "Warning: failed to fetch $path"
+  fi
+done
+echo "Toolchain setup complete."

@@ -25,10 +25,6 @@
 #   - packages.sensenet-myproject: Builds the targets via buck2
 #   - devShells.sensenet-myproject: Dev shell with all toolchains
 #
-# Backward compatibility:
-#   - buck2.projects is aliased to sensenet.projects (deprecated)
-#   - flakeModules.buck2 is aliased to flakeModules.sensenet (deprecated)
-#
 { inputs }:
 {
   _class = "flake";

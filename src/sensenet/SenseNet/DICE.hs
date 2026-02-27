@@ -239,6 +239,183 @@ data ActionGraph = ActionGraph
 emptyGraph :: ActionGraph
 emptyGraph = ActionGraph Map.empty []
 
+-- | Lookup action in graph, error if not found
+lookupAction :: Text -> ActionGraph -> ActionKey -> Action
+lookupAction context graph key =
+  case Map.lookup key (agActions graph) of
+    Nothing -> error $ T.unpack context <> ": action key not found in graph: " <> T.unpack (actionKeyText key)
+    Just a -> a
+
+-- | Lookup async in map, error if not found (with context for debugging)
+lookupAsync :: Text -> Text -> Map ActionKey a -> ActionKey -> a
+lookupAsync context actionName m key =
+  case Map.lookup key m of
+    Nothing -> error $ T.unpack context <> ": dependency key not found in async map: " <> T.unpack (actionKeyText key) <> " (for action: " <> T.unpack actionName <> ")"
+    Just a -> a
+
+-- | Validate a cached result by checking output files exist
+validateCachedResult :: Maybe ActionResult -> IO (Maybe ActionResult)
+validateCachedResult Nothing = pure Nothing
+validateCachedResult (Just result) = do
+  let outputs = map T.unpack (arOutputs result)
+  allExist <- and <$> mapM doesFileExist outputs
+  pure $ if allExist then Just result else Nothing
+
+-- | Run an IO action with optional semaphore limiting
+withSemLimit :: Maybe QSem -> IO a -> IO a
+withSemLimit Nothing io = io
+withSemLimit (Just sem) io = bracket_ (waitQSem sem) (signalQSem sem) io
+
+-- | Execute a single action with caching (for executeGraphWithJobs)
+runActionWithPrint ::
+  Maybe QSem ->
+  MVar Int ->
+  Int ->
+  ActionCache ->
+  (Action -> IO ActionResult) ->
+  MVar (Map ActionKey ActionResult) ->
+  MVar Int ->
+  MVar Int ->
+  MVar [(ActionKey, Text)] ->
+  ActionKey ->
+  Action ->
+  IO Bool
+runActionWithPrint semMaybe progressVar total cache runner resultsVar hitsVar executedVar failedVar key action = do
+  n <- modifyMVar progressVar $ \p -> pure (p + 1, p + 1)
+  let progress = "[" <> T.pack (show n) <> "/" <> T.pack (show total) <> "] "
+
+  cached <- checkCache cache key
+  cacheValid <- validateCachedResult cached
+
+  case cacheValid of
+    Just result -> do
+      TIO.putStrLn $ progress <> "✓ " <> aName action <> " (cached)"
+      modifyMVar_ resultsVar $ pure . Map.insert key result
+      modifyMVar_ hitsVar $ pure . (+ 1)
+      pure True
+    Nothing -> do
+      TIO.putStrLn $ progress <> "→ " <> aName action
+      result <- withSemLimit semMaybe $ runner action
+      handleActionResult progress cache resultsVar executedVar failedVar key action result
+
+-- | Handle the result of running an action
+handleActionResult ::
+  Text ->
+  ActionCache ->
+  MVar (Map ActionKey ActionResult) ->
+  MVar Int ->
+  MVar [(ActionKey, Text)] ->
+  ActionKey ->
+  Action ->
+  ActionResult ->
+  IO Bool
+handleActionResult progress cache resultsVar executedVar failedVar key action result
+  | arExitCode result == 0 = do
+      storeCache cache key result
+      let memInfo = if arPeakMemoryKB result > 0 then " [" <> formatMemory (arPeakMemoryKB result) <> "]" else ""
+      TIO.putStrLn $ progress <> "✓ " <> aName action <> memInfo
+      modifyMVar_ resultsVar $ pure . Map.insert key result
+      modifyMVar_ executedVar $ pure . (+ 1)
+      pure True
+  | otherwise = do
+      let errMsg = "exit " <> T.pack (show (arExitCode result)) <> ": " <> T.take 200 (arStderr result)
+      TIO.putStrLn $ progress <> "✗ " <> aName action <> " - " <> errMsg
+      modifyMVar_ failedVar $ pure . ((key, errMsg) :)
+      pure False
+
+-- | Execute a single action with caching and progress callbacks
+runActionWithCallback ::
+  Maybe QSem ->
+  MVar Int ->
+  MVar Int ->
+  Int ->
+  ProgressCallback ->
+  ActionCache ->
+  (Action -> IO ActionResult) ->
+  MVar (Map ActionKey ActionResult) ->
+  MVar Int ->
+  MVar Int ->
+  MVar [(ActionKey, Text)] ->
+  ActionKey ->
+  Action ->
+  IO Bool
+runActionWithCallback semMaybe progressVar doneVar total callback cache runner resultsVar hitsVar executedVar failedVar key action = do
+  n <- modifyMVar progressVar $ \p -> pure (p + 1, p + 1)
+
+  callback $ ProgressCacheCheck (aName action)
+  cached <- checkCache cache key
+  cacheValid <- validateCachedResult cached
+
+  case cacheValid of
+    Just result -> handleCacheHit callback doneVar total resultsVar hitsVar key action result
+    Nothing -> handleCacheMiss semMaybe n total callback cache runner resultsVar executedVar failedVar key action
+
+-- | Handle cache hit case
+handleCacheHit ::
+  ProgressCallback ->
+  MVar Int ->
+  Int ->
+  MVar (Map ActionKey ActionResult) ->
+  MVar Int ->
+  ActionKey ->
+  Action ->
+  ActionResult ->
+  IO Bool
+handleCacheHit callback doneVar total resultsVar hitsVar key action result = do
+  callback $ ProgressCacheHit (aName action)
+  done <- modifyMVar doneVar $ \d -> pure (d + 1, d + 1)
+  callback $ ProgressCached (aName action) done total
+  modifyMVar_ resultsVar $ pure . Map.insert key result
+  modifyMVar_ hitsVar $ pure . (+ 1)
+  pure True
+
+-- | Handle cache miss case
+handleCacheMiss ::
+  Maybe QSem ->
+  Int ->
+  Int ->
+  ProgressCallback ->
+  ActionCache ->
+  (Action -> IO ActionResult) ->
+  MVar (Map ActionKey ActionResult) ->
+  MVar Int ->
+  MVar [(ActionKey, Text)] ->
+  ActionKey ->
+  Action ->
+  IO Bool
+handleCacheMiss semMaybe n total callback cache runner resultsVar executedVar failedVar key action = do
+  callback $ ProgressCacheMiss (aName action)
+  callback $ ProgressStarting (aName action) n total
+  result <- withSemLimit semMaybe $ runner action
+  handleCallbackResult n total callback cache resultsVar executedVar failedVar key action result
+
+-- | Handle action result with callbacks
+handleCallbackResult ::
+  Int ->
+  Int ->
+  ProgressCallback ->
+  ActionCache ->
+  MVar (Map ActionKey ActionResult) ->
+  MVar Int ->
+  MVar [(ActionKey, Text)] ->
+  ActionKey ->
+  Action ->
+  ActionResult ->
+  IO Bool
+handleCallbackResult n total callback cache resultsVar executedVar failedVar key action result
+  | arExitCode result == 0 = do
+      callback $ ProgressCacheStore (aName action)
+      storeCache cache key result
+      callback $ ProgressCompleted (aName action) n total (arPeakMemoryKB result)
+      modifyMVar_ resultsVar $ pure . Map.insert key result
+      modifyMVar_ executedVar $ pure . (+ 1)
+      pure True
+  | otherwise = do
+      let errMsg = "exit " <> T.pack (show (arExitCode result)) <> ": " <> T.take 200 (arStderr result)
+      callback $ ProgressFailed (aName action) n total errMsg
+      modifyMVar_ failedVar $ pure . ((key, errMsg) :)
+      pure False
+
 -- | Add an action to the graph
 addAction :: Action -> ActionGraph -> ActionGraph
 addAction action graph =
@@ -254,10 +431,12 @@ topoSort ActionGraph {..} = reverse $ go Set.empty [] (Map.keys agActions)
     go visited sorted (k : ks)
       | k `Set.member` visited = go visited sorted ks
       | otherwise =
-          let action = agActions Map.! k
-              deps = aInputKeys action
-              (visited', sorted') = foldl visitDep (Set.insert k visited, sorted) deps
-           in go visited' (k : sorted') ks
+          case Map.lookup k agActions of
+            Nothing -> error $ "DICE.topoSort: action key not found in graph: " <> T.unpack (actionKeyText k)
+            Just action ->
+              let deps = aInputKeys action
+                  (visited', sorted') = foldl visitDep (Set.insert k visited, sorted) deps
+               in go visited' (k : sorted') ks
 
     visitDep (v, s) dep
       | dep `Set.member` v = (v, s)
@@ -478,7 +657,9 @@ executeGraph cache runner graph = do
             erFailed = failed
           }
     go results hits executed failed (key : rest) = do
-      let action = agActions graph Map.! key
+      action <- case Map.lookup key (agActions graph) of
+        Nothing -> error $ "DICE.executeGraph: action key not found in graph: " <> T.unpack (actionKeyText key)
+        Just a -> pure a
 
       -- Check cache
       cached <- checkCache cache key
@@ -543,60 +724,28 @@ executeGraphWithJobs mJobs cache runner graph = do
   let allKeys = topoSort graph
       total = length allKeys
 
-  progressVar <- newMVar 0
+  progressVar <- newMVar (0 :: Int)
 
-  asyncMap <- foldM (\acc key -> do
-      let action = agActions graph Map.! key
-          deps = aInputKeys action
-          depAsyncs = map (acc Map.! ) deps
-      
-      a <- async $ do
-          depResults <- mapM wait depAsyncs
-          if not (and depResults)
-            then pure False
-            else do
-                let runWithLimit io = case semMaybe of
-                      Nothing -> io
-                      Just sem -> bracket_ (waitQSem sem) (signalQSem sem) io
-                
-                n <- modifyMVar progressVar $ \p -> pure (p + 1, p + 1)
-                let progress = "[" <> T.pack (show n) <> "/" <> T.pack (show total) <> "] "
-                
-                cached <- checkCache cache key
-                cacheValid <- case cached of
-                  Just result -> do
-                    let outputs = map T.unpack (arOutputs result)
-                    allExist <- and <$> mapM doesFileExist outputs
-                    pure $ if allExist then Just result else Nothing
-                  Nothing -> pure Nothing
-                  
-                case cacheValid of
-                  Just result -> do
-                    TIO.putStrLn $ progress <> "✓ " <> aName action <> " (cached)"
-                    modifyMVar_ resultsVar $ pure . Map.insert key result
-                    modifyMVar_ hitsVar $ pure . (+ 1)
-                    pure True
-                  Nothing -> do
-                    TIO.putStrLn $ progress <> "→ " <> aName action
-                    result <- runWithLimit $ runner action
-                    if arExitCode result == 0
-                      then do
-                        storeCache cache key result
-                        let memInfo = if arPeakMemoryKB result > 0 then " [" <> formatMemory (arPeakMemoryKB result) <> "]" else ""
-                        TIO.putStrLn $ progress <> "✓ " <> aName action <> memInfo
-                        modifyMVar_ resultsVar $ pure . Map.insert key result
-                        modifyMVar_ executedVar $ pure . (+ 1)
-                        pure True
-                      else do
-                        let errMsg = "exit " <> T.pack (show (arExitCode result)) <> ": " <> T.take 200 (arStderr result)
-                        TIO.putStrLn $ progress <> "✗ " <> aName action <> " - " <> errMsg
-                        modifyMVar_ failedVar $ pure . ((key, errMsg) :)
-                        pure False
-      pure (Map.insert key a acc)
-    ) Map.empty allKeys
-    
+  asyncMap <-
+    foldM
+      ( \acc key -> do
+          let action = lookupAction "DICE.executeGraphWithJobs" graph key
+              deps = aInputKeys action
+              depAsyncs = map (lookupAsync "DICE.executeGraphWithJobs" (aName action) acc) deps
+
+          a <- async $ do
+            depResults <- mapM wait depAsyncs
+            if not (and depResults)
+              then pure False
+              else runActionWithPrint semMaybe progressVar total cache runner resultsVar hitsVar executedVar failedVar key action
+
+          pure (Map.insert key a acc)
+      )
+      Map.empty
+      allKeys
+
   mapM_ wait (Map.elems asyncMap)
-  
+
   results <- readMVar resultsVar
   hits <- readMVar hitsVar
   executed <- readMVar executedVar
@@ -643,65 +792,28 @@ executeGraphWithProgress mJobs callback cache runner graph = do
       total = length allKeys
 
   progressVar <- newMVar 0
-  doneVar <- newMVar 0 
+  doneVar <- newMVar 0
 
-  asyncMap <- foldM (\acc key -> do
-      let action = agActions graph Map.! key
-          deps = aInputKeys action
-          depAsyncs = map (acc Map.! ) deps
-      
-      a <- async $ do
-          depResults <- mapM wait depAsyncs
-          if not (and depResults)
-            then pure False
-            else do
-                let runWithLimit io = case semMaybe of
-                      Nothing -> io
-                      Just sem -> bracket_ (waitQSem sem) (signalQSem sem) io
-                
-                n <- modifyMVar progressVar $ \p -> pure (p + 1, p + 1)
-                
-                callback $ ProgressCacheCheck (aName action)
-                cached <- checkCache cache key
-                cacheValid <- case cached of
-                  Just result -> do
-                    let outputs = map T.unpack (arOutputs result)
-                    allExist <- and <$> mapM doesFileExist outputs
-                    pure $ if allExist then Just result else Nothing
-                  Nothing -> pure Nothing
-                  
-                case cacheValid of
-                  Just result -> do
-                    callback $ ProgressCacheHit (aName action)
-                    done <- modifyMVar doneVar $ \d -> pure (d + 1, d + 1)
-                    callback $ ProgressCached (aName action) done total
-                    modifyMVar_ resultsVar $ pure . Map.insert key result
-                    modifyMVar_ hitsVar $ pure . (+ 1)
-                    pure True
-                  Nothing -> do
-                    callback $ ProgressCacheMiss (aName action)
-                    callback $ ProgressStarting (aName action) n total
-                    
-                    result <- runWithLimit $ runner action
-                    if arExitCode result == 0
-                      then do
-                        callback $ ProgressCacheStore (aName action)
-                        storeCache cache key result
-                        done <- modifyMVar doneVar $ \d -> pure (d + 1, d + 1)
-                        callback $ ProgressCompleted (aName action) done total (arPeakMemoryKB result)
-                        modifyMVar_ resultsVar $ pure . Map.insert key result
-                        modifyMVar_ executedVar $ pure . (+ 1)
-                        pure True
-                      else do
-                        let errMsg = "exit " <> T.pack (show (arExitCode result)) <> ": " <> T.take 200 (arStderr result)
-                        callback $ ProgressFailed (aName action) n total errMsg
-                        modifyMVar_ failedVar $ pure . ((key, errMsg) :)
-                        pure False
-      pure (Map.insert key a acc)
-    ) Map.empty allKeys
-    
+  asyncMap <-
+    foldM
+      ( \acc key -> do
+          let action = lookupAction "DICE.executeGraphWithProgress" graph key
+              deps = aInputKeys action
+              depAsyncs = map (lookupAsync "DICE.executeGraphWithProgress" (aName action) acc) deps
+
+          a <- async $ do
+            depResults <- mapM wait depAsyncs
+            if not (and depResults)
+              then pure False
+              else runActionWithCallback semMaybe progressVar doneVar total callback cache runner resultsVar hitsVar executedVar failedVar key action
+
+          pure (Map.insert key a acc)
+      )
+      Map.empty
+      allKeys
+
   mapM_ wait (Map.elems asyncMap)
-  
+
   results <- readMVar resultsVar
   hits <- readMVar hitsVar
   executed <- readMVar executedVar
@@ -714,6 +826,7 @@ executeGraphWithProgress mJobs callback cache runner graph = do
         erExecuted = executed,
         erFailed = failed
       }
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- Cache (persistent, file-based)
 -- ════════════════════════════════════════════════════════════════════════════

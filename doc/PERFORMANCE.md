@@ -5,13 +5,15 @@ This document describes the performance characteristics of sensenet's DICE
 
 ## Executive Summary
 
+*Last updated: 2026-02-26*
+
 | Operation | Throughput | Latency |
 |-----------|------------|---------|
-| ActionKey computation | **509K keys/sec** | 1.96 µs |
-| Canonical form | 2.2M/sec | 0.46 µs |
-| Graph construction | 235K inserts/sec | 4.25 µs |
-| Topological sort (independent) | 1.6M nodes/sec | 0.62 µs |
-| End-to-end (100K actions) | — | 435 ms |
+| ActionKey computation | **486K keys/sec** | 2.06 µs |
+| Canonical form | 2.1M/sec | 0.48 µs |
+| Graph construction | 236K inserts/sec | 4.23 µs |
+| Topological sort (independent) | 1.6M nodes/sec | 0.64 µs |
+| End-to-end (100K actions) | — | 438 ms |
 
 ## Hash Algorithm Selection
 
@@ -69,17 +71,17 @@ Text.intercalate → Text → encodeUtf8 → SHA256 → hex
 
 ```
 Actions:     100,000
-Total time:  0.196 sec
-Per action:  1.96 µs
-Throughput:  509,036 keys/sec
+Total time:  0.206 sec
+Per action:  2.06 µs
+Throughput:  485,808 keys/sec
 ```
 
 ### Canonical Form Construction
 
 ```
 Actions:     100,000
-Total time:  0.046 sec
-Per action:  0.46 µs
+Total time:  0.048 sec
+Per action:  0.48 µs
 Avg size:    140 bytes
 Total data:  14.06 MB
 ```
@@ -89,25 +91,25 @@ Total data:  14.06 MB
 ```
 Actions:     100,000
 Graph size:  100,000 nodes
-Total time:  0.425 sec
-Per insert:  4.25 µs
-Throughput:  235,402 inserts/sec
+Total time:  0.423 sec
+Per insert:  4.23 µs
+Throughput:  236,181 inserts/sec
 ```
 
 ### Topological Sort
 
 ```
 Nodes:       100,000
-Linear chain (worst): 0.480 sec
-Independent (best):   0.062 sec
+Linear chain (worst): 0.468 sec
+Independent (best):   0.064 sec
 ```
 
 ### End-to-End
 
 ```
 Actions:     100,000
-Total time:  0.435 sec
-Per action:  4.35 µs
+Total time:  0.438 sec
+Per action:  4.38 µs
 ```
 
 ## Comparative Benchmarks (vs Buck2)
@@ -138,12 +140,12 @@ normalization-bound workloads:
 
 | Workload | Upstream | DhallFast | Speedup |
 |----------|----------|-----------|---------|
-| Simple arithmetic | 0.21 µs | 0.02 µs | **10x** |
-| Natural/fold 1000 | 31.6 µs | 12.8 µs | **2.5x** |
-| 200 nested lets | 9.2 µs | 2.4 µs | **3.9x** |
-| Natural/fold 10000 | 307 µs | 118 µs | **2.6x** |
-| Record 100 fields | 1.35 µs | 0.28 µs | **4.8x** |
-| List/fold 100 | 6.4 µs | 3.4 µs | **1.9x** |
+| Simple arithmetic | 0.21 µs | 0.02 µs | **10.5x** |
+| Natural/fold 1000 | 33.6 µs | 12.4 µs | **2.7x** |
+| 200 nested lets | 9.86 µs | 2.29 µs | **4.3x** |
+| Natural/fold 10000 | 314 µs | 128 µs | **2.5x** |
+| Record 100 fields | 1.87 µs | 0.27 µs | **6.9x** |
+| List/fold 100 | 7.07 µs | 3.57 µs | **2.0x** |
 
 **Key optimizations:**
 

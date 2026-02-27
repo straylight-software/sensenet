@@ -15,6 +15,7 @@
 -- - Bootstrap tests (self-build, reproducibility, corruption recovery)
 -- - Filesystem tests (TOCTOU, symlinks, permissions, race conditions)
 -- - Dhall torture tests (malicious inputs, resource exhaustion, injection)
+-- - Nightmare tests (TUI torture, race conditions, state machine violations)
 module Main (main) where
 
 import Test.SenseNet.Adversarial qualified as Adversarial
@@ -26,6 +27,7 @@ import Test.SenseNet.DhallNixIntegration qualified as DhallNix
 import Test.SenseNet.DhallTorture qualified as DhallTorture
 import Test.SenseNet.Filesystem qualified as Filesystem
 import Test.SenseNet.Integration qualified as Integration
+import Test.SenseNet.Nightmare qualified as Nightmare
 import Test.SenseNet.Psychotic qualified as Psychotic
 import Test.SenseNet.Savage qualified as Savage
 import Test.SenseNet.Security qualified as Security
@@ -54,5 +56,7 @@ tests =
       -- Psychotic tests
       testGroup "PSYCHOTIC" [Psychotic.tests],
       -- Savage tests
-      testGroup "SAVAGE" [Savage.tests]
+      testGroup "SAVAGE" [Savage.tests],
+      -- Nightmare tests (TUI torture)
+      testGroup "NIGHTMARE" [Nightmare.tests]
     ]

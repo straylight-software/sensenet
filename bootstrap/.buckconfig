@@ -1,0 +1,18 @@
+[cells]
+root = .
+prelude = prelude
+toolchains = toolchains
+
+[cell_aliases]
+buck = prelude
+config = prelude
+
+[external_cells]
+prelude = bundled
+
+[parser]
+target_platform_detector_spec = target:root//platforms:default
+
+[buck2]
+materializations = deferred
+digest_algorithms = SHA256

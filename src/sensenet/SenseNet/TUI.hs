@@ -36,9 +36,12 @@ import Control.Concurrent.Async (async, waitCatch)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, tryTakeMVar)
 import Control.Exception (SomeException, bracket, try)
 import Control.Monad (void)
+import Data.Foldable (toList)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Sequence (Seq, (|>))
+import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -103,8 +106,8 @@ data DashboardState = DashboardState
     dsTargets :: Map Text Target,
     -- | Current phase
     dsPhase :: Phase,
-    -- | Log history (newest last)
-    dsLogs :: [LogLine],
+    -- | Log history (newest last), uses Seq for O(1) append
+    dsLogs :: Seq LogLine,
     -- | When build started
     dsStartTime :: Maybe UTCTime,
     -- | Total actions (from graph)
@@ -124,7 +127,7 @@ initDashboardState =
   DashboardState
     { dsTargets = Map.empty,
       dsPhase = PhaseDiscovery,
-      dsLogs = [],
+      dsLogs = Seq.empty,
       dsStartTime = Nothing,
       dsTotal = 0,
       dsCompleted = 0,
@@ -229,7 +232,7 @@ handleProgressEvent now event state = case event of
     let target = Target name TCached
      in addLog razorMuted ("○ " <> name <> " (cached)") $
           state
-            { dsPhase = PhaseBuilding,  -- Switch to building phase on first execution event
+            { dsPhase = PhaseBuilding, -- Switch to building phase on first execution event
               dsTotal = max total (dsTotal state),
               dsCompleted = dsCompleted state + 1,
               dsCached = dsCached state + 1,
@@ -269,10 +272,10 @@ handleProgressEvent now event state = case event of
   ProgressPhaseComplete phase duration ->
     addLog razorInfo ("◉ " <> phase <> " (" <> T.pack (show (round (duration * 1000) :: Int)) <> "ms)") state
 
--- | Add a log line to state
+-- | Add a log line to state (O(1) append using Seq)
 addLog :: Style -> Text -> DashboardState -> DashboardState
 addLog style txt state =
-  state {dsLogs = dsLogs state ++ [LogLine txt style]}
+  state {dsLogs = dsLogs state |> LogLine txt style}
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- TUI Build Entry Point
@@ -291,10 +294,10 @@ buildWithTUI _target buildAction =
     -- Initialize state with start time set immediately
     now <- getCurrentTime
     stateRef <- newIORef initDashboardState {dsStartTime = Just now}
-    
+
     -- Mutable dimensions ref for resize handling
     dimsRef <- newIORef =<< getTerminalSize
-    
+
     -- Signal to stop the render loop
     stopSignal <- newEmptyMVar :: IO (MVar ())
 
@@ -303,33 +306,36 @@ buildWithTUI _target buildAction =
     renderThread <- async $ renderLoopWithStop console dimsRef stateRef stopSignal
 
     -- Run the build with proper exception handling
-    result <- bracket
-      (pure ()) -- acquire: nothing needed
-      (\_ -> do -- release: always stop render thread and cleanup
-        -- Signal render loop to stop
-        putMVar stopSignal ()
-        -- Wait for render thread to finish (with timeout via cancel as backup)
-        void $ waitCatch renderThread
-      )
-      (\_ -> do -- use: run the actual build
-        -- Create progress callback that updates state
-        let callback = dashboardCallback stateRef
+    result <-
+      bracket
+        (pure ()) -- acquire: nothing needed
+        ( \_ -> do
+            -- release: always stop render thread and cleanup
+            -- Signal render loop to stop
+            putMVar stopSignal ()
+            -- Wait for render thread to finish (with timeout via cancel as backup)
+            void $ waitCatch renderThread
+        )
+        ( \_ -> do
+            -- use: run the actual build
+            -- Create progress callback that updates state
+            let callback = dashboardCallback stateRef
 
-        -- Run the build, catching any exceptions
-        buildResult <- try $ buildAction callback
-        
-        case buildResult of
-          Left (e :: SomeException) -> do
-            -- Mark as failed on exception
-            atomicModifyIORef' stateRef $ \s -> 
-              (s {dsPhase = PhaseComplete, dsFailed = dsFailed s + 1}, ())
-            -- Re-throw after cleanup in bracket
-            pure $ Left $ error $ "Build exception: " ++ show e
-          Right r -> do
-            -- Mark complete
-            atomicModifyIORef' stateRef $ \s -> (s {dsPhase = PhaseComplete}, ())
-            pure r
-      )
+            -- Run the build, catching any exceptions
+            buildResult <- try $ buildAction callback
+
+            case buildResult of
+              Left (e :: SomeException) -> do
+                -- Mark as failed on exception
+                atomicModifyIORef' stateRef $ \s ->
+                  (s {dsPhase = PhaseComplete, dsFailed = dsFailed s + 1}, ())
+                -- Re-throw after cleanup in bracket
+                pure $ Left $ error $ "Build exception: " ++ show e
+              Right r -> do
+                -- Mark complete
+                atomicModifyIORef' stateRef $ \s -> (s {dsPhase = PhaseComplete}, ())
+                pure r
+        )
 
     -- Final render after build completes
     endTime <- getCurrentTime
@@ -393,12 +399,12 @@ renderLoopWithStop console dimsRef stateRef stopSignal = go
           -- Update dimensions in case terminal was resized
           newDims <- getTerminalSize
           writeIORef dimsRef newDims
-          
+
           -- Render current state
           now <- getCurrentTime
           state <- readIORef stateRef
           render console (dashboardWidget newDims now state)
-          
+
           -- Sleep then continue
           threadDelay 25000 -- ~40fps
           go
@@ -436,11 +442,12 @@ preambleWidget dims state =
       footerWidget
     ]
 
-logStreamWidget :: Dimensions -> [LogLine] -> Widget
+logStreamWidget :: Dimensions -> Seq LogLine -> Widget
 logStreamWidget dims logs =
   let visibleCount = max 12 (height dims - 10)
+      logsList = toList logs
       -- Take most recent logs and display oldest-first (natural reading order)
-      visible = take visibleCount (reverse logs) -- newest first
+      visible = take visibleCount (reverse logsList) -- newest first
       orderedForDisplay = reverse visible -- oldest first for display
       totalVisible = length orderedForDisplay
       -- Apply fade effect: oldest lines (at top) are dimmer
@@ -453,9 +460,9 @@ logStreamWidget dims logs =
          in textStyled opacity txt
    in vbox (zipWith renderLine [0 ..] orderedForDisplay)
 
-preambleStatusWidget :: Phase -> [LogLine] -> Widget
+preambleStatusWidget :: Phase -> Seq LogLine -> Widget
 preambleStatusWidget phase logs =
-  let countLogs pat = length . filter (T.isInfixOf pat . logText)
+  let countLogs pat = length . filter (T.isInfixOf pat . logText) . toList
       hits = countLogs "hit" logs
       misses = countLogs "miss" logs
       statusText = case phase of
@@ -555,7 +562,7 @@ targetRowWidget now (tid, Target _ status) =
         [Exact 2, Exact 50, Fill 1, Exact 7]
         [ textStyled glyphStyle (glyph <> " "),
           textStyled nameStyle paddedName,
-          fill razorDim ' ',  -- Use space instead of ─ to avoid visual noise
+          fill razorDim ' ', -- Use space instead of ─ to avoid visual noise
           textStyled razorMuted (" " <> padTextLeft 6 timeStr)
         ]
 

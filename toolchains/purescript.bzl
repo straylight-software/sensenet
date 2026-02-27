@@ -179,7 +179,8 @@ def _purescript_app_impl(ctx: AnalysisContext) -> list[Provider]:
     
     # Bundle for browser using spago bundle
     # spago 1.x outputs index.js by default
-    script_parts.append(cmd_args(spago, " bundle", delimiter = ""))
+    # --bundle-type app ensures main() is called, --module specifies entrypoint
+    script_parts.append(cmd_args(spago, " bundle --bundle-type app --module ", ctx.attrs.main, delimiter = ""))
     
     script_parts.append("cd -")
     

@@ -53,12 +53,12 @@ module SenseNet.Build
   )
 where
 
-import Control.Exception (evaluate)
 import Control.Monad (forM)
 import Data.List (intercalate, isSuffixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (mapMaybe)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock (getCurrentTime)
@@ -130,10 +130,10 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, getModificatio
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
-import System.IO (hGetContents)
+import System.IO ()
 import System.IO.Error (tryIOError)
 import System.Posix.Files (fileSize, getFileStatus)
-import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, readCreateProcessWithExitCode, readProcessWithExitCode, waitForProcess)
+import System.Process (CreateProcess (..), StdStream (..), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Helpers
@@ -298,12 +298,12 @@ buildWithProgress mJobs callback tc projectRoot pkg targetName
       let outDir = projectRoot </> "sensenet-out" </> pkg.path
           target = "//" <> T.pack pkg.path <> ":" <> targetName
       createDirectoryIfMissing True outDir
-      
+
       -- Emit graph building start event
       callback $ ProgressBuildingGraph target
-      
+
       graphResult <- buildActionGraph tc projectRoot pkg outDir rootRule
-      
+
       -- Emit events for each action in the graph
       case graphResult of
         Left err -> pure $ Left err
@@ -350,7 +350,7 @@ buildAllTargetsWithProgress mJobs callback tc projectRoot pkg = do
 
   -- Emit graph building start event
   callback $ ProgressBuildingGraph target
-  
+
   graphResult <- buildAllActionGraph tc projectRoot pkg outDir
   case graphResult of
     Left err -> pure $ Left err
@@ -359,7 +359,7 @@ buildAllTargetsWithProgress mJobs callback tc projectRoot pkg = do
       mapM_ (\a -> callback $ ProgressGraphAction (aName a)) (Map.elems (agActions graph))
       -- Emit graph built event
       callback $ ProgressGraphBuilt (Map.size (agActions graph))
-      
+
       cache <- newCache
       execResult <- executeGraphWithProgress mJobs callback cache runAction graph
       case erFailed execResult of
@@ -377,7 +377,7 @@ buildAllPackagesWithProgress ::
 buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs = do
   -- Emit graph building start event for all packages
   callback $ ProgressBuildingGraph "//..."
-  
+
   -- Build unresolved actions for all packages
   actionResults <- forM pkgs $ \pkg -> do
     let outDir = projectRoot </> "sensenet-out" </> pkg.path
@@ -1974,18 +1974,29 @@ packageDeps pkg =
 -- Packages with no deps come first, packages depending on others come later
 -- Returns packages in build order (dependencies before dependents)
 sortPackagesByDeps :: [Package] -> [Package]
-sortPackagesByDeps pkgs = reverse $ go [] pkgSet pkgs
+sortPackagesByDeps pkgs = reverse $ fst $ go [] Set.empty pkgs
   where
-    pkgSet = map (T.pack . (.path)) pkgs
+    pkgSet = Set.fromList $ map (T.pack . (.path)) pkgs
     pkgMap = Map.fromList [(T.pack p.path, p) | p <- pkgs]
 
-    go sorted _ [] = sorted
-    go sorted remaining (p : rest)
-      | T.pack p.path `elem` map (T.pack . (.path)) sorted = go sorted remaining rest
+    -- Returns (sorted packages, visited set) - both accumulate through recursion
+    go :: [Package] -> Set.Set Text -> [Package] -> ([Package], Set.Set Text)
+    go sorted visited [] = (sorted, visited)
+    go sorted visited (p : rest)
+      | pPath `Set.member` visited = go sorted visited rest
       | otherwise =
           -- Get deps that are in our package set
-          let deps = filter (`elem` remaining) (packageDeps p)
+          let deps = filter (`Set.member` pkgSet) (packageDeps p)
               -- Recursively sort deps first
               depPkgs = [pkgMap Map.! d | d <- deps, Map.member d pkgMap]
-              sorted' = foldl (\s dp -> if T.pack dp.path `elem` map (T.pack . (.path)) s then s else go s remaining [dp]) sorted depPkgs
-           in go (p : sorted') remaining rest
+              (sorted', visited') = foldl' processDepPkg (sorted, visited) depPkgs
+           in go (p : sorted') (Set.insert pPath visited') rest
+      where
+        pPath = T.pack p.path
+
+    processDepPkg :: ([Package], Set.Set Text) -> Package -> ([Package], Set.Set Text)
+    processDepPkg (!s, !v) dp
+      | dpPath `Set.member` v = (s, v)
+      | otherwise = let (s', v') = go s v [dp] in (s', Set.insert dpPath v')
+      where
+        dpPath = T.pack dp.path

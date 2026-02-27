@@ -86,11 +86,7 @@
         default = import ./nix/modules/flake/default.nix { inherit inputs; };
         formatter = import ./nix/modules/flake/formatter.nix { inherit inputs; };
         lint = ./nix/modules/flake/lint.nix;
-        # Primary: sensenet
         sensenet = import ./nix/modules/flake/sensenet/default.nix { inherit inputs; };
-        # Backward compat: buck2 (deprecated, use sensenet)
-        buck2 = import ./nix/modules/flake/sensenet/default.nix { inherit inputs; };
-        buck2-old = ./nix/modules/flake/buck2.nix;
         build = ./nix/modules/flake/build/flake-module.nix;
         devshell = import ./nix/modules/flake/devshell.nix { inherit inputs; };
         nativelink = ./nix/modules/flake/nativelink/flake-module.nix;
@@ -99,9 +95,7 @@
 
       # Export lib for downstream use
       flake.lib = import ./nix/lib { inherit (inputs.nixpkgs) lib; } // {
-        sensenet = import ./nix/lib/buck2.nix { inherit inputs; };
-        # Backward compat
-        buck2 = import ./nix/lib/buck2.nix { inherit inputs; };
+        sensenet = import ./nix/lib/sensenet.nix { inherit inputs; };
       };
 
       # Lint configs exported by lint.nix module
@@ -121,8 +115,8 @@
           # GHC 9.12 with haskell overlay applied (via std.nix)
           inherit (pkgs.haskell.packages) ghc912;
 
-          # Minimal deps required by sensenet.cabal
-          sensenetDeps = {
+          # Core deps required by sensenet.cabal (without remote execution)
+          sensenetCoreDeps = {
             inherit (pkgs) lib installShellFiles;
             inherit (ghc912)
               mkDerivation
@@ -156,16 +150,28 @@
               ;
           };
 
+          # Full deps including NativeLink remote execution
+          sensenetFullDeps = sensenetCoreDeps // {
+            inherit (ghc912)
+              conduit
+              grapesy
+              grpc-spec
+              network
+              proto-lens
+              proto-lens-runtime
+              ;
+          };
+
           # Stage 1: Bootstrap - minimal deps, fast build (no shell completions)
           sensenet-bootstrap = pkgs.callPackage ./nix/packages/sensenet-bootstrap.nix (
-            builtins.removeAttrs sensenetDeps [ "installShellFiles" ]
+            builtins.removeAttrs sensenetCoreDeps [ "installShellFiles" ]
           );
 
           # Stage 2: Local - same as bootstrap (no remote execution deps)
-          sensenet-local = pkgs.callPackage ./nix/packages/sensenet-local.nix sensenetDeps;
+          sensenet-local = pkgs.callPackage ./nix/packages/sensenet-local.nix sensenetCoreDeps;
 
-          # Stage 3: Full - all features (currently same as local)
-          sensenet = pkgs.callPackage ./nix/packages/sensenet.nix sensenetDeps;
+          # Stage 3: Full - all features including remote execution
+          sensenet = pkgs.callPackage ./nix/packages/sensenet.nix sensenetFullDeps;
         in
         {
           packages.sense-lint = pkgs.callPackage ./nix/packages/sense-lint.nix { };
@@ -273,18 +279,33 @@
                 ghcpackages = ghc912;
                 packages = hp: [
                   hp.aeson
+                  hp.ansi-terminal
+                  hp.async
                   hp.bytestring
+                  hp.colour
                   hp.containers
+                  hp.crypton
+                  hp.deepseq
                   hp.dhall
                   hp.directory
+                  hp.either
                   hp.filepath
+                  hp.hashable
+                  hp.hostname
+                  hp.hyperconsole
+                  hp.katip
+                  hp.memory
+                  hp.microlens
+                  hp.mtl
                   hp.process
                   hp.shelly
                   hp.temporary
                   hp.text
+                  hp.text-short
+                  hp.time
                   hp.unix
-                  hp.crypton
-                  hp.memory
+                  hp.unordered-containers
+                  hp.vector
                   hp.hasktorch
                 ];
               };
