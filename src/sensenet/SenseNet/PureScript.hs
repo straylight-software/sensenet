@@ -372,11 +372,5 @@ runCurl url destFile = do
 -- | Run a process and wait for it to complete
 runProcess :: String -> [String] -> IO ExitCode
 runProcess cmd args = do
-    let cp =
-            (proc cmd args)
-                { std_out = CreatePipe
-                , std_err = CreatePipe
-                , std_in = NoStream
-                }
-    (_, _, _, ph) <- createProcess cp
-    waitForProcess ph
+    (ec, _, _) <- readProcessWithExitCode cmd args ""
+    pure ec

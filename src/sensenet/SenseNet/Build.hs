@@ -34,6 +34,10 @@ module SenseNet.Build
     ProgressCallback,
     ProgressEvent (..),
 
+    -- * Build Configuration
+    BuildConfig (..),
+    defaultBuildConfig,
+
     -- * Package-level dependencies
     packageDeps,
     sortPackagesByDeps,
@@ -45,6 +49,7 @@ module SenseNet.Build
 
     -- * Low-level
     runCommand,
+    runAction,
   )
 where
 
@@ -97,6 +102,8 @@ import SenseNet.IR
     NvBinary (..),
     Package (..),
     PureScriptApp (..),
+    PureScriptBinary (..),
+    PureScriptWebApp (..),
     Rule (..),
     RustBinary (..),
     RustEdition (..),
@@ -126,7 +133,7 @@ import System.FilePath (takeDirectory, (</>))
 import System.IO (hGetContents)
 import System.IO.Error (tryIOError)
 import System.Posix.Files (fileSize, getFileStatus)
-import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, readProcessWithExitCode, waitForProcess)
+import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, readCreateProcessWithExitCode, readProcessWithExitCode, waitForProcess)
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Helpers
@@ -155,6 +162,20 @@ data BuildError
   | SourceNotFound FilePath
   | PackageError Text -- PureScript package fetch/resolve errors
   deriving stock (Show, Eq)
+
+-- | Build configuration
+--
+-- Controls execution behavior:
+--   - bcUseRemote: If True and -fremote is enabled, eligible actions run remotely
+data BuildConfig = BuildConfig
+  { -- | Enable remote execution for eligible actions
+    bcUseRemote :: !Bool
+  }
+  deriving stock (Show, Eq)
+
+-- | Default build config (local execution only)
+defaultBuildConfig :: BuildConfig
+defaultBuildConfig = BuildConfig {bcUseRemote = False}
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Logging
@@ -275,9 +296,24 @@ buildWithProgress mJobs callback tc projectRoot pkg targetName
   | Nothing <- findRule targetName pkg.rules = pure $ Left $ TargetNotFound targetName
   | Just rootRule <- findRule targetName pkg.rules = do
       let outDir = projectRoot </> "sensenet-out" </> pkg.path
+          target = "//" <> T.pack pkg.path <> ":" <> targetName
       createDirectoryIfMissing True outDir
+      
+      -- Emit graph building start event
+      callback $ ProgressBuildingGraph target
+      
       graphResult <- buildActionGraph tc projectRoot pkg outDir rootRule
-      either (pure . Left) (executeAndExtract mJobs callback) graphResult
+      
+      -- Emit events for each action in the graph
+      case graphResult of
+        Left err -> pure $ Left err
+        Right graph -> do
+          -- Emit ProgressGraphAction for each action in the graph
+          mapM_ (\a -> callback $ ProgressGraphAction (aName a)) (Map.elems (agActions graph))
+          -- Emit graph built event
+          callback $ ProgressGraphBuilt (Map.size (agActions graph))
+          -- Execute the graph
+          executeAndExtract mJobs callback graph
   where
     executeAndExtract :: Maybe Int -> ProgressCallback -> ActionGraph -> IO (Either BuildError BuildResult)
     executeAndExtract jobs cb graph = do
@@ -309,12 +345,21 @@ buildAllTargetsWithProgress ::
   IO (Either BuildError Int)
 buildAllTargetsWithProgress mJobs callback tc projectRoot pkg = do
   let outDir = projectRoot </> "sensenet-out" </> pkg.path
+      target = "//" <> T.pack pkg.path <> ":all"
   createDirectoryIfMissing True outDir
 
+  -- Emit graph building start event
+  callback $ ProgressBuildingGraph target
+  
   graphResult <- buildAllActionGraph tc projectRoot pkg outDir
   case graphResult of
     Left err -> pure $ Left err
     Right graph -> do
+      -- Emit ProgressGraphAction for each action
+      mapM_ (\a -> callback $ ProgressGraphAction (aName a)) (Map.elems (agActions graph))
+      -- Emit graph built event
+      callback $ ProgressGraphBuilt (Map.size (agActions graph))
+      
       cache <- newCache
       execResult <- executeGraphWithProgress mJobs callback cache runAction graph
       case erFailed execResult of
@@ -330,6 +375,9 @@ buildAllPackagesWithProgress ::
   [Package] ->
   IO (Either BuildError Int)
 buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs = do
+  -- Emit graph building start event for all packages
+  callback $ ProgressBuildingGraph "//..."
+  
   -- Build unresolved actions for all packages
   actionResults <- forM pkgs $ \pkg -> do
     let outDir = projectRoot </> "sensenet-out" </> pkg.path
@@ -345,6 +393,11 @@ buildAllPackagesWithProgress mJobs callback tc projectRoot pkgs = do
           graph = foldl (\g a -> addAction a g) emptyGraph resolvedActions
           rootKeys = [actionKey a | a <- resolvedActions]
           unifiedGraph = graph {agRoots = rootKeys}
+
+      -- Emit ProgressGraphAction for each action
+      mapM_ (\a -> callback $ ProgressGraphAction (aName a)) resolvedActions
+      -- Emit graph built event
+      callback $ ProgressGraphBuilt (length resolvedActions)
 
       cache <- newCache
       execResult <- executeGraphWithProgress mJobs callback cache runAction unifiedGraph
@@ -751,6 +804,8 @@ ruleToAction tc projectRoot pkgPath outDir = \case
   RNixCxxBinary bin -> nixCxxBinaryAction tc projectRoot pkgPath outDir bin
   RNvBinary bin -> nvBinaryAction tc projectRoot pkgPath outDir bin
   RPureScriptApp app -> pureScriptAppAction tc projectRoot pkgPath outDir app
+  RPureScriptBinary bin -> pureScriptBinaryAction tc projectRoot pkgPath outDir bin
+  RPureScriptWebApp app -> pureScriptWebAppAction tc projectRoot pkgPath outDir app
   RGenrule gen -> genruleAction projectRoot pkgPath outDir gen
   RCratesIo crate -> cratesIoAction tc projectRoot pkgPath outDir crate
   _ -> pure $ Left $ CommandFailed "unsupported" 1 "Rule type not yet implemented"
@@ -1502,6 +1557,152 @@ pureScriptAppAction tc projectRoot pkgPath outDir app = do
             ++ maybe "" (\c -> " && cp " <> T.unpack c <> " " <> appDir </> T.unpack c) app.styleCss
         cmd = ["sh", "-c", shellCmd]
 
+-- | Build a PureScript Node.js binary using spago
+-- Uses the project's spago.yaml for dependency management
+pureScriptBinaryAction :: Toolchains -> FilePath -> FilePath -> FilePath -> PureScriptBinary -> IO (Either BuildError Action)
+pureScriptBinaryAction tc projectRoot pkgPath outDir bin = do
+  let srcDir = projectRoot </> pkgPath
+      binName = T.unpack bin.name
+      bundleJs = outDir </> binName <> ".js"
+      wrapper = outDir </> binName
+      mainModule = T.unpack bin.main
+      spagoYaml = srcDir </> T.unpack bin.spagoYaml
+      TC.PureScript {spago = mSpago, node = mNode, purs = mPurs, esbuild = mEsbuild} = tc.purescript
+
+  case mSpago of
+    TC.Tool "" -> pure $ Left $ PackageError "spago not configured in toolchain"
+    TC.Tool spagoPath -> do
+      let nodePath = case mNode of
+            TC.Tool "" -> "node"
+            TC.Tool n -> T.unpack n
+          pursDir = case mPurs of
+            TC.Tool "" -> ""
+            TC.Tool p -> takeDirectory (T.unpack p)
+          esbuildDir = case mEsbuild of
+            TC.Tool "" -> ""
+            TC.Tool e -> takeDirectory (T.unpack e)
+          -- Add purs and esbuild to PATH so spago can find them
+          pathSetup = "export PATH=\"" <> pursDir <> ":" <> esbuildDir <> ":$PATH\""
+          -- spago bundle builds and bundles in one step
+          wrapperScript =
+            unlines
+              [ "#!/usr/bin/env bash",
+                "exec " <> nodePath <> " \"$(dirname \"$0\")/" <> binName <> ".js\" \"$@\""
+              ]
+          shellCmd =
+            unwords
+              [ pathSetup,
+                "&&",
+                "cd",
+                srcDir,
+                "&&",
+                T.unpack spagoPath,
+                "build",
+                "&&",
+                T.unpack spagoPath,
+                "bundle",
+                "--module",
+                mainModule,
+                "--platform",
+                "node",
+                "--outfile",
+                bundleJs,
+                "&&",
+                "mkdir -p",
+                outDir,
+                "&&",
+                "printf '%s'",
+                "'" <> wrapperScript <> "'",
+                ">",
+                wrapper,
+                "&&",
+                "chmod +x",
+                wrapper
+              ]
+          cmd = ["sh", "-c", shellCmd]
+
+      inputHashes <- hashSourceFiles [spagoYaml]
+      pure $ case inputHashes of
+        Left err -> Left err
+        Right hashes ->
+          Right
+            Action
+              { aName = "//" <> T.pack pkgPath <> ":" <> bin.name,
+                aCommand = map T.pack cmd,
+                aInputs = hashes,
+                aInputKeys = [],
+                aOutputs = [T.pack wrapper, T.pack bundleJs],
+                aEnv = Map.empty,
+                aCoeffects = [Filesystem (T.pack srcDir)]
+              }
+
+-- | Build a PureScript web application using spago (browser platform)
+-- Like pureScriptBinaryAction but bundles for browser and copies static assets
+pureScriptWebAppAction :: Toolchains -> FilePath -> FilePath -> FilePath -> PureScriptWebApp -> IO (Either BuildError Action)
+pureScriptWebAppAction tc projectRoot pkgPath outDir app = do
+  let srcDir = projectRoot </> pkgPath
+      appName = T.unpack app.name
+      appDir = outDir </> appName
+      bundleJs = appDir </> "app.js"
+      mainModule = T.unpack app.main
+      spagoYaml = srcDir </> T.unpack app.spagoYaml
+      TC.PureScript {spago = mSpago, purs = mPurs, esbuild = mEsbuild} = tc.purescript
+
+  case mSpago of
+    TC.Tool "" -> pure $ Left $ PackageError "spago not configured in toolchain"
+    TC.Tool spagoPath -> do
+      let pursDir = case mPurs of
+            TC.Tool "" -> ""
+            TC.Tool p -> takeDirectory (T.unpack p)
+          esbuildDir = case mEsbuild of
+            TC.Tool "" -> ""
+            TC.Tool e -> takeDirectory (T.unpack e)
+          -- Add purs and esbuild to PATH so spago can find them
+          pathSetup = "export PATH=\"" <> pursDir <> ":" <> esbuildDir <> ":$PATH\""
+          -- Copy static files
+          copyIndex = maybe "" (\h -> " && cp " <> T.unpack h <> " " <> appDir <> "/") app.indexHtml
+          copyStyle = maybe "" (\c -> " && cp " <> T.unpack c <> " " <> appDir <> "/") app.styleCss
+          shellCmd =
+            unwords
+              [ pathSetup,
+                "&&",
+                "cd",
+                srcDir,
+                "&&",
+                T.unpack spagoPath,
+                "build",
+                "&&",
+                T.unpack spagoPath,
+                "bundle",
+                "--module",
+                mainModule,
+                "--platform",
+                "browser",
+                "--outfile",
+                bundleJs,
+                "&&",
+                "mkdir -p",
+                appDir
+              ]
+              <> copyIndex
+              <> copyStyle
+          cmd = ["sh", "-c", shellCmd]
+
+      inputHashes <- hashSourceFiles [spagoYaml]
+      pure $ case inputHashes of
+        Left err -> Left err
+        Right hashes ->
+          Right
+            Action
+              { aName = "//" <> T.pack pkgPath <> ":" <> app.name,
+                aCommand = map T.pack cmd,
+                aInputs = hashes,
+                aInputKeys = [],
+                aOutputs = [T.pack appDir],
+                aEnv = Map.empty,
+                aCoeffects = [Filesystem (T.pack srcDir)]
+              }
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- Rust Crates.io Actions
 -- ════════════════════════════════════════════════════════════════════════════
@@ -1659,14 +1860,7 @@ runAction Action {..} = do
                 std_err = CreatePipe,
                 env = Just fullEnv
               }
-      r <- tryIOError $ do
-        (_, Just hOut, Just hErr, ph) <- createProcess cp
-        stdout <- hGetContents hOut
-        stderr <- hGetContents hErr
-        _ <- evaluate (length stdout)
-        _ <- evaluate (length stderr)
-        exitCode <- waitForProcess ph
-        pure (exitCode, stdout, stderr)
+      r <- tryIOError $ readCreateProcessWithExitCode cp ""
       pure $ either (Left . show) Right r
 
     mkResult :: [Text] -> Time.UTCTime -> Time.UTCTime -> Word64 -> Either String (ExitCode, String, String) -> ActionResult
