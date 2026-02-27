@@ -340,6 +340,10 @@ renderEvring EvringConsole {..} widget = withMVar ecLock $ \_ -> do
   emitLines <- readIORef ecEmitBuffer
   writeIORef ecEmitBuffer Seq.empty
 
+  let oldHeight = V.length (canvasLines oldCanvas)
+  let newHeight = V.length (canvasLines newCanvas)
+  let heightChanged = oldHeight /= newHeight
+
   -- Build frame in buffer (no syscalls yet)
 
   -- 0. Begin synchronized update (prevents flicker)
@@ -347,7 +351,6 @@ renderEvring EvringConsole {..} widget = withMVar ecLock $ \_ -> do
 
   -- 1. Move cursor up to overwrite old canvas
   -- If dims changed, terminal reflowed, don't trust cursor position
-  let oldHeight = V.length (canvasLines oldCanvas)
   when (oldHeight > 1 && not dimsChanged) $ do
     writeEscape ecFrameBuffer (cursorUp (oldHeight - 1))
   when (oldHeight > 0 && not dimsChanged) $ do
@@ -358,7 +361,7 @@ renderEvring EvringConsole {..} widget = withMVar ecLock $ \_ -> do
     renderLineToBuffer ecFrameBuffer line
     writeLine ecFrameBuffer
 
-  let oldCanvasDiff = if null emitLines && not dimsChanged then oldCanvas else oldCanvas { canvasLines = V.empty }
+  let oldCanvasDiff = if null emitLines && not dimsChanged && not heightChanged then oldCanvas else oldCanvas { canvasLines = V.empty }
 
   -- 3. Render new canvas with diff optimization
   renderCanvasDiffToBuffer ecFrameBuffer oldCanvasDiff newCanvas
