@@ -52,7 +52,7 @@ let
         # hyperconsole - Terminal TUI rendering library (straylight)
         # Required by: sensenet (for themed terminal output)
         # ────────────────────────────────────────────────────────────────────────
-        hyperconsole = hself.callCabal2nix "hyperconsole" inputs.hyperconsole-src { };
+        hyperconsole = hself.callCabal2nix "hyperconsole" ../../vendor/hyperconsole { };
 
         # ────────────────────────────────────────────────────────────────────────
         # proto-lens stack - needs:
