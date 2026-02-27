@@ -112,7 +112,8 @@ render Console {..} widget = withMVar consoleLock $ \_ -> do
 
   -- Update dimensions from terminal (in case of resize)
   newDims <- getTerminalSize
-  when (newDims /= dims) $ do
+  let dimsChanged = newDims /= dims
+  when dimsChanged $ do
     writeIORef consoleDimensions newDims
 
   let actualDims = newDims
@@ -129,10 +130,10 @@ render Console {..} widget = withMVar consoleLock $ \_ -> do
 
   -- Clear old canvas area
   let oldHeight = V.length (canvasLines oldCanvas)
-  when (oldHeight > 1) $ do
+  -- If dimensions changed, we can't trust oldHeight because terminal reflowed
+  when (oldHeight > 1 && not dimsChanged) $ do
     ANSI.hCursorUp consoleHandle (oldHeight - 1)
-    ANSI.hSetCursorColumn consoleHandle 0
-  when (oldHeight == 1) $ do
+  when (oldHeight > 0 && not dimsChanged) $ do
     ANSI.hSetCursorColumn consoleHandle 0
 
   -- Emit buffered lines (if any, invalidates old canvas for diffing)
@@ -140,7 +141,7 @@ render Console {..} widget = withMVar consoleLock $ \_ -> do
     renderLine consoleHandle line
     hPutStr consoleHandle "\n"
     
-  let oldCanvasDiff = if null emitLines then oldCanvas else oldCanvas { canvasLines = V.empty }
+  let oldCanvasDiff = if null emitLines && not dimsChanged then oldCanvas else oldCanvas { canvasLines = V.empty }
 
   -- Render new canvas with diff optimization
   renderCanvasDiff consoleHandle oldCanvasDiff newCanvas

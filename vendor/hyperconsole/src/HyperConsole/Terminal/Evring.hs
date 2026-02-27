@@ -325,9 +325,13 @@ renderEvring :: EvringConsole -> Widget -> IO ()
 renderEvring EvringConsole {..} widget = withMVar ecLock $ \_ -> do
   -- Get dimensions
   dims <- readIORef ecDimensions
+  newDims <- getTermSize
+  let dimsChanged = newDims /= dims
+  when dimsChanged $ do
+    writeIORef ecDimensions newDims
 
   -- Draw widget to canvas
-  let newCanvas = runWidget widget (Dimensions (width dims - 1) (height dims - 1))
+  let newCanvas = runWidget widget (Dimensions (width newDims - 1) (height newDims - 1))
 
   -- Get old canvas for diff
   oldCanvas <- readIORef ecLastCanvas
@@ -342,10 +346,11 @@ renderEvring EvringConsole {..} widget = withMVar ecLock $ \_ -> do
   writeEscape ecFrameBuffer beginSync
 
   -- 1. Move cursor up to overwrite old canvas
+  -- If dims changed, terminal reflowed, don't trust cursor position
   let oldHeight = V.length (canvasLines oldCanvas)
-  when (oldHeight > 1) $ do
+  when (oldHeight > 1 && not dimsChanged) $ do
     writeEscape ecFrameBuffer (cursorUp (oldHeight - 1))
-  when (oldHeight > 0) $ do
+  when (oldHeight > 0 && not dimsChanged) $ do
     writeEscape ecFrameBuffer (cursorColumn 0)
 
   -- 2. Emit buffered lines (invalidates diff if any)
@@ -353,7 +358,7 @@ renderEvring EvringConsole {..} widget = withMVar ecLock $ \_ -> do
     renderLineToBuffer ecFrameBuffer line
     writeLine ecFrameBuffer
 
-  let oldCanvasDiff = if null emitLines then oldCanvas else oldCanvas { canvasLines = V.empty }
+  let oldCanvasDiff = if null emitLines && not dimsChanged then oldCanvas else oldCanvas { canvasLines = V.empty }
 
   -- 3. Render new canvas with diff optimization
   renderCanvasDiffToBuffer ecFrameBuffer oldCanvasDiff newCanvas

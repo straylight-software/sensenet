@@ -162,20 +162,22 @@ solve Layout {..} Dimensions {..} constraints
           remaining = max 0 (availMain - fixedSum)
 
           -- Third pass: allocate sizes
-          allocated = allocate classified
+          allocated = allocate remaining flexSum classified
             where
-              allocate [] = []
-              allocate ((_, (mFixed, weight)) : rest) =
-                let mainAlloc = case mFixed of
-                      Just fixed -> fixed
+              allocate _ _ [] = []
+              allocate remSpace fSum ((_, (mFixed, weight)) : rest) =
+                let (mainAlloc, newRem, newSum) = case mFixed of
+                      Just fixed -> (fixed, remSpace, fSum)
                       Nothing ->
-                        if flexSum > 0
-                          then remaining * weight `div` flexSum
-                          else 0
+                        if fSum > 0
+                          then
+                            let w = remSpace * weight `div` fSum
+                             in (w, remSpace - w, fSum - weight)
+                          else (0, remSpace, fSum)
                     dims = case layoutDirection of
                       Horizontal -> Dimensions mainAlloc crossSize
                       Vertical -> Dimensions crossSize mainAlloc
-                 in dims : allocate rest
+                 in dims : allocate newRem newSum rest
        in allocated
 
 -- | Classify a constraint into (maybe fixed size, flex weight)

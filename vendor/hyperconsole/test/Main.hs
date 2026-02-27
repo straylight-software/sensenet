@@ -20,6 +20,7 @@ module Main where
 import Control.Exception (SomeException, evaluate, try)
 import Data.ByteString qualified as BS
 import Data.Sequence qualified as Seq
+import Data.Foldable qualified
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
@@ -376,13 +377,16 @@ propertyTests =
       "Layout Properties"
       [ testProperty "solve returns correct count" prop_solveCount,
         testProperty "solve total width <= available" prop_solveTotalWidth,
+        testProperty "solve fill consumes all available space" prop_solveFillConsumesSpace,
         testProperty "solve dimensions non-negative" prop_solveDimsNonNegative
       ],
     testGroup
       "Widget Properties"
       [ testProperty "text widget never crashes" prop_textNeverCrashes,
         testProperty "vbox respects height limit" prop_vboxHeightLimit,
-        testProperty "hbox respects width limit" prop_hboxWidthLimit,
+        testProperty "vbox respects width limit" prop_vboxWidthLimit,
+        testProperty "statCard respects width limit" prop_statCardWidthLimit,
+        testProperty "fill produces exact dimensions" prop_fillExactDims,
         testProperty "bordered increases size by 2" prop_borderedSize
       ],
     testGroup
@@ -434,6 +438,15 @@ prop_solveTotalWidth (Positive n) =
       totalW = sum (map width result)
    in totalW <= availW
 
+prop_solveFillConsumesSpace :: Positive Int -> Positive Int -> Property
+prop_solveFillConsumesSpace (Positive n) (Positive w) =
+  let numConstraints = min 50 n
+      availW = numConstraints + w -- ensure at least 1 cell per constraint
+      constraints = replicate numConstraints (Fill 1)
+      result = solve defaultLayout (Dimensions availW 100) constraints
+      totalW = sum (map width result)
+   in totalW === availW
+
 prop_solveDimsNonNegative :: [Constraint] -> Property
 prop_solveDimsNonNegative constraints =
   length constraints <= 50 ==>
@@ -453,11 +466,35 @@ prop_vboxHeightLimit (Positive h) items =
         canvas = runWidget widget (Dimensions 100 h)
      in V.length (canvasLines canvas) <= h
 
-prop_hboxWidthLimit :: Positive Int -> Bool
-prop_hboxWidthLimit (Positive w) =
-  let widget = hbox [text "a", text "b", text "c"]
+prop_vboxWidthLimit :: Positive Int -> Positive Int -> [Text] -> Property
+prop_vboxWidthLimit (Positive w) (Positive h) items =
+  length items <= 100 ==>
+    let widget = vbox (map text items)
+        canvas = runWidget widget (Dimensions w h)
+        lineWidth line = sum [displayWidth (spanText s) | s <- Data.Foldable.toList line]
+     in all (\line -> lineWidth line <= w) (V.toList (canvasLines canvas))
+
+prop_statCardWidthLimit :: Property
+prop_statCardWidthLimit = forAll (choose (80, 300)) $ \w ->
+  let statCard label value mUnit =
+        borderedStyled defaultStyle $
+          padded 0 1 0 1 $
+            vbox
+              [ text label,
+                hbox $
+                  [text value]
+                    ++ maybe [] (\u -> [text u]) mUnit
+              ]
+      widget = hbox [statCard "TARGETS" "35/ 51" Nothing, statCard "ELAPSED" "18.8s" Nothing, statCard "CACHE" "0/35 0%" Nothing]
       canvas = runWidget widget (Dimensions w 10)
-   in V.length (canvasLines canvas) >= 0
+      lineWidth line = sum [displayWidth (spanText s) | s <- Data.Foldable.toList line]
+   in counterexample ("Failed at width " ++ show w ++ "\nLines widths: " ++ show (map lineWidth (V.toList (canvasLines canvas)))) $
+        all (\line -> lineWidth line <= w) (V.toList (canvasLines canvas))
+
+prop_fillExactDims :: Positive Int -> Positive Int -> Property
+prop_fillExactDims (Positive w) (Positive h) =
+  let canvas = runWidget (fill defaultStyle 'x') (Dimensions w h)
+   in V.length (canvasLines canvas) === h .&&. all (\line -> sum [displayWidth (spanText s) | s <- Data.Foldable.toList line] == w) (V.toList (canvasLines canvas))
 
 prop_borderedSize :: Text -> Property
 prop_borderedSize t =
