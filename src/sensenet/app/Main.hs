@@ -35,8 +35,10 @@ import SenseNet.IR (Dep (..), Package (..), Rule (..), ruleDeps, ruleKind, ruleN
 import SenseNet.Output qualified as Output
 import SenseNet.TUI qualified as TUI
 import SenseNet.Toolchains qualified as TC
-import System.Directory (XdgDirectory (..), doesDirectoryExist, getCurrentDirectory, getXdgDirectory, removeDirectoryRecursive)
+import System.Directory (XdgDirectory (..), doesDirectoryExist, getCurrentDirectory, getXdgDirectory, listDirectory, removeDirectoryRecursive)
 import System.Environment (getArgs)
+import System.FilePath ((</>))
+import System.Posix.Files (fileSize, getFileStatus, isDirectory, isRegularFile)
 import System.Exit (exitFailure, exitSuccess, exitWith)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import System.Process (rawSystem)
@@ -343,12 +345,13 @@ buildPatternResult mJobs callback tc projectRoot = \case
       else do
         -- Emit found packages
         forM_ files $ \f -> callback $ ProgressFoundPackage $ T.pack $ dhallPath f
-        -- Parse each package with events
-        pkgsResult <- try $ forM files $ \f -> do
-          callback $ ProgressDhallParsing $ T.pack $ dhallPath f
-          pkg <- Dhall.parsePackageFile projectRoot (dhallPath f)
-          callback $ ProgressDhallEvaluated (T.pack $ "//" <> dhallRelPath f) (length pkg.rules)
-          pure pkg
+        -- Parse all packages efficiently with a shared cache
+        pkgsResult <- try $ do
+          callback $ ProgressDhallParsing $ "//" <> subPath <> "..."
+          pkgs <- Dhall.parsePackageFiles projectRoot (map dhallPath files)
+          let totalRules = sum [length rs | Package _ rs <- pkgs]
+          callback $ ProgressDhallEvaluated ("//" <> subPath <> "...") totalRules
+          pure pkgs
         case pkgsResult of
           Left (e :: IOException) ->
             pure $ Left $ PackageError $ "Cannot read packages: " <> T.pack (show e)
@@ -431,11 +434,10 @@ buildSinglePattern presenter mJobs pat = do
           -- Emit found packages
           forM_ files $ \f -> callback $ ProgressFoundPackage $ T.pack $ dhallRelPath f
           -- Parse all BUILD.dhall files with events
-          pkgs <- forM files $ \f -> do
-            callback $ ProgressDhallParsing $ T.pack $ dhallPath f
-            pkg <- Dhall.parsePackageFile projectRoot (dhallPath f)
-            callback $ ProgressDhallEvaluated (T.pack $ "//" <> dhallRelPath f) (length pkg.rules)
-            pure pkg
+          callback $ ProgressDhallParsing target
+          pkgs <- Dhall.parsePackageFiles projectRoot (map dhallPath files)
+          let totalRules = sum [length rs | Package _ rs <- pkgs]
+          callback $ ProgressDhallEvaluated target totalRules
           -- Emit graph building event
           callback $ ProgressBuildingGraph target
           Output.emitProgressIO presenter $ Output.Building target
@@ -611,7 +613,7 @@ cmdTargets :: IO ()
 cmdTargets = Output.withAutoPresenter $ \presenter -> do
   projectRoot <- pure "."
   files <- discover projectRoot
-  pkgs <- mapM (\f -> Dhall.parsePackageFile projectRoot (dhallPath f)) files
+  pkgs <- Dhall.parsePackageFiles projectRoot (map dhallPath files)
   let getPath (Package p _) = p
       getRules (Package _ rs) = rs
       targets =
@@ -623,26 +625,68 @@ cmdTargets = Output.withAutoPresenter $ \presenter -> do
 
 cmdClean :: Bool -> IO ()
 cmdClean full = do
+  TIO.putStrLn "sensenet clean"
+  TIO.putStrLn ""
+
   -- Remove build outputs
   let outDir = "sensenet-out"
   outExists <- doesDirectoryExist outDir
-  if outExists
+  outStats <- if outExists
     then do
-      TIO.putStrLn "removing sensenet-out/"
+      (files, bytes) <- getDirStats outDir
+      TIO.putStrLn $ "  sensenet-out/    " <> T.pack (show files) <> " files, " <> formatBytes bytes
       removeDirectoryRecursive outDir
-    else TIO.putStrLn "sensenet-out/ does not exist"
+      TIO.putStrLn "  ✓ removed"
+      pure (files, bytes)
+    else do
+      TIO.putStrLn "  sensenet-out/    (does not exist)"
+      pure (0, 0)
 
   -- With --full, also remove the action cache
-  when full $ do
-    cacheDir <- getXdgDirectory XdgCache "sensenet"
-    cacheExists <- doesDirectoryExist cacheDir
-    if cacheExists
-      then do
-        TIO.putStrLn $ "removing " <> T.pack cacheDir <> "/"
-        removeDirectoryRecursive cacheDir
-      else TIO.putStrLn $ T.pack cacheDir <> "/ does not exist"
+  cacheStats <- if full
+    then do
+      cacheDir <- getXdgDirectory XdgCache "sensenet"
+      cacheExists <- doesDirectoryExist cacheDir
+      if cacheExists
+        then do
+          (files, bytes) <- getDirStats cacheDir
+          TIO.putStrLn $ "  " <> T.pack cacheDir <> "/    " <> T.pack (show files) <> " files, " <> formatBytes bytes
+          removeDirectoryRecursive cacheDir
+          TIO.putStrLn "  ✓ removed"
+          pure (files, bytes)
+        else do
+          TIO.putStrLn $ "  " <> T.pack cacheDir <> "/    (does not exist)"
+          pure (0, 0)
+    else pure (0, 0)
 
-  TIO.putStrLn "clean"
+  -- Summary
+  let (totalFiles, totalBytes) = (fst outStats + fst cacheStats, snd outStats + snd cacheStats)
+  TIO.putStrLn ""
+  if totalFiles > 0
+    then TIO.putStrLn $ "cleaned " <> T.pack (show totalFiles) <> " files, " <> formatBytes totalBytes
+    else TIO.putStrLn "nothing to clean"
+
+-- | Get file count and total size of a directory recursively
+getDirStats :: FilePath -> IO (Int, Integer)
+getDirStats dir = do
+  entries <- listDirectory dir
+  stats <- forM entries $ \entry -> do
+    let path = dir </> entry
+    status <- getFileStatus path
+    if isDirectory status
+      then getDirStats path
+      else if isRegularFile status
+        then pure (1, toInteger (fileSize status))
+        else pure (0, 0)
+  pure (sum (map fst stats), sum (map snd stats))
+
+-- | Format bytes as human-readable
+formatBytes :: Integer -> Text
+formatBytes bytes
+  | bytes >= 1073741824 = T.pack (show (bytes `div` 1073741824)) <> " GB"
+  | bytes >= 1048576 = T.pack (show (bytes `div` 1048576)) <> " MB"
+  | bytes >= 1024 = T.pack (show (bytes `div` 1024)) <> " KB"
+  | otherwise = T.pack (show bytes) <> " B"
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Query Command
@@ -723,7 +767,7 @@ cmdQuery args = Output.withAutoPresenter $ \presenter -> do
       projectRoot <- getCurrentDirectory
       -- Parse all packages in parallel for better performance
       files <- discover projectRoot
-      pkgs <- forConcurrently files $ \f -> Dhall.parsePackageFile projectRoot (dhallPath f)
+      pkgs <- Dhall.parsePackageFiles projectRoot (map dhallPath files)
       -- Process each query, tracking errors
       results <- mapM (runQuery presenter opts pkgs) queries
       let (errors, successes) = partitionEithers results

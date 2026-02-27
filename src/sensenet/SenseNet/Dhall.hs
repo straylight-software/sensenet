@@ -19,6 +19,7 @@
 -- Where Rule is a union type matching SenseNet.IR.Rule.
 module SenseNet.Dhall
   ( parsePackageFile,
+    parsePackageFiles,
     BuildFile (..),
   )
 where
@@ -26,7 +27,8 @@ where
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Dhall (FromDhall)
-import DhallFast.Input (auto, inputFile)
+import DhallFast.Input (auto, inputFile, input)
+import qualified Data.Text as T
 import GHC.Generics (Generic)
 import SenseNet.IR qualified as IR
 import SenseNet.IR.Triple (textToGpu)
@@ -273,6 +275,19 @@ data DhallPureScriptLibrary = DhallPureScriptLibrary
 
 instance FromDhall DhallPureScriptLibrary
 
+data DhallPureScriptWebApp = DhallPureScriptWebApp
+  { name :: Text,
+    srcs :: DhallSrcSpec,
+    spago_yaml :: Text,
+    main :: Text,
+    index_html :: Maybe Text,
+    style_css :: Maybe Text,
+    vis :: DhallVis
+  }
+  deriving (Show, Generic)
+
+instance FromDhall DhallPureScriptWebApp
+
 data DhallGenrule = DhallGenrule
   { name :: Text,
     srcs :: [Text],
@@ -343,6 +358,7 @@ data DhallRule
   | PureScriptApp DhallPureScriptApp
   | PureScriptBinary DhallPureScriptBinary
   | PureScriptLibrary DhallPureScriptLibrary
+  | PureScriptWebApp DhallPureScriptWebApp
   | RustBinary DhallRustBinary
   | RustLibrary DhallRustLibrary
   deriving (Show, Generic)
@@ -536,6 +552,17 @@ toIRRule = \case
           IR.spagoYaml = r.spago_yaml,
           IR.vis = toIRVis r.vis
         }
+  PureScriptWebApp r ->
+    IR.RPureScriptWebApp
+      IR.PureScriptWebApp
+        { IR.name = r.name,
+          IR.srcs = toIRSrcSpec r.srcs,
+          IR.spagoYaml = r.spago_yaml,
+          IR.main = r.main,
+          IR.indexHtml = r.index_html,
+          IR.styleCss = r.style_css,
+          IR.vis = toIRVis r.vis
+        }
   Genrule r ->
     IR.RGenrule
       IR.Genrule
@@ -581,13 +608,26 @@ toIRRule = \case
 -- Public API
 -- ════════════════════════════════════════════════════════════════════════════
 
+-- | Parse multiple BUILD.dhall files efficiently in a single evaluation context.
+-- By batching imports into a single list expression like `[ ./a/BUILD.dhall, ./b/BUILD.dhall ]`,
+-- the Dhall import cache is shared, so heavy common preludes like `package.dhall`
+-- are only parsed and typechecked once instead of N times.
+parsePackageFiles :: FilePath -> [FilePath] -> IO [IR.Package]
+parsePackageFiles projectRoot dhallPaths = do
+  let relDirs = map (\p -> makeRelative projectRoot (takeDirectory p)) dhallPaths
+      relFiles = map (\p -> makeRelative projectRoot p) dhallPaths
+      expr = "[" <> T.intercalate ", " (map (\p -> let p' = T.pack p in if T.isPrefixOf "./" p' || T.isPrefixOf "/" p' then p' else "./" <> p') relFiles) <> "]"
+  
+  buildFiles <- input auto expr :: IO [BuildFile]
+  
+  pure $ zipWith (\relDir buildFile -> IR.Package
+      { IR.path = relDir,
+        IR.rules = map toIRRule (buildFileTargets buildFile)
+      }) relDirs buildFiles
 -- | Parse a BUILD.dhall file and return a Package
 parsePackageFile :: FilePath -> FilePath -> IO IR.Package
 parsePackageFile projectRoot dhallPath = do
-  let relPath = makeRelative projectRoot (takeDirectory dhallPath)
-  buildFile <- inputFile auto dhallPath :: IO BuildFile
-  pure
-    IR.Package
-      { IR.path = relPath,
-        IR.rules = map toIRRule (buildFileTargets buildFile)
-      }
+  pkgs <- parsePackageFiles projectRoot [dhallPath]
+  case pkgs of
+    [pkg] -> pure pkg
+    _ -> error "parsePackageFile: expected exactly 1 package"
