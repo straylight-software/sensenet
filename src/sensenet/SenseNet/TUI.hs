@@ -1,3 +1,4 @@
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -31,9 +32,11 @@ module SenseNet.TUI
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async, cancel)
-import Control.Monad (forever)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Control.Concurrent.Async (async, waitCatch)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, tryTakeMVar)
+import Control.Exception (SomeException, bracket, try)
+import Control.Monad (void)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -226,10 +229,14 @@ handleProgressEvent now event state = case event of
     let target = Target name TCached
      in addLog razorMuted ("○ " <> name <> " (cached)") $
           state
-            { dsTotal = max total (dsTotal state),
+            { dsPhase = PhaseBuilding,  -- Switch to building phase on first execution event
+              dsTotal = max total (dsTotal state),
               dsCompleted = dsCompleted state + 1,
               dsCached = dsCached state + 1,
-              dsTargets = Map.insert name target (dsTargets state)
+              dsTargets = Map.insert name target (dsTargets state),
+              dsStartTime = case dsStartTime state of
+                Nothing -> Just now
+                x -> x
             }
   ProgressCompleted name _cur total _memKB ->
     let durationMs = case Map.lookup name (dsTargets state) of
@@ -274,35 +281,61 @@ addLog style txt state =
 -- | Run a build action with the razorgirl dashboard
 --
 -- Falls back to simple output if not running in a TTY.
+-- Properly handles exceptions, terminal cleanup, and render thread lifecycle.
 buildWithTUI ::
   Text ->
   (ProgressCallback -> IO (Either BuildError BuildResult)) ->
   IO (Either BuildError BuildResult)
 buildWithTUI _target buildAction =
   withConsoleFallback fallback $ \console -> do
-    -- Initialize state
-    stateRef <- newIORef initDashboardState
-    dims <- getTerminalSize
+    -- Initialize state with start time set immediately
+    now <- getCurrentTime
+    stateRef <- newIORef initDashboardState {dsStartTime = Just now}
+    
+    -- Mutable dimensions ref for resize handling
+    dimsRef <- newIORef =<< getTerminalSize
+    
+    -- Signal to stop the render loop
+    stopSignal <- newEmptyMVar :: IO (MVar ())
 
     -- Start render loop (~40fps for smooth progress bars)
-    renderThread <- async $ renderLoop console dims stateRef
+    -- The render loop now checks for stop signal and updates dimensions
+    renderThread <- async $ renderLoopWithStop console dimsRef stateRef stopSignal
 
-    -- Create progress callback that updates state
-    let callback = dashboardCallback stateRef
+    -- Run the build with proper exception handling
+    result <- bracket
+      (pure ()) -- acquire: nothing needed
+      (\_ -> do -- release: always stop render thread and cleanup
+        -- Signal render loop to stop
+        putMVar stopSignal ()
+        -- Wait for render thread to finish (with timeout via cancel as backup)
+        void $ waitCatch renderThread
+      )
+      (\_ -> do -- use: run the actual build
+        -- Create progress callback that updates state
+        let callback = dashboardCallback stateRef
 
-    -- Run the build
-    result <- buildAction callback
+        -- Run the build, catching any exceptions
+        buildResult <- try $ buildAction callback
+        
+        case buildResult of
+          Left (e :: SomeException) -> do
+            -- Mark as failed on exception
+            atomicModifyIORef' stateRef $ \s -> 
+              (s {dsPhase = PhaseComplete, dsFailed = dsFailed s + 1}, ())
+            -- Re-throw after cleanup in bracket
+            pure $ Left $ error $ "Build exception: " ++ show e
+          Right r -> do
+            -- Mark complete
+            atomicModifyIORef' stateRef $ \s -> (s {dsPhase = PhaseComplete}, ())
+            pure r
+      )
 
-    -- Mark complete
-    now <- getCurrentTime
-    atomicModifyIORef' stateRef $ \s -> (s {dsPhase = PhaseComplete}, ())
-
-    -- Final render
+    -- Final render after build completes
+    endTime <- getCurrentTime
     finalState <- readIORef stateRef
-    render console (dashboardWidget dims now finalState)
-
-    -- Stop render loop
-    cancel renderThread
+    dims <- readIORef dimsRef
+    render console (dashboardWidget dims endTime finalState)
 
     -- Print newline after dashboard
     TIO.putStrLn ""
@@ -346,13 +379,29 @@ buildWithTUI _target buildAction =
 -- Render Loop
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Render loop - updates display at ~40fps
-renderLoop :: Console -> Dimensions -> IORef DashboardState -> IO ()
-renderLoop console dims stateRef = forever $ do
-  now <- getCurrentTime
-  state <- readIORef stateRef
-  render console (dashboardWidget dims now state)
-  threadDelay 25000 -- ~40fps
+-- | Render loop with stop signal and dynamic dimensions
+-- Updates display at ~40fps, checking for stop signal and terminal resize
+renderLoopWithStop :: Console -> IORef Dimensions -> IORef DashboardState -> MVar () -> IO ()
+renderLoopWithStop console dimsRef stateRef stopSignal = go
+  where
+    go = do
+      -- Check for stop signal (non-blocking)
+      stopped <- tryTakeMVar stopSignal
+      case stopped of
+        Just () -> pure () -- Stop requested, exit loop
+        Nothing -> do
+          -- Update dimensions in case terminal was resized
+          newDims <- getTerminalSize
+          writeIORef dimsRef newDims
+          
+          -- Render current state
+          now <- getCurrentTime
+          state <- readIORef stateRef
+          render console (dashboardWidget newDims now state)
+          
+          -- Sleep then continue
+          threadDelay 25000 -- ~40fps
+          go
 
 -- | Progress callback that updates dashboard state
 dashboardCallback :: IORef DashboardState -> ProgressCallback
@@ -390,12 +439,19 @@ preambleWidget dims state =
 logStreamWidget :: Dimensions -> [LogLine] -> Widget
 logStreamWidget dims logs =
   let visibleCount = max 12 (height dims - 10)
-      visible = take visibleCount (reverse logs)
+      -- Take most recent logs and display oldest-first (natural reading order)
+      visible = take visibleCount (reverse logs) -- newest first
+      orderedForDisplay = reverse visible -- oldest first for display
+      totalVisible = length orderedForDisplay
+      -- Apply fade effect: oldest lines (at top) are dimmer
+      -- Lines near the bottom (newest) are brightest
       renderLine :: Int -> LogLine -> Widget
       renderLine i (LogLine txt style) =
-        let opacity = if i < 3 then dim style else style
+        let distanceFromBottom = totalVisible - 1 - i
+            -- Fade the oldest 3 lines (at top of log stream)
+            opacity = if distanceFromBottom >= totalVisible - 3 then dim style else style
          in textStyled opacity txt
-   in vbox (zipWith renderLine [0 ..] (reverse visible))
+   in vbox (zipWith renderLine [0 ..] orderedForDisplay)
 
 preambleStatusWidget :: Phase -> [LogLine] -> Widget
 preambleStatusWidget phase logs =
@@ -477,8 +533,11 @@ activeTargetsWidget now state =
       failed = [(tid, t) | (tid, t@(Target _ (TFailed _ _ _))) <- Map.toList (dsTargets state)]
       -- Show failed first, then building, then recent cached/completed
       allTargets = failed ++ building ++ take 4 cached ++ take 4 completed
-      rows = take 12 $ map (targetRowWidget now) allTargets
-   in vbox rows
+      visibleTargets = take 12 allTargets
+      rows = map (targetRowWidget now) visibleTargets
+      -- Pad with empty rows to fill space and prevent rendering artifacts
+      emptyRows = replicate (12 - length visibleTargets) (space 0 1)
+   in vboxWith (replicate 12 (Exact 1)) (rows ++ emptyRows)
 
 targetRowWidget :: UTCTime -> (Text, Target) -> Widget
 targetRowWidget now (tid, Target _ status) =
@@ -496,7 +555,7 @@ targetRowWidget now (tid, Target _ status) =
         [Exact 2, Exact 50, Fill 1, Exact 7]
         [ textStyled glyphStyle (glyph <> " "),
           textStyled nameStyle paddedName,
-          fill razorDim '─',
+          fill razorDim ' ',  -- Use space instead of ─ to avoid visual noise
           textStyled razorMuted (" " <> padTextLeft 6 timeStr)
         ]
 
@@ -523,12 +582,13 @@ completeWidget _dims now state =
           activeTargetsWidget now state,
           space 0 1,
           centered $
-            hbox
+            hboxWith
+              [Exact 2, Exact 30, Exact 3, Exact 15, Exact 4, Exact 15]
               [ textStyled resultStyle (if failed > 0 then "✗ " else "✓ "),
                 textStyled razorBright resultText,
                 textStyled razorMuted " · ",
                 textStyled razorBright (T.pack (show (dsCompleted state)) <> " TARGETS"),
-                textStyled razorMuted " · ",
+                textStyled razorMuted " IN ",
                 textStyled razorBright (formatMs elapsed)
               ],
           footerWidget
@@ -542,7 +602,8 @@ headerWidget :: Widget
 headerWidget =
   vbox
     [ textStyled razorMuted "STRAYLIGHT SOFTWARE · BUILD MONITOR",
-      hbox
+      hboxWith
+        [Exact 2, Exact 15, Exact 6, Exact 2]
         [ textStyled razorMuted "> ",
           textStyled (bold razorBright) "sensenet build ",
           textStyled razorBright "// ...",
@@ -553,8 +614,9 @@ headerWidget =
 
 footerWidget :: Widget
 footerWidget =
-  hbox
-    [ textStyled razorMuted "SENSENET · DHALL + NIX + CAS",
+  hboxWith
+    [Exact 29, Fill 1, Exact 42]
+    [ textStyled razorMuted "SENSENET · DHALL + NIX + CAS ",
       fill defaultStyle ' ',
       textStyled razorDim "the one rectilinear chamber in the complex"
     ]
