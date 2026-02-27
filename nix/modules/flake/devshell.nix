@@ -193,10 +193,9 @@ in
               pkgs.buck2
               ghc-with-all-deps
 
-              # sensenet CLI - typed build system
-              # Use sensenet-local (no -fremote) since Remote/NativeLink files
-              # may not be committed yet. Switch to sensenet once they are.
-              config.packages.sensenet-local
+              # sensenet CLI - uses bootstrap binary from repo root (./sense)
+              # Added to PATH in shellHook: export PATH="$PWD:$PATH"
+              # Self-build: sensenet build //src/sensenet:sensenet
 
               # ════════════════════════════════════════════════════════════════
               # LSP servers - go-to-definition works out of the box
@@ -493,8 +492,11 @@ in
                 ${straylight-nix-check}
                 ${buckconfig-hook}
                 ${toolchains-dhall-hook}
-                # Add sense CLI to PATH (bootstrap binary in repo root)
-                export PATH="$PWD:$PATH"
+                # Add sensenet CLI to PATH
+                # 1. Self-built binary (sensenet-out/src/sensenet/sensenet)
+                # 2. Bootstrap binary (result-bootstrap/bin/sensenet)
+                # 3. Root dir for scripts
+                export PATH="$PWD/sensenet-out/src/sensenet:$PWD/result-bootstrap/bin:$PWD:$PATH"
                 ${config.sense.build.shellHook or ""}
                 ${config.sense.shortlist.shellHook or ""}
                 ${config.sense.lre.shellHook or ""}
