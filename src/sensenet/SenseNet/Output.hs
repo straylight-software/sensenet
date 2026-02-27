@@ -309,29 +309,6 @@ nullPresenter = Presenter $ \_ -> pure ()
 -- HyperConsole Style Rendering
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | Apply a HyperConsole style to stdout
-withStyle :: Style -> IO () -> IO ()
-withStyle style action = do
-  applyStyle stdout style
-  action
-  ANSI.setSGR [ANSI.Reset]
-
--- | Apply a HyperConsole style to stderr
-withStyleErr :: Style -> IO () -> IO ()
-withStyleErr style action = do
-  applyStyle stderr style
-  action
-  ANSI.hSetSGR stderr [ANSI.Reset]
-
--- | Apply HyperConsole style SGR codes to a handle
-applyStyle :: Handle -> Style -> IO ()
-applyStyle h Style {..} = do
-  let codes =
-        [colorToSGR True styleFg | styleFg /= Default]
-          ++ [colorToSGR False styleBg | styleBg /= Default]
-          ++ map attrToSGR styleAttrs
-  unless (null codes) $ ANSI.hSetSGR h codes
-
 -- | Convert HyperConsole Color to ANSI SGR
 colorToSGR :: Bool -> Color -> ANSI.SGR
 colorToSGR isFg c =
@@ -368,14 +345,26 @@ attrToSGR Reverse = ANSI.SetSwapForegroundBackground True
 attrToSGR Strikethrough = ANSI.SetConsoleIntensity ANSI.NormalIntensity
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Terminal Rendering
--- ════════════════════════════════════════════════════════════════════════════
+-- | Generate SGR codes for a style
+styleCode :: Style -> Text
+styleCode Style {..} =
+  let codes =
+        [colorToSGR True styleFg | styleFg /= Default]
+          ++ [colorToSGR False styleBg | styleBg /= Default]
+          ++ map attrToSGR styleAttrs
+   in if null codes then "" else T.pack (ANSI.setSGRCode codes)
+
+resetCode :: Text
+resetCode = T.pack (ANSI.setSGRCode [ANSI.Reset])
+
+-- | Format a string with a style
+styled :: Style -> Text -> Text
+styled style text = styleCode style <> text <> resetCode
 
 renderResultTerminal :: Result -> IO ()
 renderResultTerminal = \case
   BuildSuccess target outputs duration -> do
-    withStyle Theme.themeSuccess $ TIO.putStr (Theme.glyphCheck <> " ")
-    TIO.putStrLn $ target <> " built in " <> T.pack (show duration)
+    TIO.putStrLn $ styled Theme.themeSuccess (Theme.glyphCheck <> " ") <> target <> " built in " <> T.pack (show duration)
     mapM_ (\o -> TIO.putStrLn $ "  " <> Theme.glyphArrow <> " " <> o) outputs
   QueryResult v -> BL.putStr (encode v) >> putStrLn ""
   TextResult t -> TIO.putStrLn t
@@ -384,22 +373,15 @@ renderResultTerminal = \case
 renderProgressTerminal :: Progress -> IO ()
 renderProgressTerminal = \case
   Building target -> do
-    withStyle Theme.themeAccent $ TIO.putStr (Theme.glyphBuilding <> " ")
-    TIO.putStrLn $ "Building " <> target
+    TIO.putStrLn $ styled Theme.themeAccent (Theme.glyphBuilding <> " ") <> "Building " <> target
   Cached target -> do
-    withStyle Theme.themeStatusCached $ TIO.putStr (Theme.glyphCached <> " ")
-    TIO.putStrLn $ "Cached " <> target
+    TIO.putStrLn $ styled Theme.themeStatusCached (Theme.glyphCached <> " ") <> "Cached " <> target
   Built target duration -> do
-    withStyle Theme.themeSuccess $ TIO.putStr (Theme.glyphCheck <> " ")
-    TIO.putStrLn $ target <> " (" <> T.pack (show duration) <> ")"
+    TIO.putStrLn $ styled Theme.themeSuccess (Theme.glyphCheck <> " ") <> target <> " (" <> T.pack (show duration) <> ")"
   ProgressCount current total -> do
-    withStyle Theme.themeProgressText $
-      TIO.putStrLn $
-        "[" <> T.pack (show current) <> "/" <> T.pack (show total) <> "]"
+    TIO.putStrLn $ styled Theme.themeProgressText ("[" <> T.pack (show current) <> "/" <> T.pack (show total) <> "]")
   Action target action -> do
-    withStyle Theme.themeAccent $
-      TIO.putStrLn $
-        "  " <> action <> ": " <> target
+    TIO.putStrLn $ styled Theme.themeAccent ("  " <> action <> ": " <> target)
   Tick _ -> pure () -- ticks handled by HyperConsole in TUI mode
   ProgressMsg msg -> TIO.putStrLn msg
 
@@ -409,22 +391,22 @@ renderDiagnosticTerminal (Diagnostic lvl msg ctx) = do
         Debug -> (Theme.themeSecondary, "debug: ")
         Info -> (Theme.themeSecondary, "")
         Warning -> (Theme.themeWarning, Theme.glyphWarning <> " warning: ")
-  withStyleErr style $ case ctx of
-    Just c -> TIO.hPutStrLn stderr $ c <> ": " <> prefix <> msg
-    Nothing -> TIO.hPutStrLn stderr $ prefix <> msg
+  let formatted = case ctx of
+        Just c -> c <> ": " <> prefix <> msg
+        Nothing -> prefix <> msg
+  TIO.hPutStrLn stderr $ styled style formatted
 
 renderErrorTerminal :: Error -> IO ()
 renderErrorTerminal err = do
-  withStyleErr Theme.themeError $ TIO.hPutStr stderr (Theme.glyphError <> " error: ")
+  let prefix = styled Theme.themeError (Theme.glyphError <> " error: ")
   case err of
     BuildFailed target msg details -> do
-      TIO.hPutStrLn stderr $ target <> ": " <> msg
+      TIO.hPutStrLn stderr $ prefix <> target <> ": " <> msg
       case details of
         Just d -> TIO.hPutStrLn stderr d
         Nothing -> pure ()
-    ConfigError msg -> TIO.hPutStrLn stderr msg
-    InternalError msg -> TIO.hPutStrLn stderr $ "internal: " <> msg
-
+    ConfigError msg -> TIO.hPutStrLn stderr $ prefix <> msg
+    InternalError msg -> TIO.hPutStrLn stderr $ prefix <> "internal: " <> msg
 -- ════════════════════════════════════════════════════════════════════════════
 -- Pipe Rendering (no ANSI colors)
 -- ════════════════════════════════════════════════════════════════════════════
