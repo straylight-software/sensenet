@@ -307,7 +307,7 @@
       },
       "locked": {
         "lastModified": 1770985912,
-        "narHash": "sha256-npFnR1oUizj2KvU68SR1q1Y0osnPLTFMV3dfBufiDvI=",
+        "narHash": "sha256-4LKiuNOSkub8uXo1Vs+2iowszJlc06eElAQ0RLPNz18=",
         "owner": "straylight-software",
         "repo": "llvm-project",
         "rev": "de0f2ce98cfa7a052680e5a482b7ae52a3534e5b",
