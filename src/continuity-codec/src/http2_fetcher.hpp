@@ -1,5 +1,5 @@
 // Continuity.Codec.Dhall - Parallel HTTP/2 Fetcher using evring
-// Multiplexes requests on single connection for maximum throughput
+// Multiplexes ALL requests on single connection - no waves, just blast
 //
 // straylight.software · 2026
 
@@ -16,8 +16,10 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <spdlog/spdlog.h>
 #include <sys/socket.h>
+#include <tls.h>
 
 #include "straylight/evring/evring.h"
 #include "straylight/evring/http2.h"
@@ -88,38 +90,20 @@ struct Http2FetchResult {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONNECTION STATE
-// ═══════════════════════════════════════════════════════════════════════════════
-
-struct Http2Connection {
-  std::string origin; // https://host:port
-  evring::handle socket;
-  std::unique_ptr<evring::tls_connection> tls;
-  std::unique_ptr<evring::http2_session> session;
-  bool connected{false};
-
-  // Pending requests: stream_id -> (url, result_index)
-  std::map<std::int32_t, std::pair<std::string, std::size_t>> pending_requests;
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// PARALLEL HTTP/2 FETCHER
+// PARALLEL HTTP/2 FETCHER - BLAST ALL REQUESTS AT ONCE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class Http2Fetcher {
   std::unique_ptr<evring::ring> ring_;
-  std::map<std::string, Http2Connection> connections_; // origin -> connection
-
-  std::size_t total_requests_{0};
-  std::size_t completed_requests_{0};
   std::size_t bytes_fetched_{0};
 
 public:
-  Http2Fetcher() : ring_(evring::make_io_uring_ring(1024, evring::ring_flags::single_issuer)) {}
+  Http2Fetcher() : ring_(evring::make_io_uring_ring(4096, evring::ring_flags::single_issuer)) {}
 
   /// Fetch multiple URLs in parallel, returns results in same order
   std::vector<Http2FetchResult> fetch_batch(const std::vector<std::string>& urls) {
     auto start = std::chrono::high_resolution_clock::now();
+    bytes_fetched_ = 0;
 
     std::vector<Http2FetchResult> results(urls.size());
     for (std::size_t i = 0; i < urls.size(); ++i) {
@@ -141,16 +125,17 @@ public:
       by_origin[parsed.origin()].push_back({i, std::move(parsed)});
     }
 
-    // Process each origin
+    // Process each origin (typically just one for dhall-kubernetes)
     for (auto& [origin, url_list] : by_origin) {
-      fetch_from_origin(origin, url_list, results);
+      fetch_from_origin_parallel(origin, url_list, results);
     }
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-    spdlog::info("HTTP/2 batch fetch: {} URLs in {} ms ({} bytes)", urls.size(), duration_ms,
-                 bytes_fetched_);
+    spdlog::info("HTTP/2 parallel fetch: {} URLs in {} ms ({:.2f} MB, {:.1f} MB/s)", urls.size(),
+                 duration_ms, bytes_fetched_ / 1048576.0,
+                 duration_ms > 0 ? (bytes_fetched_ / 1048576.0) / (duration_ms / 1000.0) : 0);
 
     return results;
   }
@@ -158,6 +143,7 @@ public:
   std::size_t bytes_fetched() const { return bytes_fetched_; }
 
 private:
+  // TCP connect using io_uring
   evring::handle tcp_connect(const std::string& host, const std::string& port) {
     struct addrinfo hints{};
     hints.ai_family = AF_INET;
@@ -195,40 +181,43 @@ private:
     return socket;
   }
 
-  bool establish_tls(Http2Connection& conn, const std::string& host) {
+  // TLS handshake with ALPN h2
+  std::unique_ptr<evring::tls_connection> establish_tls(evring::handle socket,
+                                                        const std::string& host) {
     auto tls_config = evring::tls_client_config::create_default();
     if (!tls_config.set_alpn("h2")) {
       spdlog::error("Failed to set ALPN");
-      return false;
+      return nullptr;
     }
 
-    evring::tls_handshake_machine tls_hs{conn.socket, *ring_, tls_config, host};
+    evring::tls_handshake_machine tls_hs{socket, *ring_, tls_config, host};
     auto tls_state = evring::run(tls_hs, *ring_);
 
     if (!tls_state.ok()) {
       spdlog::error("TLS handshake failed: {}", tls_state.error_message);
-      return false;
+      return nullptr;
     }
 
-    conn.tls = std::make_unique<evring::tls_connection>(tls_state.take_context());
+    auto tls_conn = std::make_unique<evring::tls_connection>(tls_state.take_context());
 
-    const char* alpn = conn.tls->alpn_selected();
+    const char* alpn = tls_conn->alpn_selected();
     if (!alpn || std::strcmp(alpn, "h2") != 0) {
       spdlog::error("Server doesn't support HTTP/2, ALPN: {}", alpn ? alpn : "none");
-      return false;
+      return nullptr;
     }
 
-    return true;
+    return tls_conn;
   }
 
-  bool establish_http2(Http2Connection& conn) {
-    conn.session = std::make_unique<evring::http2_session>();
-    if (!conn.session->init_client()) {
+  // Establish HTTP/2 connection (send preface, receive SETTINGS)
+  bool establish_http2(evring::http2_session& session, evring::tls_connection& tls,
+                       evring::handle socket) {
+    if (!session.init_client()) {
       spdlog::error("Failed to init HTTP/2 session");
       return false;
     }
 
-    evring::http2_connection_machine conn_machine{*conn.session, *conn.tls, conn.socket};
+    evring::http2_connection_machine conn_machine{session, tls, socket};
     auto conn_state = evring::run(conn_machine, *ring_);
 
     if (!conn_state.ok()) {
@@ -236,54 +225,58 @@ private:
       return false;
     }
 
-    conn.connected = true;
     return true;
   }
 
-  void fetch_from_origin(const std::string& origin,
-                         std::vector<std::pair<std::size_t, ParsedUrl>>& url_list,
-                         std::vector<Http2FetchResult>& results) {
+  // BLAST all requests at once, then read all responses
+  void fetch_from_origin_parallel(const std::string& origin,
+                                  std::vector<std::pair<std::size_t, ParsedUrl>>& url_list,
+                                  std::vector<Http2FetchResult>& results) {
     if (url_list.empty())
       return;
 
-    // Get or create connection
-    auto& conn = connections_[origin];
-    if (!conn.connected) {
-      const auto& first_url = url_list[0].second;
-      conn.origin = origin;
+    const auto& first_url = url_list[0].second;
 
-      spdlog::debug("Connecting to {}", origin);
+    spdlog::info("Connecting to {} for {} URLs", origin, url_list.size());
 
-      conn.socket = tcp_connect(first_url.host, first_url.port);
-      if (!conn.socket.valid()) {
-        for (auto& [idx, _] : url_list) {
-          results[idx].error = "TCP connect failed";
-        }
-        return;
+    // 1. TCP connect
+    evring::handle socket = tcp_connect(first_url.host, first_url.port);
+    if (!socket.valid()) {
+      for (auto& [idx, _] : url_list) {
+        results[idx].error = "TCP connect failed";
       }
-
-      if (!establish_tls(conn, first_url.host)) {
-        for (auto& [idx, _] : url_list) {
-          results[idx].error = "TLS handshake failed";
-        }
-        ring_->enqueue(evring::operation::make_close(conn.socket));
-        ring_->submit_and_wait(1);
-        return;
-      }
-
-      if (!establish_http2(conn)) {
-        for (auto& [idx, _] : url_list) {
-          results[idx].error = "HTTP/2 connection failed";
-        }
-        ring_->enqueue(evring::operation::make_close(conn.socket));
-        ring_->submit_and_wait(1);
-        return;
-      }
-
-      spdlog::debug("HTTP/2 connection established to {}", origin);
+      return;
     }
 
-    // Submit all requests (HTTP/2 multiplexing)
+    // 2. TLS handshake
+    auto tls = establish_tls(socket, first_url.host);
+    if (!tls) {
+      for (auto& [idx, _] : url_list) {
+        results[idx].error = "TLS handshake failed";
+      }
+      ring_->enqueue(evring::operation::make_close(socket));
+      ring_->submit_and_wait(1);
+      return;
+    }
+
+    // 3. HTTP/2 connection setup
+    evring::http2_session session;
+    if (!establish_http2(session, *tls, socket)) {
+      for (auto& [idx, _] : url_list) {
+        results[idx].error = "HTTP/2 connection failed";
+      }
+      ring_->enqueue(evring::operation::make_close(socket));
+      ring_->submit_and_wait(1);
+      return;
+    }
+
+    spdlog::info("HTTP/2 connected, blasting {} requests", url_list.size());
+
+    // 4. BLAST ALL REQUESTS AT ONCE
+    // Map stream_id -> result index
+    std::map<std::int32_t, std::size_t> stream_to_result;
+    std::size_t streams_pending = 0;
+
     for (auto& [idx, parsed] : url_list) {
       evring::http2_request req;
       req.method = "GET";
@@ -296,25 +289,120 @@ private:
       req.headers.push_back({"user-agent", "continuity-dhall/1.0"});
       req.headers.push_back({"accept", "*/*"});
 
-      evring::http2_request_machine req_machine{*conn.session, *conn.tls, conn.socket, req};
-      auto req_state = evring::run(req_machine, *ring_);
-
-      if (!req_state.ok()) {
-        results[idx].error = req_state.error_message;
-        results[idx].success = false;
+      std::int32_t stream_id = session.submit_request(req);
+      if (stream_id > 0) {
+        stream_to_result[stream_id] = idx;
+        streams_pending++;
       } else {
-        results[idx].status_code = req_state.response.status_code;
-        if (req_state.response.status_code == 200) {
-          results[idx].content.assign(reinterpret_cast<const char*>(req_state.response.body.data()),
-                                      req_state.response.body.size());
-          results[idx].success = true;
-          bytes_fetched_ += results[idx].content.size();
-        } else {
-          results[idx].error = std::format("HTTP {}", req_state.response.status_code);
-          results[idx].success = false;
-        }
+        results[idx].error = "Failed to submit request";
       }
     }
+
+    spdlog::debug("Submitted {} streams", streams_pending);
+
+    // 5. Send all pending request frames
+    int socket_fd = ring_->get_file_descriptor(socket);
+    auto pending = session.get_pending_data();
+    while (!pending.empty()) {
+      ssize_t written = tls_write(tls->raw(), pending.data(), pending.size());
+      if (written > 0) {
+        pending.erase(pending.begin(), pending.begin() + written);
+      } else if (written == TLS_WANT_POLLIN || written == TLS_WANT_POLLOUT) {
+        // Need to poll
+        struct pollfd pfd{};
+        pfd.fd = socket_fd;
+        pfd.events = (written == TLS_WANT_POLLIN) ? POLLIN : POLLOUT;
+        poll(&pfd, 1, 1000);
+      } else {
+        spdlog::error("TLS write error: {}", tls_error(tls->raw()));
+        break;
+      }
+    }
+
+    spdlog::debug("All requests sent, reading responses");
+
+    // 6. Read all responses
+    std::byte buffer[65536];
+    while (streams_pending > 0) {
+      ssize_t nread = tls_read(tls->raw(), buffer, sizeof(buffer));
+
+      if (nread > 0) {
+        auto consumed = session.receive_data(std::span<const std::byte>(buffer, nread));
+        if (consumed < 0) {
+          spdlog::error("nghttp2 receive error");
+          break;
+        }
+
+        // Check for completed streams
+        for (auto it = stream_to_result.begin(); it != stream_to_result.end();) {
+          std::int32_t stream_id = it->first;
+          std::size_t result_idx = it->second;
+
+          if (session.is_stream_closed(stream_id)) {
+            auto* resp = session.get_stream_response(stream_id);
+            if (resp) {
+              results[result_idx].status_code = resp->status_code;
+              if (resp->status_code == 200) {
+                results[result_idx].content.assign(reinterpret_cast<const char*>(resp->body.data()),
+                                                   resp->body.size());
+                results[result_idx].success = true;
+                bytes_fetched_ += results[result_idx].content.size();
+              } else {
+                results[result_idx].error = std::format("HTTP {}", resp->status_code);
+              }
+            } else {
+              auto err = session.get_stream_error(stream_id);
+              results[result_idx].error =
+                  std::format("Stream error: {}", evring::http2_error_string(err));
+            }
+            it = stream_to_result.erase(it);
+            streams_pending--;
+          } else {
+            ++it;
+          }
+        }
+
+        // Send any pending data (like WINDOW_UPDATE)
+        pending = session.get_pending_data();
+        while (!pending.empty()) {
+          ssize_t written = tls_write(tls->raw(), pending.data(), pending.size());
+          if (written > 0) {
+            pending.erase(pending.begin(), pending.begin() + written);
+          } else if (written == TLS_WANT_POLLIN || written == TLS_WANT_POLLOUT) {
+            struct pollfd pfd{};
+            pfd.fd = socket_fd;
+            pfd.events = (written == TLS_WANT_POLLIN) ? POLLIN : POLLOUT;
+            poll(&pfd, 1, 100);
+          } else {
+            break;
+          }
+        }
+      } else if (nread == TLS_WANT_POLLIN || nread == TLS_WANT_POLLOUT) {
+        struct pollfd pfd{};
+        pfd.fd = socket_fd;
+        pfd.events = (nread == TLS_WANT_POLLIN) ? POLLIN : POLLOUT;
+        poll(&pfd, 1, 1000);
+      } else if (nread == 0) {
+        spdlog::warn("Connection closed with {} streams pending", streams_pending);
+        break;
+      } else {
+        spdlog::error("TLS read error: {}", tls_error(tls->raw()));
+        break;
+      }
+    }
+
+    // Mark any remaining streams as failed
+    for (auto& [stream_id, result_idx] : stream_to_result) {
+      if (!results[result_idx].success && results[result_idx].error.empty()) {
+        results[result_idx].error = "Connection closed before response";
+      }
+    }
+
+    // Cleanup
+    ring_->enqueue(evring::operation::make_close(socket));
+    ring_->submit_and_wait(1);
+
+    spdlog::info("Fetch complete: {} bytes", bytes_fetched_);
   }
 };
 
