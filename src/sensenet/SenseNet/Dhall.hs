@@ -24,7 +24,6 @@ module SenseNet.Dhall
 where
 
 import Data.Text (Text)
-import Data.Text qualified as T
 import Dhall (FromDhall, auto, inputFile)
 import GHC.Generics (Generic)
 import SenseNet.IR qualified as IR

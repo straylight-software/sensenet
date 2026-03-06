@@ -114,6 +114,7 @@
                 casPort = recasport;
                 tls = retls;
                 instanceName = reinstancename;
+                authToken = remoteexecution.authtoken or null;
               }
             );
             extra = extrabuckconfigsections;

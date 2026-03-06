@@ -1,0 +1,25 @@
+app = "@appPrefix@-builder"
+primary_region = "@region@"
+
+[build]
+image = "ghcr.io/straylight-software/nix-builder:latest"
+
+[env]
+NIX_CONFIG = "experimental-features = nix-command flakes"
+
+[mounts]
+source = "nix_store"
+destination = "/nix"
+
+[[services]]
+internal_port = 22
+protocol = "tcp"
+
+[[services.ports]]
+port = 22
+handlers = []
+
+[[vm]]
+memory = "@builderMemory@"
+cpus = @builderCpus@
+cpu_kind = "performance"

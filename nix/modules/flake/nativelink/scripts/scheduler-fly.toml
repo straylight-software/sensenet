@@ -1,0 +1,28 @@
+app = "@appPrefix@-scheduler"
+primary_region = "@region@"
+
+[build]
+image = "ghcr.io/tracemachina/nativelink:latest"
+
+[env]
+RUST_LOG = "info"
+
+[[services]]
+internal_port = @schedulerPort@
+protocol = "tcp"
+auto_stop_machines = false
+auto_start_machines = true
+min_machines_running = 1
+
+[[services.ports]]
+port = 443
+handlers = ["tls", "http"]
+
+[[services.ports]]
+port = @schedulerPort@
+handlers = ["tls"]
+
+[[vm]]
+memory = "@schedulerMemory@"
+cpus = @schedulerCpus@
+cpu_kind = "shared"

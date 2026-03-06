@@ -64,6 +64,10 @@ module SenseNet.DICE
     -- * Low-level Access (rarely needed)
     withEngine,
     withTransaction,
+
+    -- * DICE Monad Utilities
+    throwDICE,
+    tryIO,
   )
 where
 
@@ -77,11 +81,10 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Word (Word64, Word8)
-import Foreign.C.String (peekCString, peekCStringLen)
-import Foreign.C.Types (CSize (..))
+import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca, mallocBytes)
 import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Ptr (castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, poke)
 import SenseNet.DICE.FFI qualified as FFI
 

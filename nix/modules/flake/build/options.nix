@@ -41,11 +41,11 @@ in
 {
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Per-system options for sense.build
+  # Per-system options for sensenet.build
   # ════════════════════════════════════════════════════════════════════════════
 
   perSystem = mk-per-system-option (_: {
-    options.sense.build = {
+    options.sensenet.build = {
 
       buck2-toolchain = mk-option {
         type = types.raw;
@@ -77,7 +77,7 @@ in
   });
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Top-level sense.build options
+  # Top-level sensenet.build options
   # ════════════════════════════════════════════════════════════════════════════
 
   build = {

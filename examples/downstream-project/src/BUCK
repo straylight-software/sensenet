@@ -1,0 +1,10 @@
+# Example BUCK file for a C++ binary
+#
+# Run: buck2 build //src:hello
+# Execute: buck2 run //src:hello
+
+cxx_binary(
+    name = "hello",
+    srcs = ["main.cpp"],
+    visibility = ["PUBLIC"],
+)

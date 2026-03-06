@@ -182,6 +182,7 @@
       casPort,
       tls,
       instanceName,
+      authToken ? null,
     }:
     let
       tlsStr = if tls then "true" else "false";
@@ -201,6 +202,7 @@
       action_cache_address = grpc://${cas}:${toString casPort}
       tls = ${tlsStr}
       instance_name = ${instanceName}
+      ${lib.optionalString (authToken != null) "http_headers = Authorization:Bearer ${authToken}"}
 
       [buck2_re_client.platform_properties]
       OSFamily = linux

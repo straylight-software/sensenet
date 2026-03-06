@@ -30,6 +30,14 @@ def _host_os_configuration():
         return "prelude//os:linux"
 
 
+def _get_isa() -> str:
+    """Get ISA string for remote execution platform matching."""
+    arch = host_info().arch
+    if arch.is_aarch64:
+        return "aarch64"
+    else:
+        return "x86-64"
+
 
 def _lre_execution_platform_impl(ctx: AnalysisContext) -> list[Provider]:
     """Execution platform with remote execution enabled."""
@@ -49,6 +57,7 @@ def _lre_execution_platform_impl(ctx: AnalysisContext) -> list[Provider]:
             remote_execution_properties = {
                 "OSFamily": "linux",
                 "container-image": "nix-worker",
+                "ISA": _get_isa(),
             },
             remote_execution_use_case = "buck2-default",
             remote_output_paths = "output_paths",

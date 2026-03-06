@@ -146,6 +146,12 @@ let
             default = "main";
             description = "RE instance name";
           };
+
+          authtoken = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Bearer token for remote execution authentication (keep secret!)";
+          };
         };
 
         # ── Extra buckconfig sections ──────────────────────────────────────

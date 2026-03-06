@@ -23,7 +23,7 @@
 { inputs }:
 { config, lib, ... }:
 let
-  cfg = config.sense.formatter;
+  cfg = config.sensenet.formatter;
 
   # ──────────────────────────────────────────────────────────────────────────
   #                                                        // cpp // file // patterns
@@ -51,8 +51,8 @@ in
   #                                                                   // options
   # ════════════════════════════════════════════════════════════════════════════
 
-  options.sense.formatter = {
-    enable = lib.mkEnableOption "sense formatter" // {
+  options.sensenet.formatter = {
+    enable = lib.mkEnableOption "sensenet formatter" // {
       default = true;
     };
 
@@ -281,10 +281,10 @@ in
           # ────────────────────────────────────────────────────────────────────────
 
           settings.formatter = {
-            # ── nix // sense-lint ────────────────────────────────────────────────
+            # ── nix // sensenet-lint ────────────────────────────────────────────────
 
-            sense-lint = {
-              command = lib.getExe inputs.self.packages.${system}.sense-lint;
+            sensenet-lint = {
+              command = lib.getExe inputs.self.packages.${system}.sensenet-lint;
               includes = [ "*.nix" ];
               # Exclude:
               # - prelude/lib: FP primitives where rec/or-null are legitimate

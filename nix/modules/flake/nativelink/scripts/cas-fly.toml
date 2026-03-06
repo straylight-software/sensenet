@@ -1,0 +1,32 @@
+app = "@appPrefix@-cas"
+primary_region = "@region@"
+
+[build]
+image = "ghcr.io/tracemachina/nativelink:latest"
+
+[env]
+RUST_LOG = "info"
+
+[mounts]
+source = "cas_data"
+destination = "/data"
+
+[[services]]
+internal_port = @casPort@
+protocol = "tcp"
+auto_stop_machines = false
+auto_start_machines = true
+min_machines_running = 1
+
+[[services.ports]]
+port = 443
+handlers = ["tls", "http"]
+
+[[services.ports]]
+port = @casPort@
+handlers = ["tls"]
+
+[[vm]]
+memory = "@casMemory@"
+cpus = @casCpus@
+cpu_kind = "performance"

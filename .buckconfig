@@ -27,4 +27,4 @@ materializations = deferred
 digest_algorithms = BLAKE3
 
 [build]
-execution_platforms = toolchains//:local
+execution_platforms = toolchains//:lre

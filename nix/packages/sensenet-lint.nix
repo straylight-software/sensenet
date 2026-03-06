@@ -1,6 +1,6 @@
-# nix/packages/sense-lint.nix
+# nix/packages/sensenet-lint.nix
 #
-# AST-grep wrapper for Nix linting with sense rules.
+# AST-grep wrapper for Nix linting with sensenet rules.
 #
 { pkgs, lib }:
 let
@@ -10,10 +10,16 @@ let
     ruleDirs:
       - ${linter-src}/rules
   '';
-
-  script = pkgs.writeText "sense-lint.bash" ''
-    # sense-lint wrapper script
-    SGCONFIG_TMP="$(mktemp -t sense-lint-XXXXXX.yml)"
+in
+pkgs.writeShellApplication {
+  name = "sensenet-lint";
+  runtimeInputs = [
+    pkgs.ast-grep
+    pkgs.coreutils
+  ];
+  text = ''
+    # sensenet-lint wrapper script
+    SGCONFIG_TMP="$(mktemp -t sensenet-lint-XXXXXX.yml)"
     cp --no-preserve=mode "${sgconfig}" "$SGCONFIG_TMP"
     trap 'rm -f "$SGCONFIG_TMP"' EXIT
 
@@ -33,12 +39,4 @@ let
       --color always \
       "''${REL_ARGS[@]}"
   '';
-in
-pkgs.writeShellApplication {
-  name = "sense-lint";
-  runtimeInputs = [
-    pkgs.ast-grep
-    pkgs.coreutils
-  ];
-  text = builtins.readFile script;
 }

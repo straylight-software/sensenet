@@ -34,13 +34,13 @@ let
   list-of = lib.types.listOf;
   attrs-of = lib.types.attrsOf;
 
-  cfg = config.sense.devshell;
-  build-cfg = config.sense.build;
+  cfg = config.sensenet.devshell;
+  build-cfg = config.sensenet.build;
 in
 {
   _class = "flake";
 
-  options.sense.devshell = {
+  options.sensenet.devshell = {
     enable = mk-enable-option "sense devshell";
     nv.enable = mk-enable-option "NVIDIA SDK in devshell";
     straylight-nix.enable = mk-enable-option "straylight-nix with builtins.wasm support";
@@ -203,8 +203,8 @@ in
               pkgs.llvm-git
             ]
             ++ optionals (!cfg.nv.enable && pkgs ? sense && pkgs.sense ? llvm) [
-              pkgs.sense.llvm.clang
-              pkgs.sense.llvm.lld
+              pkgs.sensenet.llvm.clang
+              pkgs.sensenet.llvm.lld
             ]
             ++ optionals (cfg.nv.enable && pkgs ? nvidia-sdk) [
               pkgs.nvidia-sdk
@@ -212,22 +212,22 @@ in
             # straylight-nix with builtins.wasm support
             ++ optionals (cfg.straylight-nix.enable && pkgs ? sense && pkgs.sense ? nix) (
               filter (p: p != null) [
-                pkgs.sense.nix.nix
+                pkgs.sensenet.nix.nix
               ]
             )
             ++ (cfg.extra-packages pkgs)
             # Buck2 build system packages (excludes GHC since devshell has its own ghc-with-all-deps)
             # This includes llvm-git, nvidia-sdk, rustc, lean4, python, etc.
-            ++ filter (p: !(has-prefix "ghc-" (p.name or ""))) (config.sense.build.packages or [ ])
+            ++ filter (p: !(has-prefix "ghc-" (p.name or ""))) (config.sensenet.build.packages or [ ])
             # LRE packages (nativelink, lre-start)
-            ++ (config.sense.lre.packages or [ ]);
+            ++ (config.sensenet.lre.packages or [ ]);
 
             shellHook =
               let
                 straylight-nix-check = optional-string cfg.straylight-nix.enable ''
-                  if [ -n "${pkgs.sense.nix.nix or ""}" ]; then
-                    echo "straylight-nix: $(${pkgs.sense.nix.nix}/bin/nix --version)"
-                    echo "builtins.wasm: $(${pkgs.sense.nix.nix}/bin/nix eval --expr 'builtins ? wasm')"
+                  if [ -n "${pkgs.sensenet.nix.nix or ""}" ]; then
+                    echo "straylight-nix: $(${pkgs.sensenet.nix.nix}/bin/nix --version)"
+                    echo "builtins.wasm: $(${pkgs.sensenet.nix.nix}/bin/nix eval --expr 'builtins ? wasm')"
                   fi
                 '';
 
@@ -235,12 +235,12 @@ in
                 # This provides Buck2 with Nix store paths for all compilers
 
                 # STRICT REQUIREMENT: NVIDIA toolchain requires custom LLVM-git overlay
-                # Enable 'sense.llvm-git.enable = true' in your flake config.
+                # Enable 'sensenet.llvm-git.enable = true' in your flake config.
                 llvm-pkg =
                   if (pkgs ? llvm-git) then
                     pkgs.llvm-git
                   else
-                    throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'sense.llvm-git.enable = true'.";
+                    throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'sensenet.llvm-git.enable = true'.";
 
                 clang = llvm-pkg;
                 # llvm-git is already unwrapped
@@ -388,9 +388,9 @@ in
                 ${buckconfig-hook}
                 # Add sense CLI to PATH (bootstrap binary in repo root)
                 export PATH="$PWD:$PATH"
-                ${config.sense.build.shellHook or ""}
-                ${config.sense.shortlist.shellHook or ""}
-                ${config.sense.lre.shellHook or ""}
+                ${config.sensenet.build.shellHook or ""}
+                ${config.sensenet.shortlist.shellHook or ""}
+                ${config.sensenet.lre.shellHook or ""}
                 ${hie-yaml-hook}
                 ${cfg.extra-shell-hook}
               '';

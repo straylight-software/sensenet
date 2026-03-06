@@ -13,21 +13,17 @@
 #       linker_flags = ["@$(location :lib)"],
 #   )
 
-
-
-
-
-
 def nix_cxx_binary(name, deps = [], preprocessor_flags = [], linker_flags = [], **kwargs):
     """
     Wrapper around cxx_binary that supports Nix flake references in 'deps'.
-    
+
     Any dependency string containing '#' is treated as a Nix flake reference.
     It will be automatically resolved to compiler flags using nix-analyze.
     """
+
     real_deps = []
     nix_flags = []
-    
+
     for dep in deps:
         # Check if it looks like a flake ref (has #)
         if type(dep) == "string" and "#" in dep:
@@ -35,18 +31,18 @@ def nix_cxx_binary(name, deps = [], preprocessor_flags = [], linker_flags = [], 
             # e.g. "mybin_nixpkgs_zlib"
             slug = dep.replace("#", "_").replace("/", "_").replace(".", "_")
             target_name = "{}_{}".format(name, slug)
-            
+
             nix_library(
                 name = target_name,
                 flake_ref = dep,
             )
-            
+
             # Add location macro to flags
             flag = "@$(location :{})".format(target_name)
             nix_flags.append(flag)
         else:
             real_deps.append(dep)
-            
+
     native.cxx_binary(
         name = name,
         deps = real_deps,
@@ -55,33 +51,30 @@ def nix_cxx_binary(name, deps = [], preprocessor_flags = [], linker_flags = [], 
         **kwargs
     )
 
-
-
-
 def _nix_library_impl(ctx: AnalysisContext) -> list[Provider]:
-    """"""
+    """TODO[b7r6]: get this filled in..."""
+
     flake_ref = ctx.attrs.flake_ref
-    
+
     flags_file = ctx.actions.declare_output("flags.rsp")
     analyzer = ctx.attrs._analyzer[RunInfo]
-    
+
     cmd = cmd_args(
         analyzer,
         "resolve",
         flake_ref,
     )
-    
+
     # nix-analyze resolve output is already formatted flags
     ctx.actions.run(
-        cmd_args("sh", "-c", cmd_args(cmd, ">", flags_file.as_output(), delimiter=" ")),
+        cmd_args("sh", "-c", cmd_args(cmd, ">", flags_file.as_output(), delimiter = " ")),
         category = "nix_resolve",
         identifier = flake_ref,
     )
-    
+
     return [
         DefaultInfo(default_output = flags_file),
     ]
-
 
 nix_library = rule(
     impl = _nix_library_impl,
@@ -90,4 +83,3 @@ nix_library = rule(
         "_analyzer": attrs.exec_dep(default = "root//src/nix-analyze:nix-analyze"),
     },
 )
-

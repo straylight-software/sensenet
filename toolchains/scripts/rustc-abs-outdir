@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# rustc wrapper that converts OUT_DIR to absolute path
+# This is needed because Rust's include!() resolves relative to source file
+
+# If OUT_DIR is set and is a relative path, make it absolute
+if [[ -n "$OUT_DIR" && "$OUT_DIR" != /* ]]; then
+    export OUT_DIR="$(pwd)/$OUT_DIR"
+fi
+
+# Execute rustc with all arguments
+exec "$@"

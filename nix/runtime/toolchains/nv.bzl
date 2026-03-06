@@ -16,9 +16,6 @@
 #
 # No nvcc. Ever.
 
-
-
-
 NvToolchainInfo = provider(fields = {
     "nvidia_sdk_path": provider_field(str),
     "nvidia_sdk_include": provider_field(str),
@@ -32,7 +29,6 @@ NvLibraryInfo = provider(fields = {
     "include_dir": provider_field(str),
 })
 
-
 def nv_compile_flags(nv_toolchain_info: NvToolchainInfo) -> list[str]:
     """
     Generate clang flags for NVIDIA target compilation.
@@ -42,11 +38,13 @@ def nv_compile_flags(nv_toolchain_info: NvToolchainInfo) -> list[str]:
     """
     flags = [
         # Tell clang this is device code
-        "-x", "cuda",
+        "-x",
+        "cuda",
 
         # nvidia-sdk paths (--cuda-path is clang's flag, not CUDA branding)
         "--cuda-path=" + nv_toolchain_info.nvidia_sdk_path,
-        "-isystem", nv_toolchain_info.nvidia_sdk_include,
+        "-isystem",
+        nv_toolchain_info.nvidia_sdk_include,
 
         # C++23 on device
         "-std=c++23",
@@ -58,6 +56,7 @@ def nv_compile_flags(nv_toolchain_info: NvToolchainInfo) -> list[str]:
     # Target architectures
     for arch in nv_toolchain_info.nv_archs:
         flags.extend(["--cuda-gpu-arch=" + arch])
+
         # Include PTX for forward compatibility (e.g. sm_90 runs on sm_120)
         flags.extend(["--cuda-include-ptx=" + arch])
 
@@ -73,11 +72,9 @@ def nv_link_flags(nv_toolchain_info: NvToolchainInfo) -> list[str]:
         "-lcudart",
     ]
 
-
-
-
 def _nv_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     """NVIDIA toolchain with paths from .buckconfig.local"""
+
     # read_root_config cannot be called during analysis - use attrs directly
     return [
         DefaultInfo(),
@@ -88,7 +85,6 @@ def _nv_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             nv_archs = ctx.attrs.nv_archs,
         ),
     ]
-
 
 nv_toolchain = rule(
     impl = _nv_toolchain_impl,
@@ -103,16 +99,17 @@ nv_toolchain = rule(
 
 def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     """"""
+
     # Read nvidia-sdk paths from config
     nvidia_sdk_path = read_root_config("nv", "nvidia_sdk_path", "/usr/local/cuda")
     nvidia_sdk_include = read_root_config("nv", "nvidia_sdk_include", "/usr/local/cuda/include")
     nvidia_sdk_lib = read_root_config("nv", "nvidia_sdk_lib", "/usr/local/cuda/lib64")
     ptxas = read_root_config("nv", "ptxas", "")
     fatbinary = read_root_config("nv", "fatbinary", "")
-    
+
     # Use unwrapped clang for CUDA (no NixOS hardening flags)
     clang = read_root_config("nv", "clang", "clang++")
-    
+
     # C++ stdlib paths for unwrapped clang
     gcc_include = read_root_config("cxx", "gcc_include", "")
     gcc_include_arch = read_root_config("cxx", "gcc_include_arch", "")
@@ -122,39 +119,43 @@ def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     gcc_lib_base = read_root_config("cxx", "gcc_lib_base", "")
     glibc_lib = read_root_config("cxx", "glibc_lib", "")
     ld = read_root_config("cxx", "ld", "ld.lld")
-    
+
     # Target architectures from config (comma-separated)
     nv_archs_str = read_root_config("nv", "archs", "sm_90")
     nv_archs = nv_archs_str.split(",")
-    
+
     # mdspan include path (Kokkos reference implementation for device code)
     mdspan_include = read_root_config("nv", "mdspan_include", "")
-    
+
     # Compile flags for CUDA with unwrapped clang
     compile_flags = [
-        "-x", "cuda",
+        "-x",
+        "cuda",
         "--cuda-path=" + nvidia_sdk_path,
-        "-isystem", nvidia_sdk_include,
+        "-isystem",
+        nvidia_sdk_include,
         "-std=c++23",
         # Allow newer CUDA versions than clang officially supports
         "-Wno-unknown-cuda-version",
         "-c",
     ]
-    
+
     if ptxas:
         compile_flags.extend(["--ptxas-path=" + ptxas])
+
     # Clang doesn't support --fatbinary-path, but finds it next to ptxas
-    
+
     # Add mdspan include if configured
     if mdspan_include:
         compile_flags.extend(["-isystem", mdspan_include])
-    
+
     # Add target architectures
     for arch in nv_archs:
         compile_flags.extend(["--cuda-gpu-arch=" + arch.strip()])
+
         # Include PTX for forward compatibility
         compile_flags.extend(["--cuda-include-ptx=" + arch.strip()])
-    
+
     # Add stdlib paths for unwrapped clang
     if clang_resource_dir:
         compile_flags.extend(["-resource-dir=" + clang_resource_dir])
@@ -164,21 +165,22 @@ def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         compile_flags.extend(["-isystem", gcc_include_arch])
     if glibc_include:
         compile_flags.extend(["-isystem", glibc_include])
-    
+
     # Compile each source file to object
     objects = []
     for src in ctx.attrs.srcs:
         obj_name = src.short_path.replace(".cu", ".o").replace(".cpp", ".o")
         obj = ctx.actions.declare_output(obj_name)
-        
+
         cmd = cmd_args([clang] + compile_flags + [
-            "-o", obj.as_output(),
+            "-o",
+            obj.as_output(),
             src,
         ])
-        
+
         ctx.actions.run(cmd, category = "nv_compile", identifier = src.short_path)
         objects.append(obj)
-    
+
     # Link flags
     link_flags = [
         "-fuse-ld=" + ld,
@@ -186,6 +188,7 @@ def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         "-Wl,-rpath," + nvidia_sdk_lib,
         "-lcudart",
     ]
+
     # Add -B flags to find crt*.o files
     if gcc_lib:
         link_flags.extend(["-B" + gcc_lib, "-L" + gcc_lib])
@@ -197,24 +200,25 @@ def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
             "-L" + glibc_lib,
             "-Wl,-rpath," + glibc_lib,
         ])
+
         # Set dynamic linker explicitly (lld needs this for unwrapped clang)
         dynamic_linker = read_root_config("cxx", "dynamic_linker", None)
         if dynamic_linker:
             link_flags.append("-Wl,--dynamic-linker=" + dynamic_linker)
-    
+
     # Link into binary
     out = ctx.actions.declare_output(ctx.attrs.name)
     link_cmd = cmd_args([clang] + link_flags + [
-        "-o", out.as_output(),
+        "-o",
+        out.as_output(),
     ] + objects)
-    
+
     ctx.actions.run(link_cmd, category = "nv_link", identifier = ctx.attrs.name)
-    
+
     return [
         DefaultInfo(default_output = out),
         RunInfo(args = cmd_args([out])),
     ]
-
 
 nv_binary = rule(
     impl = _nv_binary_impl,
@@ -226,45 +230,50 @@ nv_binary = rule(
 
 def _nv_library_impl(ctx: AnalysisContext) -> list[Provider]:
     """"""
+
     # Get tools from config (use unwrapped clang from nv section for CUDA)
     cxx = read_root_config("nv", "clang", "clang++")
     nvidia_sdk_path = read_root_config("nv", "nvidia_sdk_path", "/usr/local/cuda")
     nvidia_sdk_include = read_root_config("nv", "nvidia_sdk_include", "/usr/local/cuda/include")
-    
+
     # C++ stdlib paths for unwrapped clang
     gcc_include = read_root_config("cxx", "gcc_include", "")
     gcc_include_arch = read_root_config("cxx", "gcc_include_arch", "")
     glibc_include = read_root_config("cxx", "glibc_include", "")
     clang_resource_dir = read_root_config("cxx", "clang_resource_dir", "")
-    
+
     # Target architectures from config (comma-separated, e.g. "sm_90,sm_100,sm_120")
     nv_archs_str = read_root_config("nv", "archs", "sm_90")
     nv_archs = nv_archs_str.split(",")
-    
+
     # Compile flags for CUDA
     compile_flags = [
-        "-x", "cuda",
+        "-x",
+        "cuda",
         "--cuda-path=" + nvidia_sdk_path,
-        "-isystem", nvidia_sdk_include,
+        "-isystem",
+        nvidia_sdk_include,
         "-std=c++23",  # Consistent with nv_binary
-        "-fPIC",       # Required for shared library
-        "-c",          # Compile only, don't link
+        "-fPIC",  # Required for shared library
+        "-c",  # Compile only, don't link
     ]
-    
+
     # Read tool paths from config
     ptxas = read_root_config("nv", "ptxas", "")
     fatbinary = read_root_config("nv", "fatbinary", "")
-    
+
     if ptxas:
         compile_flags.extend(["--ptxas-path=" + ptxas])
+
     # Clang doesn't support --fatbinary-path, but finds it next to ptxas
-    
+
     # Add target architectures
     for arch in nv_archs:
         compile_flags.extend(["--cuda-gpu-arch=" + arch.strip()])
+
         # Include PTX for forward compatibility
         compile_flags.extend(["--cuda-include-ptx=" + arch.strip()])
-    
+
     # Add stdlib paths for unwrapped clang
     if gcc_include:
         compile_flags.extend(["-isystem", gcc_include])
@@ -274,28 +283,29 @@ def _nv_library_impl(ctx: AnalysisContext) -> list[Provider]:
         compile_flags.extend(["-isystem", glibc_include])
     if clang_resource_dir:
         compile_flags.extend(["-resource-dir=" + clang_resource_dir])
-    
+
     # Compile each source file to object
     objects = []
     for src in ctx.attrs.srcs:
         obj_name = src.short_path.replace(".cu", ".o").replace(".cpp", ".o")
         obj = ctx.actions.declare_output(obj_name)
-        
+
         cmd = cmd_args([cxx] + compile_flags + [
-            "-o", obj.as_output(),
+            "-o",
+            obj.as_output(),
             src,
         ])
-        
+
         ctx.actions.run(cmd, category = "nv_compile", identifier = src.short_path)
         objects.append(obj)
-    
+
     # Get include directory for headers
     include_dir = ""
     if ctx.attrs.exported_headers:
         # Use the directory containing the first header
         first_header = ctx.attrs.exported_headers[0]
         include_dir = first_header.short_path.rsplit("/", 1)[0] if "/" in first_header.short_path else "."
-    
+
     return [
         DefaultInfo(default_output = objects[0] if objects else None, other_outputs = objects[1:] if len(objects) > 1 else []),
         NvLibraryInfo(
@@ -305,7 +315,6 @@ def _nv_library_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
     ]
 
-
 nv_library = rule(
     impl = _nv_library_impl,
     attrs = {
@@ -314,4 +323,3 @@ nv_library = rule(
         "deps": attrs.list(attrs.dep(), default = []),
     },
 )
-

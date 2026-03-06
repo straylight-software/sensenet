@@ -24,13 +24,13 @@ let
 in
 { config, lib, ... }:
 let
-  cfg = config.sense.lint;
+  cfg = config.sensenet.lint;
 in
 {
   _class = "flake";
 
-  options.sense.lint = {
-    enable = lib.mkEnableOption "sense lint configs" // {
+  options.sensenet.lint = {
+    enable = lib.mkEnableOption "sensenet lint configs" // {
       default = true;
     };
   };
@@ -41,7 +41,7 @@ in
     perSystem =
       { pkgs, ... }:
       let
-        configs-dir = pkgs.linkFarm "sense-lint-configs" [
+        configs-dir = pkgs.linkFarm "sensenet-lint-configs" [
           {
             name = ".clang-format";
             path = lint-configs.clang-format;

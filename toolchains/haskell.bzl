@@ -28,6 +28,7 @@ HaskellLibraryInfo = provider(fields = {
     "hie_dir": provider_field(Artifact | None, default = None),
     "objects": provider_field(list, default = []),
     "modules": provider_field(list, default = []),
+    "src_dirs": provider_field(list, default = []),  # Source directories for GHC's -i
 })
 
 HaskellIncludeInfo = provider(fields = {
@@ -110,14 +111,17 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     hi_dir = ctx.actions.declare_output("hi", dir = True)
     stub_dir = ctx.actions.declare_output("stubs", dir = True)
     
-    # Collect dependency hi directories for -i flag
-    dep_hi_dirs = []
+    # Collect dependency hi and src directories for -i flag
+    # GHC needs both: -i with hi_dir finds .hi files, -i with src_dir helps with module discovery
+    dep_include_dirs = []
     dep_objects = []
     for dep in ctx.attrs.deps:
         if HaskellLibraryInfo in dep:
             lib_info = dep[HaskellLibraryInfo]
             if lib_info.hi_dir:
-                dep_hi_dirs.append(lib_info.hi_dir)
+                dep_include_dirs.append(lib_info.hi_dir)
+            if lib_info.src_dirs:
+                dep_include_dirs.extend(lib_info.src_dirs)
             if lib_info.objects:
                 dep_objects.extend(lib_info.objects)
             elif lib_info.object_dir:
@@ -155,9 +159,9 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     for pkg in ctx.attrs.packages:
         cmd.add("-package", pkg)
     
-    # Include paths for dependencies
-    for hi_d in dep_hi_dirs:
-        cmd.add(cmd_args("-i", hi_d, delimiter = ""))
+    # Include paths for dependencies (both hi dirs and source dirs)
+    for inc_d in dep_include_dirs:
+        cmd.add(cmd_args("-i", inc_d, delimiter = ""))
     
     # Sources
     cmd.add(ctx.attrs.srcs)
@@ -171,6 +175,16 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         cmd_args("ar rcs", lib.as_output(), cmd_args(obj_dir, format = "$(find {} -name '*.o')"), delimiter = " "),
     )
     ctx.actions.run(ar_cmd, category = "haskell_archive", identifier = ctx.attrs.name)
+    
+    # Compute source root directories for dependencies that need to import our modules
+    # For "Proto/Bytestream.hs" in package "src/sensenet", we need "src/sensenet"
+    src_dirs = []
+    if ctx.attrs.srcs:
+        # Get the package path (e.g., "src/sensenet" for "root//src/sensenet:proto")
+        # ctx.label.package gives the package path
+        pkg_path = ctx.label.package
+        if pkg_path:
+            src_dirs.append(pkg_path)
     
     return [
         DefaultInfo(
@@ -190,6 +204,7 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             hie_dir = hie_dir,
             objects = [],
             modules = ctx.attrs.srcs,
+            src_dirs = src_dirs,
         ),
     ]
 
@@ -473,6 +488,19 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     obj_dir = ctx.actions.declare_output("hs_objs", dir = True)
     hi_dir = ctx.actions.declare_output("hs_hi", dir = True)
     
+    # Collect dependency include directories (hi and src dirs)
+    dep_include_dirs = []
+    dep_libs = []
+    for dep in ctx.attrs.deps:
+        if HaskellLibraryInfo in dep:
+            lib_info = dep[HaskellLibraryInfo]
+            if lib_info.hi_dir:
+                dep_include_dirs.append(lib_info.hi_dir)
+            if lib_info.src_dirs:
+                dep_include_dirs.extend(lib_info.src_dirs)
+            if lib_info.object_dir:
+                dep_libs.append(lib_info.object_dir)
+    
     # Use ghc-pkg-id wrapper script to translate -package to -package-id
     # This works around GHC 9.12 bug where -package doesn't expose packages
     # Path comes from config, set by flake module's shellHook
@@ -487,6 +515,10 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     # Mandatory flags (non-negotiable)
     ghc_cmd.add(MANDATORY_GHC_FLAGS)
     ghc_cmd.add("-XGHC2024")
+    
+    # Include paths for dependencies
+    for inc_d in dep_include_dirs:
+        ghc_cmd.add(cmd_args("-i", inc_d, delimiter = ""))
     
     # GCC library path for libstdc++
     if gcc_lib_base:
@@ -532,6 +564,7 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     ghc_cmd.add(ctx.attrs.compiler_flags)
     ghc_cmd.add(ctx.attrs.hs_srcs)
     ghc_cmd.add(cxx_objects)
+    ghc_cmd.add(dep_libs)  # Link against dependency libraries
     
     ctx.actions.run(ghc_cmd, category = "ghc_link", identifier = ctx.attrs.name)
     

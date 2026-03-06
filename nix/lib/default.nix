@@ -19,15 +19,15 @@ in
   #
   # The prelude is a flake-parts module. To use it:
   #
-  #   imports = [ inputs.sense.modules.flake.prelude ];
+  #   imports = [ inputs.sensenet.modules.flake.prelude ];
   #
   #   perSystem = { config, ... }: let
-  #     P = config.sense.prelude;
+  #     P = config.sensenet.prelude;
   #   in { ... };
   #
   # For the lib compatibility shim:
   #
-  #   lib = import inputs.sense.libShim { prelude = ... };
+  #   lib = import inputs.sensenet.libShim { prelude = ... };
   #
   # ════════════════════════════════════════════════════════════════════════════
 

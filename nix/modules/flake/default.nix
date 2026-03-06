@@ -14,10 +14,10 @@
 # USAGE:
 #
 #   {
-#     inputs.sense.url = "github:straylight-software/sensenet";
+#     inputs.sensenet.url = "github:straylight-software/sensenet";
 #
-#     outputs = { sense, ... }: {
-#       imports = [ sense.flakeModules.default ];
+#     outputs = { sensenet, ... }: {
+#       imports = [ sensenet.flakeModules.default ];
 #
 #       # Your config here
 #       perSystem = { ... }: {
@@ -43,6 +43,6 @@
   ];
 
   # Sensible defaults
-  sense.formatter.enable = lib.mkDefault true;
-  sense.lint.enable = lib.mkDefault true;
+  sensenet.formatter.enable = lib.mkDefault true;
+  sensenet.lint.enable = lib.mkDefault true;
 }

@@ -51,6 +51,12 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # nix2gpu - OCI container building with Nix
+    nix2gpu = {
+      url = "github:straylight-software/nix2gpu";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     # nix-compile - Type inference and static analysis for Nix
     # TODO: Uncomment when repository is public
     # nix-compile = {
@@ -147,7 +153,7 @@
           };
         in
         {
-          packages.sense-lint = pkgs.callPackage ./nix/packages/sense-lint.nix { };
+          packages.sensenet-lint = pkgs.callPackage ./nix/packages/sensenet-lint.nix { };
           packages.sensenet = sensenet;
           packages.dice-ffi = dice-ffi;
           packages.superconsole-ffi = superconsole-ffi;

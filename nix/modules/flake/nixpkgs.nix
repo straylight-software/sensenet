@@ -42,7 +42,7 @@
 { inputs }:
 { config, lib, ... }:
 let
-  cfg = config.sense.nixpkgs;
+  cfg = config.sensenet.nixpkgs;
 in
 {
   _class = "flake";
@@ -51,7 +51,7 @@ in
   # // options //
   # ────────────────────────────────────────────────────────────────────────────
 
-  options.sense.nixpkgs = {
+  options.sensenet.nixpkgs = {
     # NVIDIA GPU support - we say "nv" not "cuda"
     nv = {
       enable = lib.mkEnableOption "NVIDIA GPU support";
@@ -116,7 +116,7 @@ in
       _module.args.pkgs = lib.mkDefault pkgs;
 
       # Re-export as legacyPackages so consumers can access our configured nixpkgs:
-      #   inputs.sense.legacyPackages.${system}
+      #   inputs.sensenet.legacyPackages.${system}
       # This is the standard flake output for "the package set".
       legacyPackages = lib.mkDefault pkgs;
     };

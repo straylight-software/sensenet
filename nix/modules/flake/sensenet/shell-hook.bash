@@ -7,6 +7,20 @@ echo "  Usage: sense build //...  (or buck2 directly)"
 
 if [ -n "@reEnabled@" ]; then
 	echo "  Remote execution: @reScheduler@:@reSchedulerPort@"
+
+	# re-test: Quick check that RE is configured and reachable
+	re-test() {
+		echo "Testing remote execution configuration..."
+		echo ""
+		echo "1. Checking .buckconfig.local RE settings:"
+		grep -A5 "buck2_re_client" .buckconfig.local 2>/dev/null || echo "   [ERROR] No [buck2_re_client] section found"
+		echo ""
+		echo "2. Resolving execution platforms:"
+		buck2 audit execution-platform-resolution //... 2>&1 | head -20
+		echo ""
+		echo "3. Testing build with --prefer-remote (dry-run):"
+		buck2 build --prefer-remote --show-output //... 2>&1 | head -10 || true
+	}
 fi
 
 if [ -n "@haskellEnabled@" ]; then

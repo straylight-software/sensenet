@@ -21,15 +21,15 @@
 # USAGE (downstream flake):
 #
 #   {
-#     inputs.sense.url = "github:straylight-software/sensenet";
+#     inputs.sensenet.url = "github:straylight-software/sensenet";
 #     inputs.buck2-prelude.url = "github:weyl-ai/straylight-buck2-prelude";
 #     inputs.buck2-prelude.flake = false;
 #
-#     outputs = { self, sense, buck2-prelude, ... }:
-#       sense.lib.mkFlake { inherit inputs; } {
-#         imports = [ sense.modules.flake.build ];
+#     outputs = { self, sensenet, buck2-prelude, ... }:
+#       sensenet.lib.mkFlake { inherit inputs; } {
+#         imports = [ sensenet.modules.flake.build ];
 #
-#         sense.build = {
+#         sensenet.build = {
 #           enable = true;
 #           toolchain.cxx.enable = true;
 #           toolchain.nv.enable = true;
@@ -61,7 +61,7 @@ let
   read-file = builtins."readFile";
 
   options = import ./options.nix { inherit lib flake-parts-lib; };
-  cfg = config.sense.build;
+  cfg = config.sensenet.build;
 in
 {
   _class = "flake";
@@ -70,7 +70,7 @@ in
   # Options
   # ════════════════════════════════════════════════════════════════════════════
   options."perSystem" = options."perSystem";
-  options.sense.build = options.build;
+  options.sensenet.build = options.build;
 
   # ════════════════════════════════════════════════════════════════════════════
   # Config
@@ -79,7 +79,7 @@ in
     # ──────────────────────────────────────────────────────────────────────────
     # Nixpkgs overlays - automatically add required overlays
     # ──────────────────────────────────────────────────────────────────────────
-    sense.nixpkgs.overlays = mk-before [
+    sensenet.nixpkgs.overlays = mk-before [
       # LLVM 22 overlay (for llvm-git package)
       (import ../../../overlays/llvm-git.nix { inherit inputs; })
       # Packages overlay (for mdspan)
@@ -144,7 +144,7 @@ in
       in
       {
         # Export toolchain configuration for other modules
-        sense.build = {
+        sensenet.build = {
           inherit (toolchains) buck2-toolchain packages;
           inherit (buckconfig) buckconfig-local;
           "shellHook" = shell-hook-module."shellHook";

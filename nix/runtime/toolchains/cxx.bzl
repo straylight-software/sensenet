@@ -2,23 +2,31 @@
 # LLVM C++ toolchain using hermetic Nix store paths.
 # No GCC. No nvcc. Ever.
 
-
-load("@prelude//cxx:cxx_toolchain_types.bzl", "BinaryUtilitiesInfo", "CCompilerInfo", "CvtresCompilerInfo", "CxxCompilerInfo", "CxxInternalTools", "CxxPlatformInfo", "CxxToolchainInfo", "LinkerInfo", "LinkerType", "PicBehavior", "RcCompilerInfo", "ShlibInterfacesMode")
+load(
+    "@prelude//cxx:cxx_toolchain_types.bzl",
+    "BinaryUtilitiesInfo",
+    "CCompilerInfo",
+    "CvtresCompilerInfo",
+    "CxxCompilerInfo",
+    "CxxInternalTools",
+    "CxxPlatformInfo",
+    "CxxToolchainInfo",
+    "LinkerInfo",
+    "LinkerType",
+    "PicBehavior",
+    "RcCompilerInfo",
+    "ShlibInterfacesMode",
+)
 load("@prelude//cxx:headers.bzl", "HeaderMode")
 load("@prelude//linking:link_info.bzl", "LinkStyle")
 load("@prelude//linking:lto.bzl", "LtoMode")
 
-
-
-
-
 def _run_info(args):
     return None if args == None else RunInfo(args = [args])
 
-
-
 def _llvm_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     """LLVM 22 toolchain with paths from .buckconfig.local"""
+
     # Read tool paths from config (fall back to PATH lookup)
     cc = read_root_config("cxx", "cc", "clang")
     cxx = read_root_config("cxx", "cxx", "clang++")
@@ -57,6 +65,7 @@ def _llvm_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
 
     # Build link flags from config paths
     llvm_bin_dir = ld.rsplit("/", 1)[0] if "/" in ld else None
+
     extra_link_flags = []
     if llvm_bin_dir:
         extra_link_flags.append("-B" + llvm_bin_dir)
@@ -157,7 +166,6 @@ def _llvm_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
         CxxPlatformInfo(name = "x86_64"),
     ]
 
-
 llvm_toolchain = rule(
     impl = _llvm_toolchain_impl,
     attrs = {
@@ -169,4 +177,3 @@ llvm_toolchain = rule(
     },
     is_toolchain_rule = True,
 )
-

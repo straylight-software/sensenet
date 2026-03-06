@@ -42,25 +42,69 @@ let
   # Script directory
   scripts-dir = ./scripts;
 
-  cfg = config.sense.nativelink;
+  cfg = config.sensenet.nativelink;
 in
 {
   _class = "flake";
 
-  options.sense.nativelink = {
+  options.sensenet.nativelink = {
     enable = mk-enable-option "NativeLink remote execution containers";
 
-    fly = {
-      app-prefix = mk-option {
-        type = types.str;
-        default = "aleph";
-        description = "Fly.io app name prefix (used for internal DNS)";
-      };
+    # ──────────────────────────────────────────────────────────────────────────
+    # Cloud Provider Selection
+    # ──────────────────────────────────────────────────────────────────────────
+    provider = mk-option {
+      type = types.enum [
+        "fly"
+        "gcp"
+      ];
+      default = "fly";
+      description = "Cloud provider for deployment (fly = x86_64 only, gcp = aarch64 supported)";
+    };
 
+    app-prefix = mk-option {
+      type = types.str;
+      default = "aleph";
+      description = "App/instance name prefix";
+    };
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Fly.io Configuration (x86_64 only)
+    # ──────────────────────────────────────────────────────────────────────────
+    fly = {
       region = mk-option {
         type = types.str;
         default = "iad";
         description = "Primary Fly.io region";
+      };
+    };
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # GCP Configuration (aarch64 via T2A instances)
+    # ──────────────────────────────────────────────────────────────────────────
+    gcp = {
+      project = mk-option {
+        type = types.str;
+        default = "";
+        description = "GCP project ID";
+      };
+
+      zone = mk-option {
+        type = types.str;
+        default = "us-central1-a";
+        description = "GCP zone for instances";
+      };
+
+      worker-machine-type = mk-option {
+        type = types.str;
+        default = "t2a-standard-16";
+        description = "GCP machine type for workers (t2a-* for aarch64)";
+      };
+
+      secrets-dir = mk-option {
+        type = types.str;
+        default = "./secrets";
+        description = "Path to directory containing encrypted secrets (gcp-nativelink.age)";
       };
     };
 
@@ -236,6 +280,12 @@ in
         default = "100gb";
         description = "Persistent volume size for nix store";
       };
+
+      isa = mk-option {
+        type = types.str;
+        default = "aarch64";
+        description = "ISA for remote execution matching (aarch64 or x86-64)";
+      };
     };
 
     registry = mk-option {
@@ -312,14 +362,14 @@ in
     buck2 = {
       engine-address = mk-option {
         type = types.str;
-        default = "grpc://${cfg.fly.app-prefix}-scheduler.fly.dev:443";
+        default = "grpc://${cfg.app-prefix}-scheduler.fly.dev:443";
         defaultText = "grpc://aleph-scheduler.fly.dev:443";
         description = "gRPC address for NativeLink scheduler (execution engine)";
       };
 
       cas-address = mk-option {
         type = types.str;
-        default = "grpc://${cfg.fly.app-prefix}-cas.fly.dev:443";
+        default = "grpc://${cfg.app-prefix}-cas.fly.dev:443";
         defaultText = "grpc://aleph-cas.fly.dev:443";
         description = "gRPC address for NativeLink CAS (content-addressed storage)";
       };
@@ -392,10 +442,26 @@ in
         # NOTE: Use inputs.*.packages.${system} directly, NOT inputs'
         # inputs' causes infinite recursion in flake-parts
         nativelink =
-          inputs.nativelink.packages.${system}.default or inputs.nativelink.packages.${system}.nativelink;
+          inputs.nativelink.packages.${system}.nativelink or inputs.nativelink.packages.${system}.default
+            or null;
 
-        # Fly internal DNS addresses (for container-to-container communication)
-        cas-addr = "${cfg.fly.app-prefix}-cas.internal:${to-string cfg.cas.port}";
+        # nix2gpu only supports x86_64-linux, so only define containers there
+        is-x86-linux = system == "x86_64-linux";
+
+        # Internal DNS addresses (for container-to-container communication)
+        # GCP uses internal DNS format: <instance>.<zone>.c.<project>.internal
+        # Fly.io uses <app>.internal
+        cas-addr =
+          if cfg.provider == "gcp" then
+            "${cfg.app-prefix}-cas.${cfg.gcp.zone}.c.${cfg.gcp.project}.internal:${to-string cfg.cas.port}"
+          else
+            "${cfg.app-prefix}-cas.internal:${to-string cfg.cas.port}";
+
+        scheduler-addr =
+          if cfg.provider == "gcp" then
+            "${cfg.app-prefix}-scheduler.${cfg.gcp.zone}.c.${cfg.gcp.project}.internal:${to-string cfg.scheduler.port}"
+          else
+            "${cfg.app-prefix}-scheduler.internal:${to-string cfg.scheduler.port}";
 
         # ──────────────────────────────────────────────────────────────────────
         # NativeLink JSON configs
@@ -428,6 +494,7 @@ in
                   "cpu_count" = "minimum";
                   "OSFamily" = "exact";
                   container-image = "exact";
+                  "ISA" = "exact";
                 };
               };
             }
@@ -625,7 +692,12 @@ in
             {
               local = {
                 "worker_api_endpoint" = {
-                  uri = "grpc://${cfg.fly.app-prefix}-scheduler.internal:50061";
+                  # Worker API port is 50061 (different from scheduler client port 50051)
+                  uri =
+                    if cfg.provider == "gcp" then
+                      "grpc://${cfg.app-prefix}-scheduler.${cfg.gcp.zone}.c.${cfg.gcp.project}.internal:50061"
+                    else
+                      "grpc://${cfg.app-prefix}-scheduler.internal:50061";
                 };
                 # Work directory MUST be on same filesystem as CAS fast tier
                 # to allow hardlinks. /tmp is tmpfs, /data is the Fly volume.
@@ -640,6 +712,9 @@ in
                   };
                   container-image = {
                     values = [ "nix-worker" ];
+                  };
+                  "ISA" = {
+                    values = [ cfg.worker.isa ];
                   };
                 };
               };
@@ -689,9 +764,10 @@ in
         inherit (pkgs) llvm-git nvidia-sdk gcc15;
         gcc = gcc15;
 
-        # Haskell toolchain - use sense.script.ghc for full Sense.Script support
+        # Haskell toolchain - use sensenet.script.ghc for full Sense.Script support
         # This ensures NativeLink workers can build all Haskell scripts via Buck2
-        ghc-with-packages = pkgs.sense.script.ghc;
+        # Fallback to standard GHC if sensenet overlay not available
+        ghc-with-packages = pkgs.sensenet.script.ghc or pkgs.haskellPackages.ghc;
 
         # Python with nanobind/pybind11 for Buck2 python_cxx rules
         python-env = with-packages (ps: [
@@ -701,7 +777,8 @@ in
         ]);
 
         # All toolchain packages for workers
-        toolchain-packages = [
+        # Filter out packages that might not exist on all systems
+        toolchain-packages = builtins.filter (x: x != null) [
           llvm-git
           nvidia-sdk
           gcc
@@ -714,8 +791,8 @@ in
           pkgs.coreutils
           pkgs.bash
           pkgs.gnumake
-          pkgs.lean4
-          pkgs.mdspan
+          (pkgs.lean4 or null)
+          # pkgs.mdspan - not available in nixpkgs
         ];
 
         # Generate the toolchain manifest as a separate derivation
@@ -772,7 +849,7 @@ in
           replace-strings
             [ "@appPrefix@" "@region@" "@schedulerPort@" "@schedulerMemory@" "@schedulerCpus@" ]
             [
-              cfg.fly.app-prefix
+              cfg.app-prefix
               cfg.fly.region
               (to-string cfg.scheduler.port)
               cfg.scheduler.memory
@@ -785,7 +862,7 @@ in
           replace-strings
             [ "@appPrefix@" "@region@" "@casPort@" "@casVolumeSize@" "@casMemory@" "@casCpus@" ]
             [
-              cfg.fly.app-prefix
+              cfg.app-prefix
               cfg.fly.region
               (to-string cfg.cas.port)
               cfg.cas.volume-size
@@ -808,7 +885,7 @@ in
               "@workerCpuKind@"
             ]
             [
-              cfg.fly.app-prefix
+              cfg.app-prefix
               cfg.fly.region
               (to-string cfg.worker.count)
               (to-string cfg.worker.cpus)
@@ -824,7 +901,7 @@ in
           replace-strings
             [ "@appPrefix@" "@region@" "@builderVolumeSize@" "@builderMemory@" "@builderCpus@" ]
             [
-              cfg.fly.app-prefix
+              cfg.app-prefix
               cfg.fly.region
               cfg.builder.volume-size
               cfg.builder.memory
@@ -865,7 +942,7 @@ in
                 "@builderFlyToml@"
               ]
               [
-                cfg.fly.app-prefix
+                cfg.app-prefix
                 cfg.fly.region
                 (to-string cfg.worker.count)
                 (to-string cfg.worker.cpus)
@@ -909,7 +986,7 @@ in
         status-script = write-shell-application {
           name = "nativelink-status";
           "runtimeInputs" = [ pkgs.flyctl ];
-          text = replace-strings [ "@appPrefix@" ] [ cfg.fly.app-prefix ] (
+          text = replace-strings [ "@appPrefix@" ] [ cfg.app-prefix ] (
             read-file (scripts-dir + "/status.sh")
           );
         };
@@ -918,9 +995,134 @@ in
         logs-script = write-shell-application {
           name = "nativelink-logs";
           "runtimeInputs" = [ pkgs.flyctl ];
-          text = replace-strings [ "@appPrefix@" ] [ cfg.fly.app-prefix ] (
-            read-file (scripts-dir + "/logs.sh")
-          );
+          text = replace-strings [ "@appPrefix@" ] [ cfg.app-prefix ] (read-file (scripts-dir + "/logs.sh"));
+        };
+
+        # ──────────────────────────────────────────────────────────────────────
+        # GCP Deployment Scripts (aarch64 support via T2A instances)
+        # Usage: nix run .#nativelink-deploy-gcp
+        # ──────────────────────────────────────────────────────────────────────
+
+        # Get the nativelink store path for embedding in scripts
+        nativelink-store-path =
+          if nativelink != null then "${nativelink}" else "/nix/store/placeholder-nativelink";
+
+        deploy-gcp = write-shell-application {
+          name = "nativelink-deploy-gcp";
+          "runtimeInputs" = [
+            pkgs.google-cloud-sdk
+            pkgs.age
+            pkgs.coreutils
+            pkgs.jq
+          ];
+          text =
+            replace-strings
+              [
+                "@gcpProject@"
+                "@gcpZone@"
+                "@appPrefix@"
+                "@workerCount@"
+                "@secretsDir@"
+                "@schedulerPort@"
+                "@casPort@"
+                "@schedulerGcpScript@"
+                "@casGcpScript@"
+                "@workerGcpScript@"
+              ]
+              [
+                cfg.gcp.project
+                cfg.gcp.zone
+                cfg.app-prefix
+                (to-string cfg.worker.count)
+                cfg.gcp.secrets-dir
+                (to-string cfg.scheduler.port)
+                (to-string cfg.cas.port)
+                # Inline the individual deploy scripts
+                "bash ${deploy-gcp-scheduler}/bin/nativelink-deploy-gcp-scheduler"
+                "bash ${deploy-gcp-cas}/bin/nativelink-deploy-gcp-cas"
+                "bash ${deploy-gcp-worker}/bin/nativelink-deploy-gcp-worker"
+              ]
+              (read-file (scripts-dir + "/deploy-gcp.sh"));
+        };
+
+        deploy-gcp-worker = write-shell-application {
+          name = "nativelink-deploy-gcp-worker";
+          "runtimeInputs" = [ pkgs.google-cloud-sdk ];
+          text =
+            replace-strings
+              [
+                "@gcpProject@"
+                "@gcpZone@"
+                "@gcpMachineType@"
+                "@appPrefix@"
+                "@workerVolumeSize@"
+                "@schedulerAddr@"
+                "@casAddr@"
+                "@nativelinkStore@"
+                "@workerConfig@"
+              ]
+              [
+                cfg.gcp.project
+                cfg.gcp.zone
+                cfg.gcp.worker-machine-type
+                cfg.app-prefix
+                cfg.worker.volume-size
+                "${cfg.app-prefix}-scheduler.${cfg.gcp.zone}.c.${cfg.gcp.project}.internal:${to-string cfg.scheduler.port}"
+                "${cfg.app-prefix}-cas.${cfg.gcp.zone}.c.${cfg.gcp.project}.internal:${to-string cfg.cas.port}"
+                nativelink-store-path
+                "${worker-config}"
+              ]
+              (read-file (scripts-dir + "/worker-gcp.sh"));
+        };
+
+        deploy-gcp-scheduler = write-shell-application {
+          name = "nativelink-deploy-gcp-scheduler";
+          "runtimeInputs" = [ pkgs.google-cloud-sdk ];
+          text =
+            replace-strings
+              [
+                "@gcpProject@"
+                "@gcpZone@"
+                "@appPrefix@"
+                "@schedulerPort@"
+                "@nativelinkStore@"
+                "@schedulerConfig@"
+              ]
+              [
+                cfg.gcp.project
+                cfg.gcp.zone
+                cfg.app-prefix
+                (to-string cfg.scheduler.port)
+                nativelink-store-path
+                "${scheduler-config}"
+              ]
+              (read-file (scripts-dir + "/scheduler-gcp.sh"));
+        };
+
+        deploy-gcp-cas = write-shell-application {
+          name = "nativelink-deploy-gcp-cas";
+          "runtimeInputs" = [ pkgs.google-cloud-sdk ];
+          text =
+            replace-strings
+              [
+                "@gcpProject@"
+                "@gcpZone@"
+                "@appPrefix@"
+                "@casPort@"
+                "@casVolumeSize@"
+                "@nativelinkStore@"
+                "@casConfig@"
+              ]
+              [
+                cfg.gcp.project
+                cfg.gcp.zone
+                cfg.app-prefix
+                (to-string cfg.cas.port)
+                cfg.cas.volume-size
+                nativelink-store-path
+                "${cas-config}"
+              ]
+              (read-file (scripts-dir + "/cas-gcp.sh"));
         };
 
         # ──────────────────────────────────────────────────────────────────────
@@ -946,151 +1148,162 @@ in
         };
 
       in
-      optional-attrs (nativelink != null) {
+      # nix2gpu only supports x86_64-linux, provide empty config for other systems
+      (optional-attrs (!is-x86-linux) { nix2gpu = { }; })
+      // optional-attrs (nativelink != null) (
         # ────────────────────────────────────────────────────────────────────
-        # Container definitions via nix2gpu
+        # Container definitions via nix2gpu (x86_64-linux only)
         # Build: nix build .#nativelink-scheduler
         # Push:  nix run .#nativelink-scheduler.copyToGithub
         # ────────────────────────────────────────────────────────────────────
+        optional-attrs is-x86-linux {
+          nix2gpu = {
+            # Scheduler container (minimal, just nativelink binary)
+            nativelink-scheduler = {
+              "systemPackages" = [
+                nativelink
+                scheduler-script
+              ];
 
-        nix2gpu = {
-          # Scheduler container (minimal, just nativelink binary)
-          nativelink-scheduler = {
-            "systemPackages" = [
-              nativelink
-              scheduler-script
-            ];
+              services.scheduler = {
+                imports = [ (mk-nativelink-service { script = scheduler-script; } { inherit lib pkgs; }) ];
+              };
 
-            services.scheduler = {
-              imports = [ (mk-nativelink-service { script = scheduler-script; } { inherit lib pkgs; }) ];
+              "exposedPorts" = {
+                "${to-string cfg.scheduler.port}/tcp" = { };
+              };
+
+              registries = [ cfg.registry ];
+
+              "extraEnv" = {
+                RUST_LOG = "info";
+              };
             };
 
-            "exposedPorts" = {
-              "${to-string cfg.scheduler.port}/tcp" = { };
+            # CAS container (content-addressed storage with LZ4 compression)
+            nativelink-cas = {
+              "systemPackages" = [
+                nativelink
+                cas-script
+              ];
+
+              services.cas = {
+                imports = [ (mk-nativelink-service { script = cas-script; } { inherit lib pkgs; }) ];
+              };
+
+              "exposedPorts" = {
+                "${to-string cfg.cas.port}/tcp" = { };
+              };
+
+              registries = [ cfg.registry ];
+
+              "extraEnv" = {
+                RUST_LOG = "info";
+              };
             };
 
-            registries = [ cfg.registry ];
+            # Worker container (minimal - toolchain fetched at runtime)
+            # Tools live on the volume at /data/nix, fetched from cache.nixos.org
+            # This keeps the image under Fly's 8GB limit
+            nativelink-worker = {
+              "systemPackages" = [
+                nativelink
+                worker-script
+                worker-setup-script
+                pkgs.nix
+                pkgs.coreutils
+                pkgs.bash
+                pkgs.cacert
+              ];
 
-            "extraEnv" = {
-              RUST_LOG = "info";
+              services.worker = {
+                imports = [ (mk-nativelink-service { script = worker-script; } { inherit lib pkgs; }) ];
+              };
+
+              registries = [ cfg.registry ];
+
+              "extraEnv" = {
+                RUST_LOG = "info";
+                NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+              };
+            };
+
+            # Builder container - nix + git + skopeo for remote builds
+            nativelink-builder = {
+              "systemPackages" = [
+                pkgs.nix
+                pkgs.git
+                pkgs.skopeo
+                pkgs.openssh
+                pkgs.coreutils
+                pkgs.bash
+                pkgs.gnugrep
+                pkgs.gnutar
+                pkgs.gzip
+                pkgs.curl
+                pkgs.jq
+                pkgs.cacert
+              ];
+
+              registries = [ cfg.registry ];
+
+              "extraEnv" = {
+                NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+                SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+              };
             };
           };
+        }
+        // {
+          # ────────────────────────────────────────────────────────────────────
+          # Export configs and scripts as packages for inspection/debugging
+          # ────────────────────────────────────────────────────────────────────
 
-          # CAS container (content-addressed storage with LZ4 compression)
-          nativelink-cas = {
-            "systemPackages" = [
-              nativelink
-              cas-script
-            ];
+          packages = {
+            # NativeLink JSON configs (for debugging)
+            nativelink-scheduler-config = scheduler-config;
+            nativelink-cas-config = cas-config;
+            nativelink-worker-config = worker-config;
 
-            services.cas = {
-              imports = [ (mk-nativelink-service { script = cas-script; } { inherit lib pkgs; }) ];
-            };
+            # Fly.io TOML configs (generated from options)
+            nativelink-scheduler-fly-toml = scheduler-fly-toml;
+            nativelink-cas-fly-toml = cas-fly-toml;
+            nativelink-worker-fly-toml = worker-fly-toml;
+            nativelink-builder-fly-toml = builder-fly-toml;
 
-            "exposedPorts" = {
-              "${to-string cfg.cas.port}/tcp" = { };
-            };
+            # Entrypoint scripts (used by containers)
+            nativelink-scheduler-script = scheduler-script;
+            nativelink-cas-script = cas-script;
+            nativelink-worker-script = worker-script;
+            nativelink-worker-setup = worker-setup-script;
+            nativelink-toolchain-manifest = toolchain-manifest;
 
-            registries = [ cfg.registry ];
+            # THE deploy script - does everything
+            # nix run .#nativelink-deploy
+            nativelink-deploy = deploy-all;
 
-            "extraEnv" = {
-              RUST_LOG = "info";
-            };
+            # Aliases for convenience (Fly.io)
+            nativelink-deploy-scheduler = deploy-scheduler;
+            nativelink-deploy-cas = deploy-cas;
+            nativelink-deploy-worker = deploy-worker;
+            nativelink-deploy-all = deploy-all;
+
+            # GCP deployment scripts (aarch64 support)
+            # nix run .#nativelink-deploy-gcp
+            nativelink-deploy-gcp = deploy-gcp;
+            nativelink-deploy-gcp-worker = deploy-gcp-worker;
+            nativelink-deploy-gcp-scheduler = deploy-gcp-scheduler;
+            nativelink-deploy-gcp-cas = deploy-gcp-cas;
+
+            # Operations scripts
+            nativelink-status = status-script;
+            nativelink-logs = logs-script;
+
+            # Buck2 RE client configuration
+            # Usage: cat $(nix build .#nativelink-buckconfig --print-out-paths) >> .buckconfig.local
+            nativelink-buckconfig = buckconfig-re-snippet;
           };
-
-          # Worker container (minimal - toolchain fetched at runtime)
-          # Tools live on the volume at /data/nix, fetched from cache.nixos.org
-          # This keeps the image under Fly's 8GB limit
-          nativelink-worker = {
-            "systemPackages" = [
-              nativelink
-              worker-script
-              worker-setup-script
-              pkgs.nix
-              pkgs.coreutils
-              pkgs.bash
-              pkgs.cacert
-            ];
-
-            services.worker = {
-              imports = [ (mk-nativelink-service { script = worker-script; } { inherit lib pkgs; }) ];
-            };
-
-            registries = [ cfg.registry ];
-
-            "extraEnv" = {
-              RUST_LOG = "info";
-              NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-            };
-          };
-
-          # Builder container - nix + git + skopeo for remote builds
-          nativelink-builder = {
-            "systemPackages" = [
-              pkgs.nix
-              pkgs.git
-              pkgs.skopeo
-              pkgs.openssh
-              pkgs.coreutils
-              pkgs.bash
-              pkgs.gnugrep
-              pkgs.gnutar
-              pkgs.gzip
-              pkgs.curl
-              pkgs.jq
-              pkgs.cacert
-            ];
-
-            registries = [ cfg.registry ];
-
-            "extraEnv" = {
-              NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-              SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-            };
-          };
-        };
-
-        # ────────────────────────────────────────────────────────────────────
-        # Export configs and scripts as packages for inspection/debugging
-        # ────────────────────────────────────────────────────────────────────
-
-        packages = {
-          # NativeLink JSON configs (for debugging)
-          nativelink-scheduler-config = scheduler-config;
-          nativelink-cas-config = cas-config;
-          nativelink-worker-config = worker-config;
-
-          # Fly.io TOML configs (generated from options)
-          nativelink-scheduler-fly-toml = scheduler-fly-toml;
-          nativelink-cas-fly-toml = cas-fly-toml;
-          nativelink-worker-fly-toml = worker-fly-toml;
-          nativelink-builder-fly-toml = builder-fly-toml;
-
-          # Entrypoint scripts (used by containers)
-          nativelink-scheduler-script = scheduler-script;
-          nativelink-cas-script = cas-script;
-          nativelink-worker-script = worker-script;
-          nativelink-worker-setup = worker-setup-script;
-          nativelink-toolchain-manifest = toolchain-manifest;
-
-          # THE deploy script - does everything
-          # nix run .#nativelink-deploy
-          nativelink-deploy = deploy-all;
-
-          # Aliases for convenience
-          nativelink-deploy-scheduler = deploy-scheduler;
-          nativelink-deploy-cas = deploy-cas;
-          nativelink-deploy-worker = deploy-worker;
-          nativelink-deploy-all = deploy-all;
-
-          # Operations scripts
-          nativelink-status = status-script;
-          nativelink-logs = logs-script;
-
-          # Buck2 RE client configuration
-          # Usage: cat $(nix build .#nativelink-buckconfig --print-out-paths) >> .buckconfig.local
-          nativelink-buckconfig = buckconfig-re-snippet;
-        };
-      };
+        }
+      );
   };
 }

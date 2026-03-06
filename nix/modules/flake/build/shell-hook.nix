@@ -145,8 +145,8 @@ let
       ""
     else
       let
-        combined-hook = pkgs.runCommand "sense-build-shell-hook.bash" { } ''
-          echo "# sense.build shell hook" > $out
+        combined-hook = pkgs.runCommand "sensenet-build-shell-hook.bash" { } ''
+          echo "# sensenet.build shell hook" > $out
           echo "mkdir -p bin" >> $out
           ${lib.concatMapStringsSep "\n" (hook: "cat ${hook} >> $out") all-hooks}
           echo 'echo "Generated bin/ wrappers for Buck2 toolchains"' >> $out

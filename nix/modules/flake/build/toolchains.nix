@@ -12,7 +12,7 @@ let
 
   # Turing Registry - authoritative build flags
   turing-registry =
-    pkgs.sense.turing-registry or {
+    pkgs.sensenet.turing-registry or {
       cflags = [ ];
       cxxflags = [ ];
     };

@@ -1,0 +1,20 @@
+app = "@appPrefix@-worker"
+primary_region = "@region@"
+
+[build]
+image = "ghcr.io/straylight-software/nativelink-worker:latest"
+
+[env]
+RUST_LOG = "info"
+
+[mounts]
+source = "nix_store"
+destination = "/nix"
+
+[[vm]]
+memory = "@workerMemory@"
+cpus = @workerCpus@
+cpu_kind = "@workerCpuKind@"
+
+[deploy]
+strategy = "rolling"

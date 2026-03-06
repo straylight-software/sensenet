@@ -1,55 +1,32 @@
 # BUILD.dhall Schema Reference
 
-> Zero Starlark: Typed build configs that generate BUCK files.
+Typed build configuration for sensenet.
 
 ## Overview
 
-BUILD.dhall files define build targets using typed Dhall records. The `sense` CLI or shell hook automatically generates BUCK files from these definitions.
+BUILD.dhall files define build targets using typed Dhall records. sensenet parses these directly into its internal representation for DICE-based execution.
 
 ```
-BUILD.dhall  →  dhall-to-buck  →  BUCK  →  buck2 build
+BUILD.dhall -> SenseNet.Dhall -> SenseNet.IR -> DICE -> execute
 ```
-
-Users only edit BUILD.dhall; BUCK files are derived artifacts.
 
 ## File Format
 
-Every BUILD.dhall exports a record with two fields:
+Every BUILD.dhall exports a record with a `targets` field:
 
 ```dhall
-{ rules : List Text    -- Rendered Starlark rule calls
-, header : Text        -- Load statements and file header
-}
+{ targets : List Rule }
 ```
 
 ### Example
 
 ```dhall
-let A = ./dhall/prelude/package.dhall
-let S = ./dhall/prelude/to-starlark.dhall
+let A = ../../../dhall/prelude/package.dhall
 
-let hello = A.haskellBinary "hello" ["Main.hs"]
-              with packages = ["base", "text"]
+let hello = A.cxxBinary "hello" ["main.cpp"] ([] : List A.Dep)
+              with std = A.CxxStd.Cxx23
 
-in  { rules = [ S.haskellBinary hello ]
-    , header = ''load("@toolchains//:haskell.bzl", "haskell_binary")''
-    }
-```
-
-Generates:
-
-```python
-# Generated from BUILD.dhall
-load("@toolchains//:haskell.bzl", "haskell_binary")
-
-haskell_binary(
-    name = "hello",
-    srcs = ["Main.hs"],
-    main = "Main",
-    packages = ["base", "text"],
-    ghc_options = ["-O2", "-Wall"],
-    visibility = ["PUBLIC"],
-)
+in  { targets = [ A.rule.cxxBinary hello ] }
 ```
 
 ## Rule Types
@@ -60,30 +37,72 @@ haskell_binary(
 let A = ./dhall/prelude/package.dhall
 
 -- Binary
-let mybin = A.cxxBinary "mybin" ["main.cpp"] deps
+let mybin = A.cxxBinary "mybin" ["main.cpp"] ([] : List A.Dep)
               with std = A.CxxStd.Cxx23
-              with cflags = ["-Wall"]
+              with cflags = ["-Wall", "-O2"]
               with ldflags = ["-lm"]
 
--- Library  
-let mylib = A.cxxLibrary "mylib" ["lib.cpp"] deps
+-- Library
+let mylib = A.cxxLibrary "mylib" ["lib.cpp"] ([] : List A.Dep)
               with hdrs = ["lib.h"]
               with std = A.CxxStd.Cxx20
+
+in  { targets =
+        [ A.rule.cxxBinary mybin
+        , A.rule.cxxLibrary mylib
+        ]
+    }
 ```
 
 **Fields:**
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | Text | required | Target name |
 | `srcs` | List Text | required | Source files |
-| `deps` | List Dep | `[]` | Dependencies |
+| `deps` | List Dep | required | Dependencies |
 | `std` | CxxStd | `Cxx17` | C++ standard |
 | `cflags` | List Text | `[]` | Compiler flags |
 | `ldflags` | List Text | `[]` | Linker flags |
-| `hdrs` | List Text | `[]` | Exported headers (library only) |
+| `hdrs` | List Text | `[]` | Exported headers (library) |
 | `vis` | Vis | `Public` | Visibility |
 
 **CxxStd:** `Cxx11`, `Cxx14`, `Cxx17`, `Cxx20`, `Cxx23`
+
+### Rust
+
+```dhall
+-- Binary
+let app = A.rustBinary "myapp" ["src/main.rs"] ([] : List A.Dep)
+            with edition = A.RustEdition.E2021
+
+-- Library
+let lib = A.rustLibrary "mylib" ["src/lib.rs"] ([] : List A.Dep)
+            with crate_name = Some "my_crate"
+            with proc_macro = True
+            with features = ["async", "serde"]
+
+in  { targets =
+        [ A.rule.rustBinary app
+        , A.rule.rustLibrary lib
+        ]
+    }
+```
+
+**Fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | Text | required | Target name |
+| `srcs` | List Text | required | Source files |
+| `deps` | List Dep | required | Dependencies |
+| `edition` | Edition | `E2021` | Rust edition |
+| `crate_name` | Optional Text | `None` | Crate name override |
+| `proc_macro` | Bool | `False` | Is proc macro |
+| `features` | List Text | `[]` | Enabled features |
+| `vis` | Vis | `Public` | Visibility |
+
+**Edition:** `E2015`, `E2018`, `E2021`, `E2024`
 
 ### Haskell
 
@@ -105,63 +124,56 @@ let ffi = A.haskellFFIBinary "ffi-app"
             with cxx_headers = ["wrapper.h"]
             with packages = ["base"]
             with extra_libs = ["stdc++"]
+
+in  { targets =
+        [ A.rule.haskellBinary app
+        , A.rule.haskellLibrary lib
+        , A.rule.haskellFFIBinary ffi
+        ]
+    }
 ```
 
 **Fields:**
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | Text | required | Target name |
 | `srcs` | List Text | required | Source files |
-| `main` | Text | `"Main"` | Main module (binary only) |
+| `main` | Text | `"Main"` | Main module (binary) |
 | `packages` | List Text | `["base"]` | GHC packages |
 | `language_extensions` | List Text | `[]` | GHC extensions |
 | `ghc_options` | List Text | `["-O2", "-Wall"]` | GHC flags |
-| `vis` | Vis | `Public` | Visibility |
-
-### Rust
-
-```dhall
--- Binary
-let app = A.rustBinary "myapp" ["src/main.rs"]
-            with edition = A.RustEdition.E2021
-
--- Library
-let lib = A.rustLibrary "mylib" ["src/lib.rs"]
-            with crate_name = Some "my_crate"
-            with proc_macro = True
-            with features = ["async", "serde"]
-```
-
-**Fields:**
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | Text | required | Target name |
-| `srcs` | List Text | required | Source files |
 | `deps` | List Dep | `[]` | Dependencies |
-| `edition` | Edition | `E2021` | Rust edition |
-| `crate_name` | Optional Text | `None` | Crate name override |
-| `proc_macro` | Bool | `False` | Is proc macro |
-| `features` | List Text | `[]` | Enabled features |
 | `vis` | Vis | `Public` | Visibility |
 
-**Edition:** `E2015`, `E2018`, `E2021`, `E2024`
-
-### Lean
+### Lean 4
 
 ```dhall
-let theorem = A.leanBinary "prover" ["Main.lean"]
+let theorem = A.leanBinary "prover" ["Main.lean"] ([] : List A.Dep)
                 with root_module = Some "Prover"
 
-let mathlib = A.leanLibrary "mathlib" ["Algebra.lean", "Topology.lean"]
+let mathlib = A.leanLibrary "mathlib" ["Algebra.lean", "Topology.lean"] ([] : List A.Dep)
+
+in  { targets =
+        [ A.rule.leanBinary theorem
+        , A.rule.leanLibrary mathlib
+        ]
+    }
 ```
 
 ### NVIDIA/CUDA
 
 ```dhall
-let kernel = A.nvBinary "matmul" ["matmul.cu"]
+let kernel = A.nvBinary "matmul" ["matmul.cu"] ([] : List A.Dep)
 
-let cudaLib = A.nvLibrary "kernels" ["ops.cu"]
+let cudaLib = A.nvLibrary "kernels" ["ops.cu"] ([] : List A.Dep)
                 with exported_headers = ["ops.cuh"]
+
+in  { targets =
+        [ A.rule.nvBinary kernel
+        , A.rule.nvLibrary cudaLib
+        ]
+    }
 ```
 
 ### PureScript
@@ -181,9 +193,11 @@ let cli = A.purescriptBinary "cli"
             with spago_yaml = "spago.yaml"
             with main = "Main"
 
--- Library
-let lib = A.purescriptLibrary "components"
-            with srcs = A.SrcSpec.Globs ["src/**/*.purs", "lib/**/*.purs"]
+in  { targets =
+        [ A.rule.purescriptApp app
+        , A.rule.purescriptBinary cli
+        ]
+    }
 ```
 
 ### Genrule
@@ -193,15 +207,19 @@ let gen = A.genrule "generated"
             with srcs = ["input.txt"]
             with out = "output.txt"
             with cmd = "cat $SRCS | process > $OUT"
+
+in  { targets = [ A.rule.genrule gen ] }
 ```
 
-### Nix C++ (with Nix dependencies)
+### Nix C++
 
 ```dhall
 let app = A.nixCxxBinary "app"
             with srcs = ["main.cpp"]
             with nix_deps = ["nixpkgs#openssl", "nixpkgs#zlib"]
             with compiler_flags = ["-O2"]
+
+in  { targets = [ A.rule.nixCxxBinary app ] }
 ```
 
 ## Dependencies
@@ -212,31 +230,85 @@ Dependencies use a union type:
 let Dep = < Local : Text | Flake : Text >
 
 -- Local target dependency
-A.local "//lib:mylib"
+A.local ":mylib"           -- Same package
+A.local "//lib:mylib"      -- Different package
 
--- Flake dependency (resolved via nix-analyze)
+-- Nix flake dependency
 A.flake "nixpkgs#openssl"
+A.flake "nixpkgs#zlib"
+A.nix "nixpkgs#fmt"        -- Alias for flake
 ```
 
-## Toolchains
-
-Toolchain BUILD.dhall defines available compilers:
+## Prelude Imports
 
 ```dhall
+-- Full prelude (recommended)
 let A = ./dhall/prelude/package.dhall
-let S = ./dhall/prelude/to-starlark.dhall
+
+-- Individual modules
+let C = ./dhall/prelude/Cxx.dhall
+let H = ./dhall/prelude/Haskell.dhall
+let R = ./dhall/prelude/Rust.dhall
+let L = ./dhall/prelude/Lean.dhall
+let N = ./dhall/prelude/Nv.dhall
+let PS = ./dhall/prelude/PureScript.dhall
+let T = ./dhall/prelude/Types.dhall
+let TC = ./dhall/prelude/Toolchain.dhall
+```
+
+## Rule Constructors
+
+The `A.rule.*` constructors wrap typed records into the `Rule` union:
+
+```dhall
+A.rule.cxxBinary      : CxxBinary -> Rule
+A.rule.cxxLibrary     : CxxLibrary -> Rule
+A.rule.rustBinary     : RustBinary -> Rule
+A.rule.rustLibrary    : RustLibrary -> Rule
+A.rule.haskellBinary  : HaskellBinary -> Rule
+A.rule.haskellLibrary : HaskellLibrary -> Rule
+A.rule.haskellFFIBinary : HaskellFFIBinary -> Rule
+A.rule.leanBinary     : LeanBinary -> Rule
+A.rule.leanLibrary    : LeanLibrary -> Rule
+A.rule.nvBinary       : NvBinary -> Rule
+A.rule.nvLibrary      : NvLibrary -> Rule
+A.rule.purescriptApp  : PureScriptApp -> Rule
+A.rule.purescriptBinary : PureScriptBinary -> Rule
+A.rule.purescriptLibrary : PureScriptLibrary -> Rule
+A.rule.genrule        : Genrule -> Rule
+A.rule.nixCxxBinary   : NixCxxBinary -> Rule
+A.rule.cratesIo       : CratesIo -> Rule
+A.rule.httpArchive    : HttpArchive -> Rule
+```
+
+## Visibility
+
+```dhall
+let Vis = < Public | Private >
+
+-- Usage
+let lib = A.cxxLibrary "internal" ["lib.cpp"] ([] : List A.Dep)
+            with vis = A.Vis.Private
+```
+
+## Toolchain BUILD.dhall
+
+The `toolchains/BUILD.dhall` defines compiler configurations:
+
+```dhall
+let A = ../dhall/prelude/package.dhall
+let S = ../dhall/prelude/to-starlark.dhall
 
 let cxx = (A.cxxToolchain "cxx")
             with c_extra_flags = ["-std=c23", "-Wall"]
-            with cxx_extra_flags = ["-std=c++23", "-Wall", "-fno-exceptions"]
+            with cxx_extra_flags = ["-std=c++23", "-Wall"]
             with link_style = "static"
 
 let haskell = (A.haskellToolchain "haskell")
-                with compiler_flags = ["-Wall", "-XGHC2024", "-fwrite-ide-info"]
+                with compiler_flags = ["-Wall", "-XGHC2024"]
 
 let rust = (A.rustToolchain "rust")
              with default_edition = "2021"
-             with rustc_flags = ["-C", "opt-level=2"]
 
 let nv = (A.nvToolchain "nv")
            with nv_archs = ["sm_90", "sm_100", "sm_120"]
@@ -251,107 +323,26 @@ in  { rules =
         , S.rustToolchain rust
         , S.nvToolchain nv
         , S.executionPlatform lre
-        , S.pythonBootstrap (A.pythonBootstrap "python_bootstrap")
-        , S.genruleToolchain (A.genruleToolchain "genrule")
         ]
     , header = ''
         load(":cxx.bzl", "llvm_toolchain")
         load(":haskell.bzl", "haskell_toolchain")
-        load(":rust.bzl", "rust_toolchain")
-        load(":nv.bzl", "nv_toolchain")
-        load(":execution.bzl", "lre_execution_platform", "host_configuration")
-        load("@aleph//toolchains:python.bzl", "system_python_bootstrap_toolchain")
-        load("@aleph//toolchains:genrule.bzl", "system_genrule_toolchain")
+        -- ...
         ''
     }
 ```
 
-## Zero Starlark Modes
+Note: Toolchain BUILD.dhall uses the old format with `rules` and `header` for Buck2 BUCK generation. Regular BUILD.dhall files use the new `targets` format for direct sensenet execution.
 
-### Simple Mode (Default)
+## Type Safety
 
-BUCK files are generated on shell entry and gitignored:
-
-```bash
-nix develop  # Generates BUCK files
-buck2 build //...
-```
-
-Add to `.gitignore`:
-```
-BUCK
-```
-
-### Overlay Mode
-
-BUCK files exist only in memory via Linux user namespaces:
-
-```bash
-sense-overlay buck2 build //...
-```
-
-How it works:
-1. Generates BUCK files into tmpdir
-2. Creates isolated mount namespace with `unshare`
-3. Bind-mounts BUCK files into source tree
-4. Runs buck2 in this namespace
-5. On exit, mounts disappear - no files on disk
-
-Requirements:
-- Linux with user namespaces (`kernel.unprivileged_userns_clone=1`)
-- util-linux (unshare, mount)
-
-### sense CLI
-
-The `sense` CLI wraps buck2 and regenerates BUCK files automatically:
-
-```bash
-sense build //target      # Regenerate + build
-sense run //target        # Regenerate + run
-sense gen                 # Regenerate all BUILD.dhall → BUCK
-sense targets             # List targets
-sense query <expr>        # Query build graph
-sense clean               # Clean outputs
-```
-
-## String Escaping
-
-The `q` function in `to-starlark.dhall` uses `Text/show` for proper escaping:
+Dhall's type system catches errors at config time:
 
 ```dhall
--- Handles backslashes, quotes, newlines correctly
-let q = \(t : Text) -> Text/show t
+-- Type error: "invalid" is not a valid CxxStd
+let bad = A.cxxBinary "test" ["main.cpp"] ([] : List A.Dep)
+            with std = "invalid"  -- Compile error!
 
--- "hello \"world\""  →  "\"hello \\\"world\\\"\""
+-- Type error: missing required field
+let bad2 = A.cxxBinary "test"  -- Missing srcs and deps!
 ```
-
-This ensures generated Starlark is always syntactically valid.
-
-## Prelude Imports
-
-```dhall
--- All types and constructors
-let A = ./dhall/prelude/package.dhall
-
--- Starlark renderers
-let S = ./dhall/prelude/to-starlark.dhall
-
--- Raw type definitions
-let C = ./dhall/prelude/Cxx.dhall
-let H = ./dhall/prelude/Haskell.dhall
-let R = ./dhall/prelude/Rust.dhall
-let L = ./dhall/prelude/Lean.dhall
-let N = ./dhall/prelude/Nv.dhall
-let PS = ./dhall/prelude/PureScript.dhall
-let TC = ./dhall/prelude/Toolchain.dhall
-let T = ./dhall/prelude/Types.dhall
-```
-
-## Migration from BUCK
-
-To convert existing BUCK files to BUILD.dhall:
-
-1. Create BUILD.dhall with equivalent Dhall definitions
-2. Add `BUCK` to `.gitignore`
-3. Run `sense gen` to verify output matches
-4. Delete the old BUCK file

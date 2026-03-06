@@ -10,7 +10,7 @@
 { inputs }:
 { config, lib, ... }:
 let
-  cfg = config.sense;
+  cfg = config.sensenet;
   llvm-git-overlay = import ../../overlays/llvm-git.nix { inherit inputs; };
   nvidia-sdk-overlay = import ../../overlays/nvidia-sdk.nix { inherit inputs; };
   libtorch-aarch64-overlay = import ../../overlays/libtorch-aarch64.nix;
@@ -20,7 +20,7 @@ in
 {
   _class = "flake";
 
-  options.sense = {
+  options.sensenet = {
     nixpkgs.allow-unfree = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -66,6 +66,5 @@ in
       _module.args.pkgs = lib.mkForce pkgs-configured;
       legacyPackages = lib.mkForce { };
     };
-
 
 }
