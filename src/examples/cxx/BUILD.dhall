@@ -1,10 +1,7 @@
---| C++ examples using LLVM toolchain
+--| C++ examples using LLVM toolchain (new format)
 
 let A = ../../../dhall/prelude/package.dhall
-let S = ../../../dhall/prelude/to-starlark.dhall
 
 let hello = A.cxxBinary "hello-cxx" ["hello.cpp"] ([] : List A.Dep)
 
-in  { rules = [ S.cxxBinary hello { compiler = [] : List Text, linker = [] : List Text } ]
-    , header = ""
-    }
+in  { targets = [ A.rule.cxxBinary hello ] }

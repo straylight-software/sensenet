@@ -1,5 +1,4 @@
-# toolchains/haskell.bzl
-#
+# Generated from Dhall - DO NOT EDIT
 # Haskell toolchain and rules using GHC from Nix.
 #
 # Uses ghcWithPackages from the Nix devshell, which includes all
@@ -14,17 +13,27 @@
 #   haskell_binary     - executable from sources + deps
 #   haskell_c_library  - FFI exports callable from C/C++
 #   haskell_ffi_binary - Haskell calling C/C++ via FFI
+#   haskell_ffi_test   - FFI test executable
 #   haskell_script     - single-file scripts
 #   haskell_test       - test executable
 
-# NOTE: Must use upstream @prelude types for HaskellToolchainInfo since prelude
-# haskell_binary rule expects that provider. Our custom rules (haskell_script,
-# etc.) don't use the toolchain provider - they read config directly.
+
 load("@prelude//haskell:toolchain.bzl", "HaskellToolchainInfo", "HaskellPlatformInfo")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
+HaskellLibraryInfo = provider(fields = {
+    "package_name": provider_field(str),
+    "hi_dir": provider_field(Artifact | None, default = None),
+    "object_dir": provider_field(Artifact | None, default = None),
+    "stub_dir": provider_field(Artifact | None, default = None),
+    "hie_dir": provider_field(Artifact | None, default = None),
+    "objects": provider_field(list, default = []),
+    "modules": provider_field(list, default = []),
+})
+
+HaskellIncludeInfo = provider(fields = {
+    "include_dirs": provider_field(list, default = []),
+})
+
 
 # Mandatory compiler flags - applied to all Haskell compilation
 # These are non-negotiable and cannot be overridden by targets
@@ -42,40 +51,37 @@ def _get_ghc_pkg() -> str:
 def _get_package_db() -> str | None:
     return read_root_config("haskell", "global_package_db", None)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PROVIDERS
-# ═══════════════════════════════════════════════════════════════════════════════
+def _get_stan() -> str | None:
+    return read_root_config("haskell", "stan", None)
 
-HaskellLibraryInfo = provider(fields = {
-    "package_name": provider_field(str),
-    "hi_dir": provider_field(Artifact | None, default = None),
-    "object_dir": provider_field(Artifact | None, default = None),
-    "stub_dir": provider_field(Artifact | None, default = None),
-    "hie_dir": provider_field(Artifact | None, default = None),  # For IDE support
-    "objects": provider_field(list, default = []),
-    "modules": provider_field(list, default = []),  # Source files for source-based deps
-})
-
-# For C consumers of Haskell FFI libraries
-HaskellIncludeInfo = provider(fields = {
-    "include_dirs": provider_field(list, default = []),
-})
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TOOLCHAIN
-# ═══════════════════════════════════════════════════════════════════════════════
+def _run_stan_analysis(ctx: AnalysisContext, hie_dir: Artifact, srcs: list, category: str) -> Artifact:
+    """Run Stan static analysis on HIE files."""
+    stan = _get_stan()
+    stan_report = ctx.actions.declare_output("stan-report.json")
+    
+    if stan == None:
+        # Stan not available, fail the build
+        fail("Stan is not configured. Please add 'stan = <path>' to the [haskell] section of .buckconfig.local")
+    
+    # Build stan command - capture JSON to check for issues, then print human-readable output on failure
+    # Stan uses --hiedir (not --hie-dir)
+    stan_shell_cmd = cmd_args([
+        "/bin/sh", "-c",
+        stan + " --hiedir $1 --json-output > $2 && " +
+        "if [ \"$(jq '.observations | length' $2)\" -gt 0 ]; then " +
+        "  echo 'Stan found linting issues:' && " +
+        stan + " --hiedir $1 && exit 1; " +
+        "fi",
+        "--",
+        hie_dir,
+        stan_report.as_output(),
+    ])
+    
+    ctx.actions.run(stan_shell_cmd, category = category, identifier = ctx.attrs.name)
+    return stan_report
 
 def _haskell_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    Haskell toolchain with paths from .buckconfig.local.
-
-    Reads [haskell] section for:
-      ghc              - GHC compiler
-      ghc_pkg          - GHC package manager
-      haddock          - Documentation generator
-      ghc_lib_dir      - GHC library directory
-      global_package_db - Global package database
-    """
+    """Haskell toolchain with paths from .buckconfig.local"""
     ghc = read_root_config("haskell", "ghc", "bin/ghc")
     ghc_pkg = read_root_config("haskell", "ghc_pkg", "bin/ghc-pkg")
     haddock = read_root_config("haskell", "haddock", "bin/haddock")
@@ -101,6 +107,7 @@ def _haskell_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
     ]
 
+
 haskell_toolchain = rule(
     impl = _haskell_toolchain_impl,
     attrs = {
@@ -108,22 +115,13 @@ haskell_toolchain = rule(
         "linker_flags": attrs.list(attrs.string(), default = []),
         "ghci_script_template": attrs.option(attrs.source(), default = None),
         "ghci_iserv_template": attrs.option(attrs.source(), default = None),
-        "script_template_processor": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
+        "script_template_processor": attrs.option(attrs.exec_dep(providers = [RunInfo], ), default = None),
     },
     is_toolchain_rule = True,
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# haskell_library - Compile to .hi/.o files
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    Build a Haskell library.
-    
-    Compiles sources to .hi interface files and .o object files.
-    For multi-source libraries, all sources are compiled together.
-    """
+    """"""
     ghc = _get_ghc()
     package_db = _get_package_db()
     
@@ -192,22 +190,27 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     
     ctx.actions.run(cmd, category = "haskell_compile", identifier = ctx.attrs.name)
     
-    # Create static library from objects
+    # Create static library from objects (use find for nested module hierarchies)
     lib = ctx.actions.declare_output("lib{}.a".format(ctx.attrs.name))
     ar_cmd = cmd_args(
         "/bin/sh", "-c",
-        cmd_args("ar rcs", lib.as_output(), cmd_args(obj_dir, format = "{}/*.o"), delimiter = " "),
+        cmd_args("ar rcs", lib.as_output(), cmd_args(obj_dir, format = "$(find {} -name '*.o')"), delimiter = " "),
     )
     ctx.actions.run(ar_cmd, category = "haskell_archive", identifier = ctx.attrs.name)
+    
+    # Run Stan static analysis on HIE files
+    stan_report = _run_stan_analysis(ctx, hie_dir, ctx.attrs.srcs, "stan_library")
     
     return [
         DefaultInfo(
             default_output = lib,
+            other_outputs = [stan_report],
             sub_targets = {
                 "hi": [DefaultInfo(default_outputs = [hi_dir])],
                 "stubs": [DefaultInfo(default_outputs = [stub_dir])],
                 "objects": [DefaultInfo(default_outputs = [obj_dir])],
                 "hie": [DefaultInfo(default_outputs = [hie_dir])],
+                "stan": [DefaultInfo(default_outputs = [stan_report])],
             },
         ),
         HaskellLibraryInfo(
@@ -221,6 +224,7 @@ def _haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
     ]
 
+
 haskell_library = rule(
     impl = _haskell_library_impl,
     attrs = {
@@ -229,17 +233,13 @@ haskell_library = rule(
         "packages": attrs.list(attrs.string(), default = []),
         "ghc_options": attrs.list(attrs.string(), default = []),
         "language_extensions": attrs.list(attrs.string(), default = []),
+        "stan_config": attrs.option(attrs.source(), default = None),
+        "stan_severity": attrs.option(attrs.string(), default = None),
     },
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# haskell_binary - Executable from sources + deps
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    Build a Haskell executable.
-    """
+    """"""
     ghc = _get_ghc()
     package_db = _get_package_db()
     
@@ -278,7 +278,7 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     hie_dir = ctx.actions.declare_output("hie", dir = True)
     cmd.add("-fwrite-ide-info")
     cmd.add("-hiedir", hie_dir.as_output())
-    
+
 
     # Mandatory flags (non-negotiable)
     cmd.add(MANDATORY_GHC_FLAGS)
@@ -318,45 +318,40 @@ def _haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     
     ctx.actions.run(cmd, category = "ghc", identifier = ctx.attrs.name)
     
+    # Run Stan static analysis
+    stan_report = _run_stan_analysis(ctx, hie_dir, ctx.attrs.srcs, "stan_analysis")
+    
     return [
         DefaultInfo(
             default_output = out,
+            other_outputs = [stan_report],
             sub_targets = {
                 "hi": [DefaultInfo(default_outputs = [hi_dir])],
                 "hie": [DefaultInfo(default_outputs = [hie_dir])],
+                "stan": [DefaultInfo(default_outputs = [stan_report])],
             },
         ),
         RunInfo(args = cmd_args(out)),
     ]
 
+
 haskell_binary = rule(
     impl = _haskell_binary_impl,
     attrs = {
-        "srcs": attrs.list(attrs.source()),
+        "srcs": attrs.list(attrs.source(), default = []),
         "deps": attrs.list(attrs.dep(), default = []),
         "main": attrs.option(attrs.string(), default = None),
         "packages": attrs.list(attrs.string(), default = []),
         "ghc_options": attrs.list(attrs.string(), default = []),
         "language_extensions": attrs.list(attrs.string(), default = []),
-        "compiler_flags": attrs.list(attrs.string(), default = []),  # Backwards compat
+        "compiler_flags": attrs.list(attrs.string(), default = []),
+        "stan_config": attrs.option(attrs.source(), default = None),
+        "stan_severity": attrs.option(attrs.string(), default = None),
     },
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# haskell_c_library - FFI exports callable from C/C++
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def _haskell_c_library_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    Build a C-callable library from Haskell code with foreign exports.
-    
-    Produces:
-      1. Static library with Haskell code
-      2. Stub headers for C consumers
-      3. HaskellIncludeInfo for include path propagation
-    
-    C code must call hs_init() before any Haskell functions.
-    """
+    """"""
     ghc = _get_ghc()
     package_db = _get_package_db()
     
@@ -451,50 +446,27 @@ def _haskell_c_library_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
     ]
 
+
 haskell_c_library = rule(
     impl = _haskell_c_library_impl,
     attrs = {
         "srcs": attrs.list(attrs.source(), default = []),
         "deps": attrs.list(attrs.dep(), default = []),
-        "packages": attrs.list(attrs.string(), default = ["base"]),
+        "packages": attrs.list(attrs.string(), default = []),
         "ghc_options": attrs.list(attrs.string(), default = []),
         "language_extensions": attrs.list(attrs.string(), default = []),
     },
-    doc = """
-    Build a C-callable static library from Haskell with foreign exports.
-    
-    Example Haskell:
-        {-# LANGUAGE ForeignFunctionInterface #-}
-        module FFI where
-        foreign export ccall hs_double :: CInt -> IO CInt
-        hs_double x = return (x * 2)
-    
-    Example C:
-        #include "HsFFI.h"
-        #include "FFI_stub.h"
-        int main(int argc, char *argv[]) {
-            hs_init(&argc, &argv);
-            int result = hs_double(21);
-            hs_exit();
-            return 0;
-        }
-    """,
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# haskell_ffi_binary - Haskell calling C/C++ via FFI
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    Build a Haskell binary that calls C/C++ code via FFI.
-    
-    Steps:
-      1. Compile C++ sources to .o files with clang
-      2. Compile and link Haskell sources with GHC, including the C++ objects
-    """
+    """"""
     ghc = _get_ghc()
+    ghc_pkg = _get_ghc_pkg()
     cxx = read_root_config("cxx", "cxx", "clang++")
+    
+    # Read library paths from config (for Nix-provided libraries)
+    liburing_lib = read_root_config("io-uring", "liburing_lib", "")
+    liburing_include = read_root_config("io-uring", "liburing_include", "")
     
     # C++ stdlib paths for unwrapped clang
     gcc_include = read_root_config("cxx", "gcc_include", "")
@@ -519,6 +491,14 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     
     cxx_compile_flags.extend(["-I", "."])
     
+    # Add user-specified include directories
+    for inc_dir in ctx.attrs.include_dirs:
+        cxx_compile_flags.extend(["-I", inc_dir])
+    
+    # Add config-provided include directories (from Nix)
+    if liburing_include:
+        cxx_compile_flags.extend(["-I", liburing_include])
+    
     cxx_objects = []
     for src in ctx.attrs.cxx_srcs:
         obj_name = src.short_path.replace(".cpp", ".o").replace(".c", ".o")
@@ -533,26 +513,66 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     obj_dir = ctx.actions.declare_output("hs_objs", dir = True)
     hi_dir = ctx.actions.declare_output("hs_hi", dir = True)
     
-    ghc_cmd = cmd_args([ghc])
+    # Use ghc-pkg-id wrapper script to translate -package to -package-id
+    # This works around GHC 9.12 bug where -package doesn't expose packages
+    # Path comes from config, set by flake module's shellHook
+    ghc_wrapper = read_root_config("haskell", "ghc_pkg_wrapper", "bin/ghc-pkg-id")
+    ghc_cmd = cmd_args([ghc_wrapper, ghc, ghc_pkg])
     ghc_cmd.add("-O2", "-threaded")
     
     # Output directories (intermediate .o/.hi files go to buck-out, not source tree)
     ghc_cmd.add("-odir", obj_dir.as_output())
     ghc_cmd.add("-hidir", hi_dir.as_output())
     
+    # Generate .hie files for IDE support and Stan analysis
+    hie_dir = ctx.actions.declare_output("hie", dir = True)
+    ghc_cmd.add("-fwrite-ide-info")
+    ghc_cmd.add("-hiedir", hie_dir.as_output())
+    
     # Mandatory flags (non-negotiable)
     ghc_cmd.add(MANDATORY_GHC_FLAGS)
     ghc_cmd.add("-XGHC2024")
     
+    # GCC library path for libstdc++
     if gcc_lib_base:
         ghc_cmd.add("-optl", "-L" + gcc_lib_base)
     
+    # Extra library directories from attrs
+    for lib_dir in ctx.attrs.extra_lib_dirs:
+        ghc_cmd.add("-optl", "-L" + lib_dir)
+        ghc_cmd.add("-optl", "-Wl,-rpath," + lib_dir)
+    
+    # Config-provided library directories (from Nix)
+    if liburing_lib:
+        ghc_cmd.add("-optl", "-L" + liburing_lib)
+        ghc_cmd.add("-optl", "-Wl,-rpath," + liburing_lib)
+    
     ghc_cmd.add("-lstdc++")
+    
+    # Link against extra libraries
+    for lib in ctx.attrs.extra_libs:
+        ghc_cmd.add("-l" + lib)
+    
+    # Extra linker flags
+    for flag in ctx.attrs.linker_flags:
+        ghc_cmd.add("-optl", flag)
+    
     ghc_cmd.add("-o", out.as_output())
     
     # Language extensions
     for ext in ctx.attrs.language_extensions:
         ghc_cmd.add("-X{}".format(ext))
+    
+    # GHC options from attrs
+    ghc_cmd.add(ctx.attrs.ghc_options)
+    
+    # Packages
+    for pkg in ctx.attrs.packages:
+        ghc_cmd.add("-package", pkg)
+    
+    # Include directories for Haskell FFI (cbits)
+    for inc_dir in ctx.attrs.include_dirs:
+        ghc_cmd.add("-I" + inc_dir)
     
     ghc_cmd.add(ctx.attrs.compiler_flags)
     ghc_cmd.add(ctx.attrs.hs_srcs)
@@ -560,33 +580,216 @@ def _haskell_ffi_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     
     ctx.actions.run(ghc_cmd, category = "ghc_link", identifier = ctx.attrs.name)
     
+    # Run Stan static analysis (skip for FFI code that inherently uses patterns Stan flags)
+    if not ctx.attrs.skip_stan:
+        stan_report = _run_stan_analysis(ctx, hie_dir, ctx.attrs.hs_srcs, "stan_ffi")
+        other_outputs = [stan_report]
+        sub_targets = {
+            "hie": [DefaultInfo(default_outputs = [hie_dir])],
+            "stan": [DefaultInfo(default_outputs = [stan_report])],
+        }
+    else:
+        other_outputs = []
+        sub_targets = {
+            "hie": [DefaultInfo(default_outputs = [hie_dir])],
+        }
+    
     return [
-        DefaultInfo(default_output = out),
+        DefaultInfo(
+            default_output = out,
+            other_outputs = other_outputs,
+            sub_targets = sub_targets,
+        ),
         RunInfo(args = [out]),
     ]
+
 
 haskell_ffi_binary = rule(
     impl = _haskell_ffi_binary_impl,
     attrs = {
-        "hs_srcs": attrs.list(attrs.source()),
+        "hs_srcs": attrs.list(attrs.source(), default = []),
         "cxx_srcs": attrs.list(attrs.source(), default = []),
         "cxx_headers": attrs.list(attrs.source(), default = []),
         "deps": attrs.list(attrs.dep(), default = []),
+        "packages": attrs.list(attrs.string(), default = []),
         "compiler_flags": attrs.list(attrs.string(), default = []),
         "language_extensions": attrs.list(attrs.string(), default = []),
+        "ghc_options": attrs.list(attrs.string(), default = []),
+        "extra_libs": attrs.list(attrs.string(), default = []),
+        "extra_lib_dirs": attrs.list(attrs.string(), default = []),
+        "include_dirs": attrs.list(attrs.string(), default = []),
+        "linker_flags": attrs.list(attrs.string(), default = []),
+        "skip_stan": attrs.bool(default = False),
     },
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# haskell_script - Single-file scripts
-# ═══════════════════════════════════════════════════════════════════════════════
+def _haskell_ffi_test_impl(ctx: AnalysisContext) -> list[Provider]:
+    """"""
+    ghc = _get_ghc()
+    ghc_pkg = _get_ghc_pkg()
+    cxx = read_root_config("cxx", "cxx", "clang++")
+    
+    # Read library paths from config (for Nix-provided libraries)
+    liburing_lib = read_root_config("io-uring", "liburing_lib", "")
+    liburing_include = read_root_config("io-uring", "liburing_include", "")
+    
+    # C++ stdlib paths for unwrapped clang
+    gcc_include = read_root_config("cxx", "gcc_include", "")
+    gcc_include_arch = read_root_config("cxx", "gcc_include_arch", "")
+    glibc_include = read_root_config("cxx", "glibc_include", "")
+    clang_resource_dir = read_root_config("cxx", "clang_resource_dir", "")
+    gcc_lib_base = read_root_config("cxx", "gcc_lib_base", "")
+    
+    out = ctx.actions.declare_output(ctx.attrs.name)
+    
+    # Step 1: Compile C++ sources
+    cxx_compile_flags = ["-std=c++17", "-O2", "-fPIC", "-c"]
+    
+    if gcc_include:
+        cxx_compile_flags.extend(["-isystem", gcc_include])
+    if gcc_include_arch:
+        cxx_compile_flags.extend(["-isystem", gcc_include_arch])
+    if glibc_include:
+        cxx_compile_flags.extend(["-isystem", glibc_include])
+    if clang_resource_dir:
+        cxx_compile_flags.extend(["-resource-dir=" + clang_resource_dir])
+    
+    cxx_compile_flags.extend(["-I", "."])
+    
+    # Add user-specified include directories
+    for inc_dir in ctx.attrs.include_dirs:
+        cxx_compile_flags.extend(["-I", inc_dir])
+    
+    # Add config-provided include directories (from Nix)
+    if liburing_include:
+        cxx_compile_flags.extend(["-I", liburing_include])
+    
+    cxx_objects = []
+    for src in ctx.attrs.cxx_srcs:
+        obj_name = src.short_path.replace(".cpp", ".o").replace(".c", ".o")
+        obj = ctx.actions.declare_output(obj_name)
+        
+        cmd = cmd_args([cxx] + cxx_compile_flags + ["-o", obj.as_output(), src])
+        ctx.actions.run(cmd, category = "cxx_compile", identifier = src.short_path)
+        cxx_objects.append(obj)
+    
+    # Step 2: Compile Haskell and link
+    # Output directories for intermediate files (keeps source tree clean)
+    obj_dir = ctx.actions.declare_output("hs_objs", dir = True)
+    hi_dir = ctx.actions.declare_output("hs_hi", dir = True)
+    
+    # Use ghc-pkg-id wrapper script to translate -package to -package-id
+    # This works around GHC 9.12 bug where -package doesn't expose packages
+    # Path comes from config, set by flake module's shellHook
+    ghc_wrapper = read_root_config("haskell", "ghc_pkg_wrapper", "bin/ghc-pkg-id")
+    ghc_cmd = cmd_args([ghc_wrapper, ghc, ghc_pkg])
+    ghc_cmd.add("-O2", "-threaded")
+    
+    # Output directories (intermediate .o/.hi files go to buck-out, not source tree)
+    ghc_cmd.add("-odir", obj_dir.as_output())
+    ghc_cmd.add("-hidir", hi_dir.as_output())
+    
+    # Generate .hie files for IDE support and Stan analysis
+    hie_dir = ctx.actions.declare_output("hie", dir = True)
+    ghc_cmd.add("-fwrite-ide-info")
+    ghc_cmd.add("-hiedir", hie_dir.as_output())
+    
+    # Mandatory flags (non-negotiable)
+    ghc_cmd.add(MANDATORY_GHC_FLAGS)
+    ghc_cmd.add("-XGHC2024")
+    
+    # GCC library path for libstdc++
+    if gcc_lib_base:
+        ghc_cmd.add("-optl", "-L" + gcc_lib_base)
+    
+    # Extra library directories from attrs
+    for lib_dir in ctx.attrs.extra_lib_dirs:
+        ghc_cmd.add("-optl", "-L" + lib_dir)
+        ghc_cmd.add("-optl", "-Wl,-rpath," + lib_dir)
+    
+    # Config-provided library directories (from Nix)
+    if liburing_lib:
+        ghc_cmd.add("-optl", "-L" + liburing_lib)
+        ghc_cmd.add("-optl", "-Wl,-rpath," + liburing_lib)
+    
+    ghc_cmd.add("-lstdc++")
+    
+    # Link against extra libraries
+    for lib in ctx.attrs.extra_libs:
+        ghc_cmd.add("-l" + lib)
+    
+    # Extra linker flags
+    for flag in ctx.attrs.linker_flags:
+        ghc_cmd.add("-optl", flag)
+    
+    ghc_cmd.add("-o", out.as_output())
+    
+    # Language extensions
+    for ext in ctx.attrs.language_extensions:
+        ghc_cmd.add("-X{}".format(ext))
+    
+    # GHC options from attrs
+    ghc_cmd.add(ctx.attrs.ghc_options)
+    
+    # Packages
+    for pkg in ctx.attrs.packages:
+        ghc_cmd.add("-package", pkg)
+    
+    # Include directories for Haskell FFI (cbits)
+    for inc_dir in ctx.attrs.include_dirs:
+        ghc_cmd.add("-I" + inc_dir)
+    
+    ghc_cmd.add(ctx.attrs.compiler_flags)
+    ghc_cmd.add(ctx.attrs.hs_srcs)
+    ghc_cmd.add(cxx_objects)
+    
+    ctx.actions.run(ghc_cmd, category = "ghc_link", identifier = ctx.attrs.name)
+    
+    # Run Stan static analysis (skip for FFI code that inherently uses patterns Stan flags)
+    if not ctx.attrs.skip_stan:
+        stan_report = _run_stan_analysis(ctx, hie_dir, ctx.attrs.hs_srcs, "stan_ffi_test")
+        other_outputs = [stan_report]
+        sub_targets = {
+            "hie": [DefaultInfo(default_outputs = [hie_dir])],
+            "stan": [DefaultInfo(default_outputs = [stan_report])],
+        }
+    else:
+        other_outputs = []
+        sub_targets = {
+            "hie": [DefaultInfo(default_outputs = [hie_dir])],
+        }
+    
+    return [
+        DefaultInfo(
+            default_output = out,
+            other_outputs = other_outputs,
+            sub_targets = sub_targets,
+        ),
+        RunInfo(args = [out]),
+    ]
+
+
+haskell_ffi_test = rule(
+    impl = _haskell_ffi_test_impl,
+    attrs = {
+        "hs_srcs": attrs.list(attrs.source(), default = []),
+        "cxx_srcs": attrs.list(attrs.source(), default = []),
+        "cxx_headers": attrs.list(attrs.source(), default = []),
+        "deps": attrs.list(attrs.dep(), default = []),
+        "packages": attrs.list(attrs.string(), default = []),
+        "compiler_flags": attrs.list(attrs.string(), default = []),
+        "language_extensions": attrs.list(attrs.string(), default = []),
+        "ghc_options": attrs.list(attrs.string(), default = []),
+        "extra_libs": attrs.list(attrs.string(), default = []),
+        "extra_lib_dirs": attrs.list(attrs.string(), default = []),
+        "include_dirs": attrs.list(attrs.string(), default = []),
+        "linker_flags": attrs.list(attrs.string(), default = []),
+        "skip_stan": attrs.bool(default = False),
+    },
+)
 
 def _haskell_script_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    Build a single-file Haskell script.
-    
-    Uses ghcWithPackages from Nix for external deps.
-    """
+    """"""
     ghc = _get_ghc()
     
     out = ctx.actions.declare_output(ctx.attrs.name)
@@ -623,29 +826,119 @@ def _haskell_script_impl(ctx: AnalysisContext) -> list[Provider]:
         RunInfo(args = [out]),
     ]
 
+
 haskell_script = rule(
     impl = _haskell_script_impl,
     attrs = {
-        "srcs": attrs.list(attrs.source()),
+        "srcs": attrs.list(attrs.source(), default = []),
         "include_paths": attrs.list(attrs.string(), default = []),
         "compiler_flags": attrs.list(attrs.string(), default = []),
         "packages": attrs.list(attrs.string(), default = []),
     },
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# haskell_test - Test executable (same as binary)
-# ═══════════════════════════════════════════════════════════════════════════════
+def _haskell_test_impl(ctx: AnalysisContext) -> list[Provider]:
+    """"""
+    ghc = _get_ghc()
+    package_db = _get_package_db()
+    
+    out = ctx.actions.declare_output(ctx.attrs.name)
+    
+    # Output directories for intermediate files (keeps source tree clean)
+    obj_dir = ctx.actions.declare_output("objs", dir = True)
+    hi_dir = ctx.actions.declare_output("hi", dir = True)
+    
+    # Collect dependency info
+    dep_hi_dirs = []
+    dep_libs = []
+    dep_sources = []  # For source-based deps
+    for dep in ctx.attrs.deps:
+        if HaskellLibraryInfo in dep:
+            lib_info = dep[HaskellLibraryInfo]
+            if lib_info.hi_dir:
+                dep_hi_dirs.append(lib_info.hi_dir)
+            if lib_info.objects:
+                dep_libs.extend(lib_info.objects)
+            elif lib_info.object_dir:
+                dep_libs.append(lib_info.object_dir)
+            # Also collect source modules for source-based compilation
+            if lib_info.modules:
+                dep_sources.extend(lib_info.modules)
+    
+    cmd = cmd_args([ghc])
+    cmd.add("-package-env=-")
+    cmd.add("-O2")
+    
+    # Output directories (intermediate .o/.hi files go to buck-out, not source tree)
+    cmd.add("-odir", obj_dir.as_output())
+    cmd.add("-hidir", hi_dir.as_output())
+    
+    # Generate .hie files for IDE support (go-to-definition, etc.)
+    hie_dir = ctx.actions.declare_output("hie", dir = True)
+    cmd.add("-fwrite-ide-info")
+    cmd.add("-hiedir", hie_dir.as_output())
+
+
+    # Mandatory flags (non-negotiable)
+    cmd.add(MANDATORY_GHC_FLAGS)
+    cmd.add("-XGHC2024")
+    
+    if package_db:
+        cmd.add("-package-db", package_db)
+    
+    # Main module
+    if ctx.attrs.main:
+        cmd.add("-main-is", ctx.attrs.main)
+    
+    cmd.add("-o", out.as_output())
+    
+    # Language extensions
+    for ext in ctx.attrs.language_extensions:
+        cmd.add("-X{}".format(ext))
+    
+    # GHC options (includes compiler_flags for backwards compat)
+    cmd.add(ctx.attrs.ghc_options)
+    cmd.add(ctx.attrs.compiler_flags)
+    
+    # Packages
+    for pkg in ctx.attrs.packages:
+        cmd.add("-package", pkg)
+    
+    # Include paths for dependencies
+    for hi_d in dep_hi_dirs:
+        cmd.add(cmd_args("-i", hi_d, delimiter = ""))
+    
+    # Sources (our sources + source-based deps)
+    cmd.add(ctx.attrs.srcs)
+    cmd.add(dep_sources)
+    
+    # Link against compiled deps
+    cmd.add(dep_libs)
+    
+    ctx.actions.run(cmd, category = "ghc", identifier = ctx.attrs.name)
+    
+    return [
+        DefaultInfo(
+            default_output = out,
+            sub_targets = {
+                "hi": [DefaultInfo(default_outputs = [hi_dir])],
+                "hie": [DefaultInfo(default_outputs = [hie_dir])],
+            },
+        ),
+        RunInfo(args = cmd_args(out)),
+    ]
+
 
 haskell_test = rule(
-    impl = _haskell_binary_impl,
+    impl = _haskell_test_impl,
     attrs = {
-        "srcs": attrs.list(attrs.source()),
+        "srcs": attrs.list(attrs.source(), default = []),
         "deps": attrs.list(attrs.dep(), default = []),
         "main": attrs.option(attrs.string(), default = None),
-        "packages": attrs.list(attrs.string(), default = ["base"]),
+        "packages": attrs.list(attrs.string(), default = []),
         "ghc_options": attrs.list(attrs.string(), default = []),
         "language_extensions": attrs.list(attrs.string(), default = []),
         "compiler_flags": attrs.list(attrs.string(), default = []),
     },
 )
+

@@ -1,5 +1,4 @@
-# nix/build/toolchains/nv.bzl
-#
+# Generated from Dhall - DO NOT EDIT
 # NVIDIA toolchain using hermetic Nix store paths.
 #
 # This toolchain provides NVIDIA target compilation via clang (NOT nvcc).
@@ -17,57 +16,22 @@
 #
 # No nvcc. Ever.
 
-NvToolchainInfo = provider(
-    doc = "NVIDIA SDK configuration for Clang device compilation",
-    fields = {
-        "nvidia_sdk_path": provider_field(str),
-        "nvidia_sdk_include": provider_field(str),
-        "nvidia_sdk_lib": provider_field(str),
-        "nv_archs": provider_field(list[str]),
-    },
-)
 
-def _nv_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    NVIDIA toolchain with paths from .buckconfig.local.
 
-    Reads [nv] section for absolute Nix store paths:
-      nvidia_sdk_path    - nvidia-sdk root (for --cuda-path)
-      nvidia_sdk_include - headers (cuda_runtime.h, etc.)
-      nvidia_sdk_lib     - libraries (libcudart.so, etc.)
-    """
 
-    # Read from config, fall back to attrs
-    nvidia_sdk_path = read_root_config("nv", "nvidia_sdk_path", ctx.attrs.nvidia_sdk_path)
-    nvidia_sdk_include = read_root_config("nv", "nvidia_sdk_include", ctx.attrs.nvidia_sdk_include)
-    nvidia_sdk_lib = read_root_config("nv", "nvidia_sdk_lib", ctx.attrs.nvidia_sdk_lib)
+NvToolchainInfo = provider(fields = {
+    "nvidia_sdk_path": provider_field(str),
+    "nvidia_sdk_include": provider_field(str),
+    "nvidia_sdk_lib": provider_field(str),
+    "nv_archs": provider_field(list[str]),
+})
 
-    return [
-        DefaultInfo(),
-        NvToolchainInfo(
-            nvidia_sdk_path = nvidia_sdk_path,
-            nvidia_sdk_include = nvidia_sdk_include,
-            nvidia_sdk_lib = nvidia_sdk_lib,
-            nv_archs = ctx.attrs.nv_archs,
-        ),
-    ]
+NvLibraryInfo = provider(fields = {
+    "objects": provider_field(list),
+    "headers": provider_field(list),
+    "include_dir": provider_field(str),
+})
 
-nv_toolchain = rule(
-    impl = _nv_toolchain_impl,
-    attrs = {
-        # Target NVIDIA architectures
-        # sm_90  = Hopper (H100)
-        # sm_100 = Blackwell (B100, B200)
-        # sm_120 = Blackwell (B200 full features, requires LLVM 22)
-        "nv_archs": attrs.list(attrs.string(), default = ["sm_90"]),
-
-        # NVIDIA SDK paths (overridden by .buckconfig.local [nv] section)
-        "nvidia_sdk_path": attrs.string(default = "/usr/local/cuda"),
-        "nvidia_sdk_include": attrs.string(default = "/usr/local/cuda/include"),
-        "nvidia_sdk_lib": attrs.string(default = "/usr/local/cuda/lib64"),
-    },
-    is_toolchain_rule = True,
-)
 
 def nv_compile_flags(nv_toolchain_info: NvToolchainInfo) -> list[str]:
     """
@@ -109,13 +73,36 @@ def nv_link_flags(nv_toolchain_info: NvToolchainInfo) -> list[str]:
         "-lcudart",
     ]
 
+
+
+
+def _nv_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
+    """NVIDIA toolchain with paths from .buckconfig.local"""
+    # read_root_config cannot be called during analysis - use attrs directly
+    return [
+        DefaultInfo(),
+        NvToolchainInfo(
+            nvidia_sdk_path = ctx.attrs.nvidia_sdk_path,
+            nvidia_sdk_include = ctx.attrs.nvidia_sdk_include,
+            nvidia_sdk_lib = ctx.attrs.nvidia_sdk_lib,
+            nv_archs = ctx.attrs.nv_archs,
+        ),
+    ]
+
+
+nv_toolchain = rule(
+    impl = _nv_toolchain_impl,
+    attrs = {
+        "nv_archs": attrs.list(attrs.string(), default = []),
+        "nvidia_sdk_path": attrs.string(default = "/usr/local/cuda"),
+        "nvidia_sdk_include": attrs.string(default = "/usr/local/cuda/include"),
+        "nvidia_sdk_lib": attrs.string(default = "/usr/local/cuda/lib64"),
+    },
+    is_toolchain_rule = True,
+)
+
 def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    Build an NVIDIA binary using clang (NOT nvcc).
-    
-    Uses unwrapped clang to avoid NixOS hardening flags that are
-    incompatible with nvptx64 targets (e.g., -fzero-call-used-regs).
-    """
+    """"""
     # Read nvidia-sdk paths from config
     nvidia_sdk_path = read_root_config("nv", "nvidia_sdk_path", "/usr/local/cuda")
     nvidia_sdk_include = read_root_config("nv", "nvidia_sdk_include", "/usr/local/cuda/include")
@@ -226,33 +213,19 @@ def _nv_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         RunInfo(args = cmd_args([out])),
     ]
 
+
 nv_binary = rule(
     impl = _nv_binary_impl,
     attrs = {
-        "srcs": attrs.list(attrs.source()),
+        "srcs": attrs.list(attrs.source(), default = []),
         "deps": attrs.list(attrs.dep(), default = []),
     },
 )
 
-# Provider for nv_library outputs
-NvLibraryInfo = provider(
-    doc = "Information about compiled NVIDIA library",
-    fields = {
-        "objects": provider_field(list),  # List of .o files
-        "headers": provider_field(list),  # List of header files
-        "include_dir": provider_field(str),  # Directory containing headers
-    },
-)
-
 def _nv_library_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    Compile CUDA source files into object files.
-    
-    Uses clang with -x cuda to compile .cu files into position-independent
-    object code that can be linked into shared libraries.
-    """
-    # Get tools from config
-    cxx = read_root_config("cxx", "cxx", "clang++")
+    """"""
+    # Get tools from config (use unwrapped clang from nv section for CUDA)
+    cxx = read_root_config("nv", "clang", "clang++")
     nvidia_sdk_path = read_root_config("nv", "nvidia_sdk_path", "/usr/local/cuda")
     nvidia_sdk_include = read_root_config("nv", "nvidia_sdk_include", "/usr/local/cuda/include")
     
@@ -271,7 +244,7 @@ def _nv_library_impl(ctx: AnalysisContext) -> list[Provider]:
         "-x", "cuda",
         "--cuda-path=" + nvidia_sdk_path,
         "-isystem", nvidia_sdk_include,
-        "-std=c++17",  # Use c++17 for broader compatibility
+        "-std=c++23",  # Consistent with nv_binary
         "-fPIC",       # Required for shared library
         "-c",          # Compile only, don't link
     ]
@@ -330,11 +303,13 @@ def _nv_library_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
     ]
 
+
 nv_library = rule(
     impl = _nv_library_impl,
     attrs = {
-        "srcs": attrs.list(attrs.source()),
+        "srcs": attrs.list(attrs.source(), default = []),
         "exported_headers": attrs.list(attrs.source(), default = []),
         "deps": attrs.list(attrs.dep(), default = []),
     },
 )
+

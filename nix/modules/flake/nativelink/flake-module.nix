@@ -53,7 +53,7 @@ in
     fly = {
       app-prefix = mk-option {
         type = types.str;
-        default = "sense";
+        default = "aleph";
         description = "Fly.io app name prefix (used for internal DNS)";
       };
 
@@ -313,14 +313,14 @@ in
       engine-address = mk-option {
         type = types.str;
         default = "grpc://${cfg.fly.app-prefix}-scheduler.fly.dev:443";
-        defaultText = "grpc://sense-scheduler.fly.dev:443";
+        defaultText = "grpc://aleph-scheduler.fly.dev:443";
         description = "gRPC address for NativeLink scheduler (execution engine)";
       };
 
       cas-address = mk-option {
         type = types.str;
         default = "grpc://${cfg.fly.app-prefix}-cas.fly.dev:443";
-        defaultText = "grpc://sense-cas.fly.dev:443";
+        defaultText = "grpc://aleph-cas.fly.dev:443";
         description = "gRPC address for NativeLink CAS (content-addressed storage)";
       };
 

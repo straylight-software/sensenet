@@ -1,0 +1,6 @@
+mkdir -p $out
+
+@installBinaries@
+
+# Always create a marker file
+echo "@targets@" > $out/.sensenet-targets

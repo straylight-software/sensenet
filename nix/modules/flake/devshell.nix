@@ -18,6 +18,7 @@
 # as the single source of truth. Devshell adds testing/dev packages on top.
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{ inputs }:
 { config, lib, ... }:
 let
   # lisp-case aliases for lib functions
@@ -35,6 +36,7 @@ let
 
   cfg = config.sense.devshell;
   build-cfg = config.sense.build;
+
 in
 {
   _class = "flake";
@@ -99,8 +101,23 @@ in
 
   config = mk-if cfg.enable {
     perSystem =
-      { pkgs, config, ... }:
+      {
+        pkgs,
+        config,
+        system,
+        ...
+      }:
       let
+        # PureScript packages from purescript-overlay (if available)
+        purs-pkgs =
+          if inputs ? purescript-overlay then inputs.purescript-overlay.packages.${system} else { };
+
+        # Import centralized render-dhall function
+        render-dhall = import ../../lib/render-dhall.nix { inherit pkgs lib; };
+
+        # Scripts directory for Dhall templates
+        scripts-dir = ./devshell;
+
         # All env vars defined here, not in shellHook
         # Env var names use CUDA/NVIDIA because that's what tools expect
         nv-env = optional-attrs (cfg.nv.enable && pkgs ? nvidia-sdk) {
@@ -109,6 +126,12 @@ in
           NVIDIA_SDK = "${pkgs.nvidia-sdk}";
           # LD_LIBRARY_PATH for runtime loading of CUDA libs (hasktorch, etc.)
           LD_LIBRARY_PATH = "${pkgs.nvidia-sdk}/lib";
+        };
+
+        # sensenet CLI env vars
+        sensenet-env = {
+          SENSENET_PRELUDE = "${inputs.buck2-prelude}";
+          SENSENET_TOOLCHAINS = "${inputs.self}/toolchains";
         };
 
         # ────────────────────────────────────────────────────────────────────────
@@ -155,7 +178,11 @@ in
               pkgs.fd
               pkgs.just
               pkgs.buck2
+              pkgs.pkg-config
               ghc-with-all-deps
+
+              # sensenet CLI - typed build system wrapping Buck2
+              config.packages.sensenet
 
               # ════════════════════════════════════════════════════════════════
               # LSP servers - go-to-definition works out of the box
@@ -167,6 +194,12 @@ in
 
               # Nix: nixd (configured via .nixd.json from use_flake-lsp)
               pkgs.nixd
+
+              # PureScript: purs, spago, esbuild for bundle
+              # Uses purescript-overlay packages if available, else nixpkgs
+              (purs-pkgs.purs or pkgs.purescript)
+              (purs-pkgs.spago-unstable or pkgs.spago)
+              pkgs.esbuild
 
               # Rust: rust-analyzer (if Rust toolchain enabled)
               # Note: rust-analyzer is added via build.nix when rust toolchain is enabled
@@ -208,29 +241,40 @@ in
 
                 # Generate .buckconfig.local with toolchain paths
                 # This provides Buck2 with Nix store paths for all compilers
-                
+
                 # STRICT REQUIREMENT: NVIDIA toolchain requires custom LLVM-git overlay
                 # Enable 'sense.llvm-git.enable = true' in your flake config.
-                llvm-pkg = if (pkgs ? llvm-git) then pkgs.llvm-git 
-                           else throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'sense.llvm-git.enable = true'.";
-                
+                llvm-pkg =
+                  if (pkgs ? llvm-git) then
+                    pkgs.llvm-git
+                  else
+                    throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'sense.llvm-git.enable = true'.";
+
                 clang = llvm-pkg;
                 # llvm-git is already unwrapped
                 clang-unwrapped = llvm-pkg;
                 lld = llvm-pkg;
 
                 # NV config if enabled
-                nv-config = optional-string (cfg.nv.enable && pkgs ? nvidia-sdk) ''
-                  [nv]
-                  nvidia_sdk_path = ${pkgs.nvidia-sdk}
-                  nvidia_sdk_include = ${pkgs.nvidia-sdk}/include
-                  nvidia_sdk_lib = ${pkgs.nvidia-sdk}/lib
-                  clang = ${clang-unwrapped}/bin/clang++
-                  ptxas = ${pkgs.nvidia-sdk}/bin/ptxas
-                  fatbinary = ${pkgs.nvidia-sdk}/bin/fatbinary
-                  mdspan_include = ${pkgs.callPackage ../../packages/mdspan.nix { }}/include
-                  archs = sm_90,sm_100,sm_120
-                '';
+                nv-config =
+                  let
+                    nv-config-script = render-dhall "nv-config" (scripts-dir + "/nv-config.dhall") {
+                      inherit (pkgs) nvidia-sdk;
+                      inherit clang-unwrapped;
+                      inherit mdspan;
+                    };
+                  in
+                  optional-string (cfg.nv.enable && pkgs ? nvidia-sdk) (builtins.readFile nv-config-script);
+
+                # mdspan for std::mdspan on device (NVIDIA)
+                mdspan = pkgs.callPackage ../../packages/mdspan.nix { };
+
+                # GHC version from the package
+                ghc-version = hs-pkgs.ghc.version;
+
+                # Turing Registry flags from config (or defaults)
+                c-flags = lib.concatStringsSep " " (build-cfg.toolchain.cxx.c-flags or [ ]);
+                cxx-flags = lib.concatStringsSep " " (build-cfg.toolchain.cxx.cxx-flags or [ ]);
 
                 buckconfig-template = builtins.readFile ./devshell/buckconfig-local.ini;
                 buckconfig-filled =
@@ -245,15 +289,21 @@ in
                       "@gcc_include@"
                       "@gcc_include_arch@"
                       "@glibc_include@"
+                      "@mdspan_include@"
                       "@gcc_lib@"
                       "@gcc_lib_base@"
                       "@glibc_lib@"
+                      "@dynamic_linker@"
+                      "@c_flags@"
+                      "@cxx_flags@"
                       "@ghc@"
                       "@ghc_pkg@"
                       "@haddock@"
                       "@ghc_version@"
                       "@ghc_lib_dir@"
                       "@global_package_db@"
+                      "@ghc_pkg_wrapper@"
+                      "@stan@"
                       "@rustc@"
                       "@rustdoc@"
                       "@clippy_driver@"
@@ -264,7 +314,13 @@ in
                       "@lean_include_dir@"
                       "@python_interpreter@"
                       "@python_include@"
+                      "@nanobind_include@"
+                      "@nanobind_cmake@"
                       "@pybind11_include@"
+                      "@purs@"
+                      "@spago@"
+                      "@node@"
+                      "@esbuild@"
                     ]
                     [
                       "${clang}/bin/clang"
@@ -276,15 +332,23 @@ in
                       "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}"
                       "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}/${pkgs.stdenv.hostPlatform.config}"
                       "${pkgs.glibc.dev}/include"
+                      "${mdspan}/include"
                       "${pkgs.gcc.cc}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${pkgs.gcc.cc.version}"
                       "${pkgs.gcc.cc.lib}/lib"
                       "${pkgs.glibc}/lib"
+                      "${pkgs.glibc}/lib/ld-linux-${
+                        if pkgs.stdenv.hostPlatform.isAarch64 then "aarch64" else "x86-64"
+                      }.so.${if pkgs.stdenv.hostPlatform.isAarch64 then "1" else "2"}"
+                      c-flags
+                      cxx-flags
                       "${ghc-with-all-deps}/bin/ghc"
                       "${ghc-with-all-deps}/bin/ghc-pkg"
                       "${ghc-with-all-deps}/bin/haddock"
-                      "9.12.2"
-                      "${ghc-with-all-deps}/lib/ghc-9.12.2/lib"
-                      "${ghc-with-all-deps}/lib/ghc-9.12.2/lib/package.conf.d"
+                      ghc-version
+                      "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib"
+                      "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib/package.conf.d"
+                      "toolchains/scripts/ghc-pkg-id"
+                      "${hs-pkgs.stan}/bin/stan"
                       "${pkgs.rustc}/bin/rustc"
                       "${pkgs.rustc}/bin/rustdoc"
                       "${pkgs.clippy}/bin/clippy-driver"
@@ -295,7 +359,13 @@ in
                       "${pkgs.lean4}/include"
                       "${pkgs.python312}/bin/python3"
                       "${pkgs.python312}/include/python3.12"
+                      "${pkgs.python312Packages.nanobind}/lib/python3.12/site-packages/nanobind/include"
+                      "${pkgs.python312Packages.nanobind}/lib/python3.12/site-packages/nanobind"
                       "${pkgs.python312Packages.pybind11}/include"
+                      "${(purs-pkgs.purs or pkgs.purescript)}/bin/purs"
+                      "${(purs-pkgs.spago-unstable or pkgs.spago)}/bin/spago"
+                      "${pkgs.nodejs}/bin/node"
+                      "${pkgs.esbuild}/bin/esbuild"
                     ]
                     buckconfig-template;
 
@@ -319,19 +389,33 @@ in
                   fi
                 '';
               in
-              ''
-                echo "━━━ sense devshell ━━━"
-                echo "GHC: $(${ghc-with-all-deps}/bin/ghc --version)"
-                ${straylight-nix-check}
-                ${buckconfig-hook}
-                ${config.sense.build.shellHook or ""}
-                ${config.sense.shortlist.shellHook or ""}
-                ${config.sense.lre.shellHook or ""}
-                ${hie-yaml-hook}
-                ${cfg.extra-shell-hook}
-              '';
+              builtins.replaceStrings
+                [
+                  "@ghcWithAllDeps@"
+                  "@straylightNixCheck@"
+                  "@buckconfigHook@"
+                  "@preludePath@"
+                  "@buildShellHook@"
+                  "@shortlistShellHook@"
+                  "@lreShellHook@"
+                  "@hieYamlHook@"
+                  "@extraShellHook@"
+                ]
+                [
+                  "${ghc-with-all-deps}"
+                  straylight-nix-check
+                  buckconfig-hook
+                  (toString (config.sense.build.prelude.path or inputs.buck2-prelude))
+                  (config.sense.build.shellHook or "")
+                  (config.sense.shortlist.shellHook or "")
+                  (config.sense.lre.shellHook or "")
+                  hie-yaml-hook
+                  cfg.extra-shell-hook
+                ]
+                (builtins.readFile ./devshell/shell-hook.template);
           }
           // nv-env
+          // sensenet-env
           // cfg.extra-env
           // optional-attrs (cfg.nv.enable && pkgs ? nvidia-sdk) {
             # Ensure ptxas/fatbinary are in PATH for Clang

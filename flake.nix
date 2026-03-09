@@ -7,10 +7,10 @@
     flake-parts.url = "github:hercules-ci/flake-parts";
     treefmt-nix.url = "github:numtide/treefmt-nix";
 
-    # LLVM 22 from git - required for nv toolchain
+    # LLVM 22 with SM120 Blackwell support - straylight fork
     llvm-project = {
-      url = "github:llvm/llvm-project/bb1f220d534b0f6d80bea36662f5188ff11c2e54";
-      flake = false;
+      url = "github:straylight-software/llvm-project";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
 
     # Buck2 prelude (straylight fork with NVIDIA support)
@@ -29,17 +29,34 @@
       flake = false;
     };
 
-    # NVIDIA SDK - CUDA 13.0 runtime libraries for libtorch
+    # NVIDIA SDK - CUDA 13.1 runtime libraries (internal, dev branch)
     nvidia-sdk = {
-      url = "github:weyl-ai/nvidia-sdk";
+      url = "git+ssh://git@github.com/straylight-software/nvidia-sdk.git?ref=dev";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.llvm-project.follows = "llvm-project";
+    };
+
+    # PureScript overlay - provides purs, spago-unstable, purs-backend-es
+    purescript-overlay = {
+      url = "github:thomashoneyman/purescript-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    # Crane - Rust build tool for Nix
+    crane.url = "github:ipetkov/crane";
+
+    # Rust overlay for toolchain selection
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
     # nix-compile - Type inference and static analysis for Nix
-    nix-compile = {
-      url = "github:straylight-software/nix-compile";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    # TODO: Uncomment when repository is public
+    # nix-compile = {
+    #   url = "github:straylight-software/nix-compile";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
   };
 
   outputs =
@@ -48,18 +65,9 @@
       systems = import inputs.systems;
 
       imports = [
-        inputs.nix-compile.flakeModules.default
         ./nix/modules/flake/_index.nix
         (import ./nix/modules/flake/sensenet/default.nix { inherit inputs; })
       ];
-
-      nix-compile = {
-        enable = true;
-        profile = "strict";
-        layout = "straylight";
-        paths = [ "nix" ];
-        pre-commit.enable = true;
-      };
 
       # Export overlays
       flake.overlays = (import ./nix/overlays inputs).flake.overlays;
@@ -75,11 +83,9 @@
         buck2 = import ./nix/modules/flake/sensenet/default.nix { inherit inputs; };
         buck2-old = ./nix/modules/flake/buck2.nix;
         build = ./nix/modules/flake/build/flake-module.nix;
-        devshell = ./nix/modules/flake/devshell.nix;
+        devshell = import ./nix/modules/flake/devshell.nix { inherit inputs; };
         nativelink = ./nix/modules/flake/nativelink/flake-module.nix;
         std = import ./nix/modules/flake/std.nix { inherit inputs; };
-        # nix-compile integration - typed Nix analysis + proof obligations
-        nix-compile = import ./nix/modules/flake/nix-compile/default.nix { inherit inputs; };
       };
 
       # Export lib for downstream use
@@ -96,16 +102,55 @@
       # Export Dhall prelude
       flake.dhall = ./dhall;
 
+      # Export NixOS modules
+      flake.nixosModules = import ./nix/modules/nixos/_index.nix;
+
       # Self-use: packages and minimal devshell for this repo
       perSystem =
-        { pkgs, ... }:
+        { pkgs, system, ... }:
         let
           # GHC 9.12 with haskell overlay applied (via std.nix)
           inherit (pkgs.haskell.packages) ghc912;
 
+          # DICE FFI library
+          dice-ffi = pkgs.callPackage ./nix/packages/dice-ffi.nix { };
+
+          # SuperConsole FFI library
+          superconsole-ffi = pkgs.callPackage ./nix/packages/superconsole-ffi.nix { };
+
+          # Build sensenet CLI (with integrated NativeLink client)
+          sensenet = pkgs.callPackage ./nix/packages/sensenet.nix {
+            inherit (ghc912)
+              mkDerivation
+              base
+              bytestring
+              containers
+              dhall
+              directory
+              filepath
+              process
+              text
+              # NativeLink/gRPC deps
+              aeson
+              conduit
+              crypton
+              grapesy
+              grpc-spec
+              memory
+              microlens
+              network
+              proto-lens
+              proto-lens-runtime
+              vector
+              ;
+            inherit dice-ffi superconsole-ffi;
+          };
         in
         {
           packages.sense-lint = pkgs.callPackage ./nix/packages/sense-lint.nix { };
+          packages.sensenet = sensenet;
+          packages.dice-ffi = dice-ffi;
+          packages.superconsole-ffi = superconsole-ffi;
 
           # Declare examples as a Sensenet project
           sensenet.projects.examples = {
@@ -127,12 +172,18 @@
                   hp.aeson
                   hp.bytestring
                   hp.containers
+                  hp.dhall
                   hp.directory
+                  hp.filepath
                   hp.process
+                  hp.shelly
+                  hp.temporary
                   hp.text
+                  hp.unix
                   hp.crypton
                   hp.memory
                   hp.hasktorch
+                  hp.stan
                 ];
               };
               rust.enable = true;
@@ -146,30 +197,33 @@
             };
             remoteexecution = {
               enable = true;
-              scheduler = "sense-scheduler.fly.dev";
+              scheduler = "aleph-scheduler.fly.dev";
               schedulerport = 443;
-              cas = "sense-cas.fly.dev";
+              cas = "aleph-cas.fly.dev";
               casport = 443;
               tls = true;
               instancename = "main";
             };
             devshellpackages = [
               pkgs.ast-grep
+              pkgs.cabal-install
               pkgs.dhall
               pkgs.dhall-json
               ghc912.haskell-language-server
+              sensenet
             ];
           };
 
           # Example with NativeLink remote execution enabled
-          # Usage: nix develop .#sensenet-examples-remote
-          #        buck2 build --prefer-remote //src/examples/cxx:hello-cxx
+          # Usage: nix develop .#sensenet-examples-remote \
+          #   --command "buck2 build --prefer-remote //src/examples/cxx:hello-cxx"
           sensenet.projects.examples-remote = {
             src = ./.;
             targets = [
               "//src/examples/cxx:hello-cxx"
               "//src/examples/haskell:hello-hs"
               "//src/examples/rust:hello-rs"
+              "//src/examples/lean:hello-lean"
             ];
             toolchain = {
               cxx.enable = true;
@@ -181,15 +235,17 @@
                   hp.bytestring
                   hp.containers
                   hp.text
+                  hp.stan
                 ];
               };
               rust.enable = true;
+              lean.enable = true;
             };
             remoteexecution = {
               enable = true;
-              scheduler = "sense-scheduler.fly.dev";
+              scheduler = "aleph-scheduler.fly.dev";
               schedulerport = 443;
-              cas = "sense-cas.fly.dev";
+              cas = "aleph-cas.fly.dev";
               casport = 443;
               tls = true;
               instancename = "main";

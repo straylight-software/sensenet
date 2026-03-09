@@ -479,13 +479,13 @@ in
 
       scheduler = mk-option {
         type = types.str;
-        default = "sense-scheduler.fly.dev";
+        default = "aleph-scheduler.fly.dev";
         description = "Fly.io scheduler hostname";
       };
 
       cas = mk-option {
         type = types.str;
-        default = "sense-cas.fly.dev";
+        default = "aleph-cas.fly.dev";
         description = "Fly.io CAS hostname";
       };
 

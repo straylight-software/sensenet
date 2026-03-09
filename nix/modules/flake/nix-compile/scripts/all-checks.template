@@ -1,0 +1,7 @@
+echo "sense/net: all checks passed"
+mkdir -p $out
+ln -s @checkNix@ $out/nix-compile
+@dhallLink@
+@crossLangLink@
+@buck2GraphLink@
+@proofsLink@

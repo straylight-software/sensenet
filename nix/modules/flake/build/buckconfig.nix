@@ -47,6 +47,9 @@ let
         dhall text --file ${src} > $out
       '';
 
+  # Header
+  header-config = render-dhall "buckconfig-header.ini" (scripts-dir + "/buckconfig-header.dhall") { };
+
   # Build config sections from Dhall templates
   cxx-config =
     if cfg.toolchain.cxx.enable && buck2-toolchain ? cc then
@@ -111,7 +114,12 @@ let
         nvidia_sdk_path = buck2-toolchain.nvidia-sdk-path;
         nvidia_sdk_include = buck2-toolchain.nvidia-sdk-include;
         nvidia_sdk_lib = buck2-toolchain.nvidia-sdk-lib;
+        # Use unwrapped clang for CUDA (from llvm-git)
+        clang = "${toolchains.llvm-git}/bin/clang++";
+        ptxas = "${toolchains.nvidia-sdk}/bin/ptxas";
+        fatbinary = "${toolchains.nvidia-sdk}/bin/fatbinary";
         archs = buck2-toolchain.nv-archs;
+        mdspan_include = buck2-toolchain.mdspan-include or "";
       }
     else
       null;
@@ -141,6 +149,7 @@ let
 
   # Combine all config sections
   config-parts = lib.filter (x: x != null) [
+    header-config
     cxx-config
     flags-config
     haskell-config

@@ -6,6 +6,16 @@ buck-out/
 nix/build/
 bin/
 
+# sense CLI binary (built from src/sense/)
+/sense
+dist-newstyle/
+
+# Generated BUCK files (from BUILD.dhall) - zero starlark
+# All BUCK files are generated, users only edit BUILD.dhall
+src/**/BUCK
+platforms/BUCK
+/BUCK
+
 # GHC build artifacts
 *.hi
 *.o
@@ -29,3 +39,14 @@ bin/
 .cache/
 .haskell-sources/
 *.gen
+src/dice-ffi/target/
+
+# sensenet build output
+sensenet-out/
+
+# Rust cargo target directories (vendored crates)
+src/vendor/*/target/
+
+# PureScript spago cache
+.spago/
+**/.spago/

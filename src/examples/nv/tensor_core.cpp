@@ -20,7 +20,6 @@
 #include <experimental/mdspan>
 
 namespace stdex = std::experimental;
-using namespace nvcuda;
 
 namespace straylight::nv {
 
@@ -58,12 +57,16 @@ __global__ void wmma_gemm_kernel(const half* __restrict__ A, // [M, K] row-major
     return;
 
   // Declare WMMA fragments
-  wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
-  wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> b_frag;
-  wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> c_frag;
+  nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half,
+                         nvcuda::wmma::row_major>
+      a_frag;
+  nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half,
+                         nvcuda::wmma::row_major>
+      b_frag;
+  nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> c_frag;
 
   // Initialize accumulator
-  wmma::fill_fragment(c_frag, 0.0f);
+  nvcuda::wmma::fill_fragment(c_frag, 0.0f);
 
   // Iterate over K dimension
   for (int k = 0; k < K; k += WMMA_K) {
@@ -71,21 +74,22 @@ __global__ void wmma_gemm_kernel(const half* __restrict__ A, // [M, K] row-major
 
     // Load A tile [mStart:mStart+16, k:k+16]
     if (mStart < M && k < K) {
-      wmma::load_matrix_sync(a_frag, A + mStart * K + k, K);
+      nvcuda::wmma::load_matrix_sync(a_frag, A + mStart * K + k, K);
     }
 
     // Load B tile [k:k+16, nStart:nStart+16]
     if (k < K && nStart < N) {
-      wmma::load_matrix_sync(b_frag, B + k * N + nStart, N);
+      nvcuda::wmma::load_matrix_sync(b_frag, B + k * N + nStart, N);
     }
 
     // Tensor core matmul: C += A * B
-    wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+    nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
   }
 
   // Store result
   if (mStart < M && nStart < N) {
-    wmma::store_matrix_sync(C + mStart * N + nStart, c_frag, N, wmma::mem_row_major);
+    nvcuda::wmma::store_matrix_sync(C + mStart * N + nStart, c_frag, N,
+                                    nvcuda::wmma::mem_row_major);
   }
 }
 

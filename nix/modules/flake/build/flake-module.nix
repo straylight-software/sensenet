@@ -90,6 +90,8 @@ in
       (import ../../../overlays/nvidia-sdk.nix { inherit inputs; })
       # libtorch for aarch64-linux (extracted from PyTorch wheel)
       (import ../../../overlays/libtorch-aarch64.nix)
+      # PureScript overlay (provides purs, spago-unstable, purs-backend-es)
+      inputs.purescript-overlay.overlays.default
     ];
 
     # ──────────────────────────────────────────────────────────────────────────

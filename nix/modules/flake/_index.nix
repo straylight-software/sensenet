@@ -10,7 +10,7 @@
     ./lint.nix
     (import ./nixpkgs.nix { inherit inputs; })
     (import ./build/flake-module.nix { inherit inputs; })
-    ./devshell.nix
+    (import ./devshell.nix { inherit inputs; })
     (import ./std.nix { inherit inputs; })
     (import ./nix-compile/default.nix { inherit inputs; })
   ];
@@ -23,9 +23,13 @@
   # Enable custom LLVM git toolchain for SM120 support
   sense.llvm-git.enable = true;
 
+  # PureScript overlay for purs, spago-unstable
+  sense.nixpkgs.overlays = [ inputs.purescript-overlay.overlays.default ];
+
   # Enable nix-compile static analysis
+  # TODO: Enable when nix-compile input is uncommented in flake.nix
   sense.nix-compile = {
-    enable = true;
+    enable = false; # requires inputs.nix-compile
     profile = "strict";
     verify-dhall = true;
     cross-language = false; # TODO: enable when cross-lang is implemented
