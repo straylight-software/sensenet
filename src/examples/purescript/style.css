@@ -146,7 +146,9 @@ body {
   cursor: pointer;
   padding: 0.25rem 0.5rem;
   opacity: 0;
-  transition: opacity 0.2s, color 0.2s;
+  transition:
+    opacity 0.2s,
+    color 0.2s;
 }
 
 .todo-item:hover .todo-remove-btn {

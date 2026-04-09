@@ -10,6 +10,8 @@ let Binary =
       , language_extensions : List Text
       , ghc_options : List Text
       , deps : List T.Dep
+      , extra_libs : List Text
+      , extra_lib_dirs : List Text
       , vis : T.Vis
       }
 
@@ -23,6 +25,8 @@ let binary
         , language_extensions = [] : List Text
         , ghc_options = [ "-O2", "-Wall" ] : List Text
         , deps = [] : List T.Dep
+        , extra_libs = [] : List Text
+        , extra_lib_dirs = [] : List Text
         , vis = T.Vis.Public
         }
 
@@ -54,8 +58,13 @@ let FFIBinary =
       , cxx_srcs : List Text
       , cxx_headers : List Text
       , packages : List Text
+      , deps : List T.Dep
       , language_extensions : List Text
       , ghc_options : List Text
+      , extra_libs : List Text
+      , extra_lib_dirs : List Text
+      , include_dirs : List Text
+      , linker_flags : List Text
       , vis : T.Vis
       }
 
@@ -67,8 +76,13 @@ let ffiBinary
         { name, hs_srcs, cxx_srcs
         , cxx_headers = [] : List Text
         , packages = [ "base" ] : List Text
+        , deps = [] : List T.Dep
         , language_extensions = [] : List Text
         , ghc_options = [ "-O2" ] : List Text
+        , extra_libs = [] : List Text
+        , extra_lib_dirs = [] : List Text
+        , include_dirs = [] : List Text
+        , linker_flags = [] : List Text
         , vis = T.Vis.Public
         }
 

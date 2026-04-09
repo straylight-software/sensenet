@@ -1,10 +1,13 @@
 id: no-substitute-all
 language: nix
 severity: error
-# NixOS modules don't have access to Dhall prelude
+# NixOS modules, bootstrap, and OCI don't have access to Dhall prelude
+# OCI generates Dhall templates with Nix store paths - circular dependency
 ignores:
   - "nix/modules/nixos/*.nix"
   - "nix/modules/nixos/**/*.nix"
+  - "bootstrap/*.nix"
+  - "nix/modules/flake/oci/*.nix"
 rule:
   kind: apply_expression
   any:

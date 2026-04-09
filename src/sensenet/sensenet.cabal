@@ -1,0 +1,174 @@
+cabal-version:      3.0
+name:               sensenet
+version:            0.4.0
+synopsis:           Pure Haskell build system with content-addressed caching
+description:        
+    sensenet is a build system that reads typed Dhall configuration,
+    executes builds with content-addressed caching (DICE), and produces
+    reproducible outputs. No FFI, no daemon, just Haskell.
+license:            MIT
+author:             Straylight
+maintainer:         dev@straylight.ai
+category:           Development
+build-type:         Simple
+
+-- Common build settings shared by library, executable, and tests
+common sensenet-common
+    default-language: GHC2024
+    default-extensions:
+        LambdaCase
+        OverloadedStrings
+        OverloadedRecordDot
+    ghc-options:
+        -Wall
+        -Werror
+
+-- Library: exposes core modules for tests and downstream use
+library
+    import:           sensenet-common
+    hs-source-dirs:   .
+    ghc-options:
+        -O2
+        -funbox-strict-fields
+    exposed-modules:
+        DhallFast.Core
+        DhallFast.Convert
+        DhallFast.Eval
+        DhallFast.Input
+        SenseNet.Build
+        SenseNet.Complete
+        SenseNet.DICE
+        SenseNet.Dhall
+        SenseNet.Discover
+        SenseNet.IR
+        SenseNet.IR.Coeffect
+        SenseNet.IR.Common
+        SenseNet.IR.Flag
+        SenseNet.IR.Triple
+        SenseNet.Log
+        SenseNet.Nix
+        SenseNet.Output
+        SenseNet.PureScript
+        SenseNet.TUI
+        SenseNet.RustCrate
+        SenseNet.Toolchains
+    build-depends:
+        aeson,
+        ansi-terminal,
+        async,
+        base >= 4.18 && < 5,
+        bytestring,
+        colour,
+        containers,
+        crypton,
+        deepseq,
+        dhall,
+        directory,
+        either,
+        filepath,
+        hashable,
+        hostname,
+        hyperconsole,
+        katip,
+        memory,
+        microlens,
+        mtl,
+        process,
+        text,
+        text-short,
+        time,
+        unix,
+        unordered-containers,
+        vector
+
+-- Executable: thin wrapper around library
+executable sensenet
+    import:           sensenet-common
+    main-is:          Main.hs
+    build-depends:
+        aeson,
+        async,
+        base >= 4.18 && < 5,
+        bytestring,
+        directory,
+        filepath,
+        process,
+        text,
+        unix,
+        sensenet
+    ghc-options:
+        -O2
+        -threaded
+        -rtsopts
+        "-with-rtsopts=-N"
+    hs-source-dirs:   app
+    -- Reexport library modules for Main to use
+    -- (Main imports SenseNet.*, which come from the library)
+
+test-suite sensenet-test
+    import:           sensenet-common
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    other-modules:
+        Test.SenseNet.Adversarial
+        Test.SenseNet.Bootstrap
+        Test.SenseNet.Build
+        Test.SenseNet.Crashers
+        Test.SenseNet.DICE
+        Test.SenseNet.DhallNixIntegration
+        Test.SenseNet.DhallTorture
+        Test.SenseNet.Filesystem
+        Test.SenseNet.Integration
+        Test.SenseNet.Psychotic
+        Test.SenseNet.Savage
+        Test.SenseNet.Security
+        Test.SenseNet.TUI
+    build-depends:
+        async,
+        base >= 4.18 && < 5,
+        bytestring,
+        containers,
+        crypton,
+        deepseq,
+        directory,
+        filepath,
+        memory,
+        process,
+        random,
+        tasty,
+        tasty-hunit,
+        tasty-quickcheck,
+        temporary,
+        text,
+        time,
+        unix,
+        sensenet
+    default-extensions:
+        RecordWildCards
+        ScopedTypeVariables
+    ghc-options:
+        -threaded
+        -rtsopts
+        "-with-rtsopts=-N"
+    hs-source-dirs:   ../../test
+
+benchmark sensenet-bench
+    import:           sensenet-common
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    build-depends:
+        base >= 4.18 && < 5,
+        containers,
+        criterion,
+        deepseq,
+        random,
+        text
+    default-extensions:
+        RecordWildCards
+        ScopedTypeVariables
+    ghc-options:
+        -O2
+        -threaded
+        -rtsopts
+        "-with-rtsopts=-N"
+    hs-source-dirs:   ../../bench

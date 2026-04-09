@@ -1,0 +1,91 @@
+// NativeLink Scheduler configuration for GCP gigafleet
+// Deployed to: giga-x86-0 (34.28.196.149)
+// Ports: 50052 (Scheduler gRPC for clients), 50061 (Worker API)
+//
+// The scheduler coordinates work distribution to workers.
+// It connects to the CAS on localhost:50051.
+{
+  stores: [
+    {
+      name: "GRPC_LOCAL_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://127.0.0.1:50051",
+          },
+        ],
+        store_type: "cas",
+      },
+    },
+    {
+      name: "GRPC_LOCAL_AC_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://127.0.0.1:50051",
+          },
+        ],
+        store_type: "ac",
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          OSFamily: "priority",
+          "container-image": "priority",
+          ISA: "exact",
+        },
+      },
+    },
+  ],
+  servers: [
+    // Frontend API (port 50052) - for clients (Buck2/Bazel)
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50052",
+        },
+      },
+      services: {
+        ac: [
+          {
+            ac_store: "GRPC_LOCAL_AC_STORE",
+          },
+        ],
+        execution: [
+          {
+            cas_store: "GRPC_LOCAL_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+      },
+    },
+    // Backend API (port 50061) - for workers
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        health: {},
+      },
+    },
+  ],
+}

@@ -49,6 +49,12 @@ let
         ghc-source-gen = hself.callCabal2nix "ghc-source-gen" inputs.ghc-source-gen-src { };
 
         # ────────────────────────────────────────────────────────────────────────
+        # hyperconsole - Terminal TUI rendering library (straylight)
+        # Required by: sensenet (for themed terminal output)
+        # ────────────────────────────────────────────────────────────────────────
+        hyperconsole = hself.callCabal2nix "hyperconsole" ../../vendor/hyperconsole { };
+
+        # ────────────────────────────────────────────────────────────────────────
         # proto-lens stack - needs:
         #   1. jailbreak for GHC 9.12 (base 4.21, ghc-prim 0.13)
         #   2. patch for Cabal 3.14+ SymbolicPath API (proto-lens-setup only)

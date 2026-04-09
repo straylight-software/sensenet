@@ -75,6 +75,21 @@ in
     };
 
     # ──────────────────────────────────────────────────────────────────────────
+    #                                                    // haskell // options
+    # ──────────────────────────────────────────────────────────────────────────
+
+    haskell = {
+      enable-style-lint = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Enable straylight Haskell style linting.
+          Enforces THE GUARD MANDATE and other conventions from HASKELL_STYLE_GUIDE.md
+        '';
+      };
+    };
+
+    # ──────────────────────────────────────────────────────────────────────────
     #                                                        // cpp // options
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -175,10 +190,64 @@ in
           '';
         };
 
+        # ────────────────────────────────────────────────────────────────────────
+        #                                                  // haskell // lint // wrapper
+        # ────────────────────────────────────────────────────────────────────────
+        #
+        # Enforces THE GUARD MANDATE and other straylight Haskell conventions.
+        # See: HASKELL_STYLE_GUIDE.md
+        #
+        # ────────────────────────────────────────────────────────────────────────
+
+        haskell-lint-wrapper = pkgs.writeShellApplication {
+          name = "straylight-haskell-lint";
+          runtimeInputs = [
+            pkgs.bash
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.coreutils
+          ];
+          text = builtins.readFile ./scripts/haskell-lint.sh;
+        };
+
       in
       {
         treefmt = {
           projectRootFile = "flake.nix";
+
+          # ────────────────────────────────────────────────────────────────────────
+          #                                                       // global // excludes
+          # ────────────────────────────────────────────────────────────────────────
+          #
+          # Exclude generated files, build outputs, and vendored code from all
+          # formatters. These are either machine-generated or third-party.
+          #
+          # ────────────────────────────────────────────────────────────────────────
+
+          settings.global.excludes = [
+            # Build outputs
+            "sensenet-out/*"
+            "buck-out/*"
+            "result"
+            "result-*"
+            "dist-newstyle/*"
+
+            # Generated PureScript output
+            "**/output/*"
+            "**/output-test/*"
+
+            # Vendored third-party code
+            "vendor/*"
+
+            # Node modules
+            "**/node_modules/*"
+
+            # Generated toolchain files
+            ".sensenet/toolchains.json"
+
+            # Spago cache
+            "**/.spago/*"
+          ];
 
           # ────────────────────────────────────────────────────────────────────────
           #                                                            // nix // lint
@@ -254,9 +323,18 @@ in
           #                                                        // haskell // lint
           # ────────────────────────────────────────────────────────────────────────
 
-          programs.fourmolu.enable = true;
-          # n.b. hlint disabled — it's a linter, not a formatter, and treefmt-nix
-          # doesn't support the config file needed to suppress suggestions
+          # NOTE: fourmolu disabled until ghc-lib-parser supports GHC 9.12 syntax.
+          # fourmolu 0.15.0 uses ghc-lib-parser 9.8 which doesn't parse postpositive
+          # qualified imports (`import Data.Text qualified as T`), a GHC2024 default.
+          # See: https://github.com/fourmolu/fourmolu/issues/438
+          programs.fourmolu.enable = false;
+
+          # NOTE: hlint disabled — it's a linter, not a formatter, and treefmt-nix
+          # doesn't support the config file needed to suppress suggestions.
+          # We use our own straylight-haskell-lint instead which enforces:
+          #   - THE GUARD MANDATE (no nested case/if)
+          #   - DerivingStrategies required
+          #   - Proper naming conventions
 
           # ────────────────────────────────────────────────────────────────────────
           #                                                          // other // lint
@@ -291,15 +369,25 @@ in
               # - nixos modules: no access to Dhall prelude for templating
               # - packages/overlays: bootstrap code that doesn't have access to prelude
               # - flake.nix: root bootstrap file that defines the prelude
-              # - devshell/buck2: shell hook generation uses replaceVars (no prelude access)
+              # - devshell: shell hook generation has long inline scripts
+              # - sensenet module: toolchain generation has long inline scripts
+              # - nix-compile: has long inline scripts for type checking
+              # - test: integration tests have long inline scripts
+              # - bootstrap: no access to Dhall prelude (circular dependency)
+              # - oci: generates Dhall templates with Nix store paths
               excludes = [
                 "nix/prelude/*"
                 "nix/lib/*"
                 "nix/modules/nixos/*"
                 "nix/packages/*"
                 "nix/overlays/*"
-                "nix/modules/flake/devshell/*"
+                "nix/modules/flake/devshell.nix"
+                "nix/modules/flake/sensenet/*"
+                "nix/modules/flake/nix-compile/*"
                 "nix/modules/flake/buck2/*"
+                "nix/modules/flake/oci/*"
+                "bootstrap/*"
+                "test/*"
                 "flake.nix"
               ];
             };
@@ -323,6 +411,33 @@ in
             sense-grep-cpp = lib.mkIf cfg.cpp.enable-sense-grep {
               command = sense-grep-cpp-wrapper;
               includes = cpp-includes;
+            };
+
+            # ── haskell // straylight-lint ───────────────────────────────────────
+            #
+            # Enforces THE GUARD MANDATE:
+            #   - No nested case expressions (max 2 per function)
+            #   - No nested if-then-else
+            #   - DerivingStrategies must be explicit
+            #
+            # See: HASKELL_STYLE_GUIDE.md
+            #
+            # ─────────────────────────────────────────────────────────────────────
+
+            straylight-haskell-lint = lib.mkIf cfg.haskell.enable-style-lint {
+              command = haskell-lint-wrapper;
+              includes = [ "*.hs" ];
+              excludes = [
+                # vendored code
+                "vendor/*"
+                # test files may have intentional violations
+                "test/*"
+                # benchmarks prioritize performance measurement over style
+                "bench/*"
+                # generated code
+                "dist-newstyle/*"
+                "sensenet-out/*"
+              ];
             };
           };
 

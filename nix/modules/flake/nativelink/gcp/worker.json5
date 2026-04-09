@@ -1,0 +1,100 @@
+// NativeLink Worker configuration for GCP gigafleet
+// Deployed to: giga-x86-1,2,3 (x86_64) and giga-arm-0,1 (aarch64)
+//
+// Workers connect to:
+// - CAS: 34.28.196.149:50051
+// - Scheduler Worker API: 34.28.196.149:50061
+//
+// Replace NATIVELINK_DATA_DIR with actual path (e.g., ~/nativelink/data)
+// Replace WORKER_ISA with "x86-64" or "aarch64" depending on architecture
+{
+  stores: [
+    {
+      name: "GRPC_REMOTE_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            // CAS server on giga-x86-0
+            address: "grpc://34.28.196.149:50051",
+          },
+        ],
+        store_type: "cas",
+      },
+    },
+    {
+      name: "GRPC_REMOTE_AC_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://34.28.196.149:50051",
+          },
+        ],
+        store_type: "ac",
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "NATIVELINK_DATA_DIR/worker/content",
+            temp_path: "NATIVELINK_DATA_DIR/worker/tmp",
+            eviction_policy: {
+              // 100GB local cache per worker
+              max_bytes: 100000000000,
+            },
+          },
+        },
+        slow: {
+          ref_store: {
+            name: "GRPC_REMOTE_STORE",
+          },
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          // Scheduler worker API on giga-x86-0
+          uri: "grpc://34.28.196.149:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "GRPC_REMOTE_AC_STORE",
+        },
+        work_directory: "NATIVELINK_DATA_DIR/work",
+        platform_properties: {
+          cpu_count: {
+            query_cmd: "nproc",
+          },
+          OSFamily: {
+            values: ["linux"],
+          },
+          "container-image": {
+            values: ["sensenet-worker"],
+          },
+          ISA: {
+            values: ["WORKER_ISA"],
+          },
+          // Sensenet toolchain capabilities
+          toolchains: {
+            values: ["cxx", "rust", "haskell"],
+          },
+        },
+        // Environment variables for build actions
+        environment_variables: {
+          PATH: "/nix/store/6l5nii23jw12c0lqwy6g4kjsr9ds1079-clang-wrapper-19.1.7/bin:/nix/store/4nmkw42f2cf765jc3g4w26lv4vna7kgi-lld-19.1.7/bin:/nix/store/kbw2j1vag664b3sj3rjwz9v53cqx87sb-gcc-wrapper-15.2.0/bin:/nix/store/rsy1282lj3dg4wdf5d00yvz7f6hjzxin-rustc-wrapper-1.93.0/bin:/nix/store/p96faw8wiwi10cy94hr42gzmiapv15fm-cargo-1.93.0/bin:/nix/store/xva1k28a3vq0lkzf9f6q43krfq1lnmgr-ghc-9.10.3/bin:/nix/store/hlxw2q9qansq7bn52xvlb5badw3z1v8s-coreutils-9.10/bin:/nix/store/0550j0i8bmzxbcnzrg1g51zigj7y12ih-bash-interactive-5.3p9/bin:/nix/store/d0irz6jq0d16h6iggq1mcwwvvxzi4lvy-gnumake-4.4.1/bin:/usr/bin:/bin",
+          CC: "/nix/store/6l5nii23jw12c0lqwy6g4kjsr9ds1079-clang-wrapper-19.1.7/bin/clang",
+          CXX: "/nix/store/6l5nii23jw12c0lqwy6g4kjsr9ds1079-clang-wrapper-19.1.7/bin/clang++",
+          LD: "/nix/store/4nmkw42f2cf765jc3g4w26lv4vna7kgi-lld-19.1.7/bin/ld.lld",
+          AR: "/nix/store/4nmkw42f2cf765jc3g4w26lv4vna7kgi-lld-19.1.7/bin/llvm-ar",
+        },
+      },
+    },
+  ],
+  servers: [],
+}

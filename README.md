@@ -1,153 +1,356 @@
-# ℵ sensenet
+# sensenet
 
-> Minimal viable Nix: formatting, linting, Buck2 toolchains, remote execution.
+**Zero-Starlark builds.** Write `BUILD.dhall`, get remote execution.
 
-## Branch Protocol
-
-| Branch | Purpose |
-|--------|---------|
-| `main` | Post-review, stable. All commits have been reviewed. |
-| `dev` | Moving ref to unblock. Integration branch for active development. |
-| `user/the-thing-<linear-id>` | Feature/fix branches. Named `b7r6/feature-name-SLI-123`. |
-
-### Commit Message Convention
+sensenet wraps Buck2 with typed Dhall configuration, running builds through NativeLink's remote execution infrastructure by default. Users write `BUILD.dhall` files; sensenet generates the Buck2 machinery at runtime in a Linux namespace.
 
 ```
-// project // area // description // 0x0N
-
-Examples:
-// sensenet // toolchain // add GHC 9.12 support // 0x01
-// sensenet // buck2 // fix haskell_binary rule // 0x02
-// sensenet // devshell // add tokenizers-cpp paths // 0x03
+BUILD.dhall → Haskell IR → BUCK (ephemeral) → Buck2/DICE → NativeLink RE
 ```
 
-The `0x0N` suffix is a sequential counter within the branch for easy reference.
+## Why
 
----
+- **Typed configuration**: Dhall catches invalid builds at config time, not runtime
+- **No Starlark in repo**: Users never write `.bzl` files
+- **Nix deps as first-class**: `deps = ["nixpkgs#openssl.dev"]` works directly
+- **Remote-first**: NativeLink remote execution is the default, not an afterthought
+- **Hermetic toolchains**: All tools come from Nix store with absolute paths
 
 ## Quick Start
 
+```bash
+nix develop  # Enter devshell with toolchains
+
+sensenet build //src/examples/cxx:hello-cxx
+sensenet run //src/examples/haskell:hello-hs
+sensenet query //...
+```
+
+Or in your own flake:
+
 ```nix
 {
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    sense.url = "github:straylight-software/sensenet";
-  };
+  inputs.sensenet.url = "github:straylight-software/sensenet";
 
-  outputs = { nixpkgs, sense, ... }: {
-    # Import the default module
-    imports = [ sense.flakeModules.default ];
+  outputs = { sensenet, ... }: {
+    imports = [ sensenet.flakeModules.sensenet ];
 
-    perSystem = { pkgs, config, ... }: {
-      # Buck2 target → Nix derivation
-      packages.myapp = config.buck2.build {
-        target = "//src:myapp";
+    perSystem = { ... }: {
+      sensenet.projects.myapp = {
+        src = ./.;
+        targets = [ "//src:myapp" ];
+        toolchain = {
+          cxx.enable = true;
+          haskell.enable = true;
+        };
+        remoteexecution = {
+          enable = true;  # Default
+          scheduler = "your-scheduler.fly.dev";
+          cas = "your-cas.fly.dev";
+        };
       };
     };
   };
 }
 ```
 
-Then:
+## BUILD.dhall
 
-```bash
-nix fmt          # Format everything
-nix flake check  # Lint everything
-nix develop      # Shell with buck2 + toolchains
-```
+#### Zero Starlark
 
-## What You Get
-
-### LLVM 22 from git
-
-SM120 (Blackwell) support. Clean clang without nixpkgs' CUDA wrapper hacks.
-
-```nix
-pkgs.llvm-git  # Available via overlay
-```
-
-### Formatting (`nix fmt`)
-
-| Language | Tool |
-|----------|------|
-| Nix | nixfmt |
-| C/C++/CUDA | clang-format |
-| Python | ruff |
-| Rust | rustfmt |
-| Haskell | fourmolu |
-| JavaScript/TypeScript | biome |
-| Lua | stylua |
-| TOML | taplo |
-| YAML | yamlfmt |
-| Markdown | mdformat |
-| Shell | shfmt |
-
-### Linting (`nix flake check`)
-
-| Language | Tools |
-|----------|-------|
-| Nix | statix, deadnix, ast-grep rules |
-| C/C++ | clang-tidy, cppcheck, ast-grep rules |
-| Shell | shellcheck |
-| Python | ruff check |
-
-### Buck2 Integration
-
-Dhall-typed toolchains and build specifications. No external prelude—we bring our own.
+Users write typed Dhall configs; BUCK files are generated automatically:
 
 ```dhall
--- dhall/Toolchain.dhall
-let Toolchain = { cc : Text, cxx : Text, ar : Text, ... }
+let A = ../../dhall/prelude/package.dhall
+let S = ../../dhall/prelude/to-starlark.dhall
+
+let server =
+      (A.cxxBinary "server" ["main.cpp", "server.cpp"])
+        with deps = [A.local ":utils", A.flake "nixpkgs#openssl.dev"]
+        with std = A.CxxStd.Cxx23
+
+in  { rules = [ S.cxxBinary server { compiler = [], linker = [] } ]
+    , header = ''load("@toolchains//:cxx.bzl", "cxx_binary")''
+    }
 ```
 
-### Remote Execution
+**Two modes:**
 
-NativeLink CAS for distributed builds:
+1. **Simple mode** (default): BUCK files generated on shell entry, gitignored
+1. **Overlay mode**: BUCK files exist only in memory via Linux namespaces
 
-```nix
-sense.build.remote.enable = true;
+```bash
+# Overlay mode - BUCK files never touch disk
+sense-overlay buck2 build //...
+
+# Or use sense CLI which regenerates BUCK before each build
+sense build //...
 ```
 
-## Modules
+Supported rules:
+
+| Rule | Languages |
+| ----------------------------------------------------- | ------------------------- |
+| `cxxBinary`, `cxxLibrary` | C, C++ |
+| `rustBinary`, `rustLibrary` | Rust |
+| `haskellBinary`, `haskellLibrary`, `haskellFFIBinary` | Haskell |
+| `leanBinary`, `leanLibrary` | Lean 4 |
+| `nvBinary`, `nvLibrary` | CUDA (clang + ptxas) |
+| `purescriptApp`, `purescriptBinary` | PureScript |
+| `nixCxxBinary` | C++ with Nix dependencies |
+| `genrule` | Arbitrary commands |
+
+## Architecture
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                              sensenet CLI                              │
+│                                                                        │
+│  1. Discover BUILD.dhall files                                         │
+│  2. Parse to typed Haskell IR                                          │
+│  3. Generate BUCK files to /tmp/sensenet-xxx/                          │
+│  4. Set up Linux namespace with bind mounts                            │
+│  5. Execute buck2 in namespace                                         │
+└────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                           Mount Namespace                              │
+│                                                                        │
+│  project/                                                              │
+│  ├── src/myapp/BUCK      ← bind mount from /tmp/sensenet-xxx/          │
+│  ├── toolchains/         ← bind mount (Starlark rules)                 │
+│  ├── prelude/            ← bind mount (buck2-prelude from Nix)         │
+│  └── .buckconfig         ← bind mount (generated config)               │
+│                                                                        │
+│  Buck2 sees a complete project without modifying your repo             │
+└────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                          Buck2 (DICE Engine)                           │
+│                                                                        │
+│  - Incremental computation via DICE                                    │
+│  - Tool paths from .buckconfig.local (Nix store)                       │
+│  - Remote execution via RE API v2                                      │
+└────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                      NativeLink (Remote Execution)                     │
+│                                                                        │
+│  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐              │
+│  │  Scheduler  │────▶│   Workers   │◀───▶│     CAS     │              │
+│  │  (Fly.io)   │     │  (Fly.io)   │     │ (R2/S3)     │              │
+│  └─────────────┘     └─────────────┘     └─────────────┘              │
+│                                                                        │
+│  - Same Nix toolchains as local builds                                 │
+│  - BLAKE3 content addressing                                           │
+│  - Builds run remotely by default                                      │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+## Nix Dependencies
+
+Any flake reference works as a dependency:
+
+```dhall
+let mylib = A.cxxLibrary "mylib" ["lib.cpp"]
+      with deps = [
+        A.flake "nixpkgs#zlib",
+        A.flake "nixpkgs#openssl.dev",
+        A.flake "github:user/repo#package"
+      ]
+```
+
+Resolution happens via `nix-analyze`:
+
+```
+nixpkgs#zlib
+    ↓
+nix build nixpkgs#zlib.dev --print-out-paths
+nix build nixpkgs#zlib.out --print-out-paths
+pkg-config --libs z
+    ↓
+-isystem /nix/store/xxx-zlib-dev/include
+-L/nix/store/yyy-zlib/lib
+-Wl,-rpath,/nix/store/yyy-zlib/lib
+-lz
+```
+
+## Toolchains
+
+All toolchains are Nix-hermetic with paths from the devshell:
+
+| Toolchain | Source | Notes |
+| ---------- | ------------------------- | ------------------------------- |
+| C/C++ | LLVM 22 (straylight fork) | SM120 Blackwell support |
+| Haskell | GHC 9.12 | ghcWithPackages integration |
+| Rust | rustc from nixpkgs | 2021 edition default |
+| Lean | lean4 from nixpkgs | Theorem proving + executables |
+| CUDA | NVIDIA SDK + clang | No nvcc, pure clang compilation |
+| PureScript | purs + spago | Halogen app bundling |
+
+Paths are written to `.buckconfig.local` by the devshell:
+
+```ini
+[cxx]
+cc = /nix/store/xxx/bin/clang
+cxx = /nix/store/xxx/bin/clang++
+ar = /nix/store/xxx/bin/llvm-ar
+ld = /nix/store/xxx/bin/ld.lld
+
+[haskell]
+ghc = /nix/store/yyy/bin/ghc
+ghc_pkg = /nix/store/yyy/bin/ghc-pkg
+```
+
+## Remote Execution
+
+Remote execution via NativeLink is the default mode. Local-only mode exists for testing:
+
+```dhall
+-- toolchains/BUILD.dhall
+let lre = (A.executionPlatform "lre")
+      with local_enabled = True
+      with remote_enabled = True   -- Default: remote
+
+let local = (A.executionPlatform "local")
+      with local_enabled = True
+      with remote_enabled = False  -- Testing only
+```
+
+Workers run as Nix containers on Fly.io with identical toolchains to local builds.
+
+## Project Structure
+
+```
+sensenet/
+├── src/
+│   ├── sensenet/           # Haskell CLI
+│   │   ├── Main.hs         # Entry point
+│   │   └── SenseNet/
+│   │       ├── IR.hs       # Internal representation
+│   │       ├── Dhall.hs    # BUILD.dhall parser
+│   │       ├── Emit.hs     # BUCK generator
+│   │       ├── Namespace.hs # Linux namespace setup
+│   │       └── Generate.hs # Orchestration
+│   └── nix-analyze/        # Nix dependency resolver
+├── dhall/
+│   └── prelude/            # Dhall type definitions
+├── toolchains/             # Starlark toolchain rules
+│   ├── cxx.bzl
+│   ├── haskell.bzl
+│   ├── rust.bzl
+│   └── ...
+├── nix/
+│   └── modules/flake/
+│       ├── sensenet/       # Flake module
+│       └── nativelink/     # RE infrastructure
+└── src/examples/           # Example projects
+```
+
+## Commands
+
+```bash
+sensenet build [target]     # Build (remote by default)
+sensenet run <target>       # Build and execute
+sensenet clean              # Kill daemon, clean buck-out
+sensenet query <expr>       # Query build graph
+sensenet targets [dir]      # List available targets
+sensenet emit-buck <file>   # Debug: show generated BUCK
+sensenet graph [pattern]    # Show build graph
+```
+
+## Flake Modules
 
 | Module | Purpose |
-|--------|---------|
-| `flakeModules.default` | All of the below |
-| `flakeModules.formatter` | treefmt integration |
-| `flakeModules.lint` | Lint configs + rules |
-| `flakeModules.buck2` | Buck2 → Nix derivation |
-| `flakeModules.build` | Toolchain options |
-| `flakeModules.devshell` | Development shell |
-| `flakeModules.nativelink` | Remote execution |
-| `flakeModules.std` | nixpkgs + llvm-git overlay |
+| ------------ | -------------------------------------------- |
+| `sensenet` | Full build system integration |
+| `formatter` | treefmt (nixfmt, clang-format, rustfmt, ...) |
+| `lint` | Static analysis (statix, clang-tidy, ...) |
+| `devshell` | Development environment |
+| `nativelink` | Remote execution infrastructure |
+| `std` | nixpkgs with overlays |
 
-## Overlays
+## Development
 
-```nix
-{
-  nixpkgs.overlays = [ sense.overlays.default ];
-  # or
-  nixpkgs.overlays = [ sense.overlays.llvm-git ];
-}
+```bash
+# Enter devshell
+nix develop
+
+# Build sensenet CLI
+ghc -o sensenet -isrc/sensenet src/sensenet/Main.hs -threaded
+
+# Test build
+./sensenet build //src/examples/cxx:hello-cxx
+
+# Run tests
+./sensenet build //src/examples/...
 ```
 
-## Lint Rules
+## Bootstrap Sequence
 
-AST-grep rules in `linter/rules/`:
+sensenet uses a 3-stage bootstrap to minimize initial build time:
 
-| Rule | Description |
-|------|-------------|
-| `no-raw-mkderivation` | Use builders, not raw mkDerivation |
-| `with-lib` | Avoid `with lib;` |
-| `rec-in-derivation` | No `rec` in derivation attrs |
-| `or-null-fallback` | Prefer `value or null` patterns |
-| `missing-meta` | Require meta attributes |
-| `cpp-raw-new-delete` | Ban raw new/delete in C++ |
-| ... | See `linter/rules/` |
+```
+Stage 1: sensenet-bootstrap  →  Stage 2: sensenet-local  →  Stage 3: sensenet
+        (minimal deps)              (local features)           (full build)
+```
 
-## Part of Sense
+| Stage | Package | Purpose | Build Time |
+|-------|---------|---------|------------|
+| 1 | `sensenet-bootstrap` | Minimal deps, fast build for initial bootstrap | ~30s |
+| 2 | `sensenet-local` | Local-only features (no gRPC/protobuf) | ~30s |
+| 3 | `sensenet` | Full build with all features (remote execution) | ~45s |
 
-This is the bootstrap layer of the Sense project — a ground-up rethinking of Nix infrastructure with formal verification, typed derivations, and daemon-free operation.
+```bash
+# Stage 1: Bootstrap (fastest, minimal)
+nix build .#sensenet-bootstrap
+
+# Stage 2: Local development (no RE deps)
+nix build .#sensenet-local
+
+# Stage 3: Full build (production)
+nix build .#sensenet
+```
+
+The bootstrap stage enables self-hosting: sensenet can build itself using only the minimal bootstrap binary, avoiding circular dependencies on heavy libraries.
+
+### DhallFast Optimization
+
+Dhall evaluation was the primary bottleneck (4x slower than Buck2's Starlark parsing). DhallFast provides a drop-in replacement normalizer with 2-7x speedup:
+
+| Component | Optimization |
+|-----------|--------------|
+| Variables | De Bruijn indices (O(1) representation) |
+| Environment | Strict spine list (O(1) cons, small O(i) lookup) |
+| Lists | `Seq` for lazy evaluation |
+| Fields | Sorted `Vector` with binary search |
+
+```haskell
+-- Drop-in replacement for Dhall.inputFile
+import DhallFast.Input (inputFile, auto)
+
+config <- inputFile auto "BUILD.dhall"
+```
+
+See [doc/PERFORMANCE.md](doc/PERFORMANCE.md) for detailed benchmarks.
+
+## What's Next: FFI to DICE
+
+The current architecture generates BUCK files as text, then runs Buck2. The next step is direct FFI to Buck2's DICE engine:
+
+```
+Current:  Dhall → Haskell IR → BUCK (text) → Starlark parser → DICE
+Future:   Dhall → Haskell IR → Rust FFI → DICE (direct)
+```
+
+This eliminates the Starlark intermediary entirely, enabling:
+
+- Typed build graph manipulation in Haskell
+- Direct access to DICE incremental computation
+- Richer tooling that understands the build graph natively
 
 ## License
 

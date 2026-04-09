@@ -395,11 +395,15 @@ in
             haskell-packages.crypton
             haskell-packages.dhall
             haskell-packages.foldl
+            haskell-packages.hostname
+            haskell-packages.katip
             haskell-packages.megaparsec
             haskell-packages.memory
+            haskell-packages.microlens
             haskell-packages.optparse-applicative
             haskell-packages.shelly
             haskell-packages.temporary
+            haskell-packages.text-short
             haskell-packages.unordered-containers
             haskell-packages.vector
 
@@ -479,13 +483,13 @@ in
 
       scheduler = mk-option {
         type = types.str;
-        default = "sense-scheduler.fly.dev";
+        default = "aleph-scheduler.fly.dev";
         description = "Fly.io scheduler hostname";
       };
 
       cas = mk-option {
         type = types.str;
-        default = "sense-cas.fly.dev";
+        default = "aleph-cas.fly.dev";
         description = "Fly.io CAS hostname";
       };
 

@@ -1,8 +1,0 @@
-# platforms/BUCK
-#
-# Execution platforms for Buck2
-
-platform(
-    name = "default",
-    constraint_values = [],
-)

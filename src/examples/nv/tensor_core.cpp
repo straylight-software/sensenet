@@ -17,9 +17,9 @@
 
 #include <mma.h>
 
-#include <experimental/mdspan>
+// mdspan not currently used in this file, but available via CCCL:
+// #include <cuda/std/mdspan>
 
-namespace stdex = std::experimental;
 using namespace nvcuda;
 
 namespace straylight::nv {

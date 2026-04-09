@@ -1,0 +1,25 @@
+# builder-fly.toml - Fly.io deployment config for Nix builder machine
+#
+# This is a dedicated VM for running nix builds remotely.
+# SSH in, run builds, push container images to ghcr.io.
+
+app = "@APP_NAME@"
+primary_region = "@REGION@"
+
+[build]
+image = "ghcr.io/straylight-software/nix-builder:latest"
+
+[env]
+NIX_CONFIG = "experimental-features = nix-command flakes"
+
+[[services]]
+internal_port = 22
+protocol = "tcp"
+
+[[services.ports]]
+port = 22
+handlers = []
+
+[mounts]
+source = "nix_store"
+destination = "/nix"

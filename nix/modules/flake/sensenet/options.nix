@@ -10,13 +10,9 @@
 #     toolchain.haskell.packages = hp: [ hp.aeson hp.text ];
 #   };
 #
-# Backward compatibility:
-#   buck2.projects is aliased to sensenet.projects (deprecated)
-#
 {
   lib,
   flake-parts-lib,
-  config,
   ...
 }:
 let
@@ -196,9 +192,9 @@ let
 in
 {
   options.perSystem = flake-parts-lib.mkPerSystemOption (
-    { pkgs, config, ... }:
+    { pkgs, ... }:
     {
-      # ── Primary: sensenet.projects ─────────────────────────────────────────
+      # ── sensenet.projects ───────────────────────────────────────────────────
       options.sensenet = {
         projects = lib.mkOption {
           type = lib.types.attrsOf (projectsubmodule {
@@ -214,20 +210,6 @@ in
           description = "Function to create a Sensenet project";
         };
       };
-
-      # ── Backward compat: buck2.projects (deprecated) ───────────────────────
-      options.buck2 = {
-        projects = lib.mkOption {
-          type = lib.types.attrsOf (projectsubmodule {
-            inherit pkgs;
-          });
-          default = { };
-          description = "DEPRECATED: Use sensenet.projects instead";
-        };
-      };
-
-      # ── Merge buck2.projects into sensenet.projects ────────────────────────
-      config.sensenet.projects = config.buck2.projects;
     }
   );
 }

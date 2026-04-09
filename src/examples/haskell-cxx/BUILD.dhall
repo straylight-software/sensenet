@@ -5,15 +5,10 @@
 --|   - Pointer passing (arrays, strings)
 --|   - Opaque handle pattern for C++ objects
 
-let A = ../../../dhall/prelude/package.dhall
-let S = ../../../dhall/prelude/to-starlark.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
 let test_ffi =
-      (A.haskellFFIBinary "test_ffi" ["FFI.hs", "Main.hs"] ["ffi.cpp"])
+      (E.haskell_ffi_binary "test_ffi" ["FFI.hs", "Main.hs"] ["ffi.cpp"])
         with cxx_headers = ["ffi.h"]
 
-in  { rules = [ S.haskellFFIBinary test_ffi ]
-    , header = ''
-        load("@toolchains//:haskell.bzl", "haskell_ffi_binary")
-        ''
-    }
+in  { targets = [ E.rule.haskellFFIBinary test_ffi ] }

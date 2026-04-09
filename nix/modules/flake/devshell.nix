@@ -18,6 +18,7 @@
 # as the single source of truth. Devshell adds testing/dev packages on top.
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{ inputs }:
 { config, lib, ... }:
 let
   # lisp-case aliases for lib functions
@@ -80,6 +81,14 @@ in
         # Development utilities
         hp.lens
         hp.raw-strings-qq
+
+        # ── sensenet self-build dependencies ──────────────────────────────
+        # Required for `sensenet build //src/sensenet:sensenet`
+        # NOTE: deepseq is a GHC boot package (null in ghc912 config), don't add it
+        hp.ansi-terminal
+        hp.colour
+        hp.hashable
+        # NOTE: hyperconsole is added via overlay-haskell-packages in perSystem
       ];
       description = "Extra Haskell packages for devshell (on top of build.toolchain.haskell.packages)";
     };
@@ -99,16 +108,32 @@ in
 
   config = mk-if cfg.enable {
     perSystem =
-      { pkgs, config, ... }:
+      {
+        pkgs,
+        config,
+        system,
+        ...
+      }:
       let
+        # PureScript packages from purescript-overlay (if available)
+        purs-pkgs =
+          if inputs ? purescript-overlay then inputs.purescript-overlay.packages.${system} else { };
+
         # All env vars defined here, not in shellHook
         # Env var names use CUDA/NVIDIA because that's what tools expect
         nv-env = optional-attrs (cfg.nv.enable && pkgs ? nvidia-sdk) {
           CUDA_HOME = "${pkgs.nvidia-sdk}";
           CUDA_PATH = "${pkgs.nvidia-sdk}";
           NVIDIA_SDK = "${pkgs.nvidia-sdk}";
-          # LD_LIBRARY_PATH for runtime loading of CUDA libs (hasktorch, etc.)
-          LD_LIBRARY_PATH = "${pkgs.nvidia-sdk}/lib";
+          # LD_LIBRARY_PATH for runtime loading of CUDA libs (hasktorch, TensorRT, etc.)
+          # Include /run/opengl-driver/lib for NixOS driver access
+          LD_LIBRARY_PATH = "${pkgs.nvidia-sdk}/lib:/run/opengl-driver/lib";
+        };
+
+        # sensenet CLI env vars
+        sensenet-env = {
+          SENSENET_PRELUDE = "${inputs.buck2-prelude}";
+          SENSENET_TOOLCHAINS = "${inputs.self}/toolchains";
         };
 
         # ────────────────────────────────────────────────────────────────────────
@@ -127,8 +152,19 @@ in
         # Combine build toolchain packages + devshell extras
         # build.toolchain.haskell.packages: core packages for Buck2 builds
         # cfg.extra-haskell-packages: testing, scripting, dev tools
+        #
+        # Overlay packages (hyperconsole, etc.) must be added here directly,
+        # not in the extra-haskell-packages default, because option defaults
+        # are evaluated before overlays are applied.
+        overlay-haskell-packages = hp: [
+          hp.hyperconsole # from haskell.nix overlay
+        ];
+
         ghc-with-all-deps = hs-pkgs.ghcWithPackages (
-          hp: (build-cfg.toolchain.haskell.packages hp) ++ (cfg.extra-haskell-packages hp)
+          hp:
+          (build-cfg.toolchain.haskell.packages hp)
+          ++ (cfg.extra-haskell-packages hp)
+          ++ (overlay-haskell-packages hp)
         );
 
         # System libraries GHC needs at runtime
@@ -157,6 +193,10 @@ in
               pkgs.buck2
               ghc-with-all-deps
 
+              # sensenet CLI - uses bootstrap binary from repo root (./sense)
+              # Added to PATH in shellHook: export PATH="$PWD:$PATH"
+              # Self-build: sensenet build //src/sensenet:sensenet
+
               # ════════════════════════════════════════════════════════════════
               # LSP servers - go-to-definition works out of the box
               # ════════════════════════════════════════════════════════════════
@@ -167,6 +207,12 @@ in
 
               # Nix: nixd (configured via .nixd.json from use_flake-lsp)
               pkgs.nixd
+
+              # PureScript: purs, spago, esbuild for bundle
+              # Uses purescript-overlay packages if available, else nixpkgs
+              (purs-pkgs.purs or pkgs.purescript)
+              (purs-pkgs.spago-unstable or pkgs.spago)
+              pkgs.esbuild
 
               # Rust: rust-analyzer (if Rust toolchain enabled)
               # Note: rust-analyzer is added via build.nix when rust toolchain is enabled
@@ -208,12 +254,15 @@ in
 
                 # Generate .buckconfig.local with toolchain paths
                 # This provides Buck2 with Nix store paths for all compilers
-                
+
                 # STRICT REQUIREMENT: NVIDIA toolchain requires custom LLVM-git overlay
                 # Enable 'sense.llvm-git.enable = true' in your flake config.
-                llvm-pkg = if (pkgs ? llvm-git) then pkgs.llvm-git 
-                           else throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'sense.llvm-git.enable = true'.";
-                
+                llvm-pkg =
+                  if (pkgs ? llvm-git) then
+                    pkgs.llvm-git
+                  else
+                    throw "NVIDIA toolchain requires 'pkgs.llvm-git'. Set 'sense.llvm-git.enable = true'.";
+
                 clang = llvm-pkg;
                 # llvm-git is already unwrapped
                 clang-unwrapped = llvm-pkg;
@@ -232,6 +281,16 @@ in
                   archs = sm_90,sm_100,sm_120
                 '';
 
+                # mdspan for std::mdspan on device (NVIDIA)
+                mdspan = pkgs.callPackage ../../packages/mdspan.nix { };
+
+                # GHC version from the package
+                ghc-version = hs-pkgs.ghc.version;
+
+                # Turing Registry flags from config (or defaults)
+                c-flags = lib.concatStringsSep " " (build-cfg.toolchain.cxx.c-flags or [ ]);
+                cxx-flags = lib.concatStringsSep " " (build-cfg.toolchain.cxx.cxx-flags or [ ]);
+
                 buckconfig-template = builtins.readFile ./devshell/buckconfig-local.ini;
                 buckconfig-filled =
                   builtins.replaceStrings
@@ -245,15 +304,20 @@ in
                       "@gcc_include@"
                       "@gcc_include_arch@"
                       "@glibc_include@"
+                      "@mdspan_include@"
                       "@gcc_lib@"
                       "@gcc_lib_base@"
                       "@glibc_lib@"
+                      "@dynamic_linker@"
+                      "@c_flags@"
+                      "@cxx_flags@"
                       "@ghc@"
                       "@ghc_pkg@"
                       "@haddock@"
                       "@ghc_version@"
                       "@ghc_lib_dir@"
                       "@global_package_db@"
+                      "@ghc_pkg_wrapper@"
                       "@rustc@"
                       "@rustdoc@"
                       "@clippy_driver@"
@@ -264,7 +328,13 @@ in
                       "@lean_include_dir@"
                       "@python_interpreter@"
                       "@python_include@"
+                      "@nanobind_include@"
+                      "@nanobind_cmake@"
                       "@pybind11_include@"
+                      "@purs@"
+                      "@spago@"
+                      "@node@"
+                      "@esbuild@"
                     ]
                     [
                       "${clang}/bin/clang"
@@ -276,15 +346,22 @@ in
                       "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}"
                       "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}/${pkgs.stdenv.hostPlatform.config}"
                       "${pkgs.glibc.dev}/include"
+                      "${mdspan}/include"
                       "${pkgs.gcc.cc}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${pkgs.gcc.cc.version}"
                       "${pkgs.gcc.cc.lib}/lib"
                       "${pkgs.glibc}/lib"
+                      "${pkgs.glibc}/lib/ld-linux-${
+                        if pkgs.stdenv.hostPlatform.isAarch64 then "aarch64" else "x86-64"
+                      }.so.${if pkgs.stdenv.hostPlatform.isAarch64 then "1" else "2"}"
+                      c-flags
+                      cxx-flags
                       "${ghc-with-all-deps}/bin/ghc"
                       "${ghc-with-all-deps}/bin/ghc-pkg"
                       "${ghc-with-all-deps}/bin/haddock"
-                      "9.12.2"
-                      "${ghc-with-all-deps}/lib/ghc-9.12.2/lib"
-                      "${ghc-with-all-deps}/lib/ghc-9.12.2/lib/package.conf.d"
+                      ghc-version
+                      "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib"
+                      "${ghc-with-all-deps}/lib/ghc-${ghc-version}/lib/package.conf.d"
+                      "toolchains/scripts/ghc-pkg-id"
                       "${pkgs.rustc}/bin/rustc"
                       "${pkgs.rustc}/bin/rustdoc"
                       "${pkgs.clippy}/bin/clippy-driver"
@@ -295,7 +372,13 @@ in
                       "${pkgs.lean4}/include"
                       "${pkgs.python312}/bin/python3"
                       "${pkgs.python312}/include/python3.12"
+                      "${pkgs.python312Packages.nanobind}/lib/python3.12/site-packages/nanobind/include"
+                      "${pkgs.python312Packages.nanobind}/lib/python3.12/site-packages/nanobind"
                       "${pkgs.python312Packages.pybind11}/include"
+                      "${(purs-pkgs.purs or pkgs.purescript)}/bin/purs"
+                      "${(purs-pkgs.spago-unstable or pkgs.spago)}/bin/spago"
+                      "${pkgs.nodejs}/bin/node"
+                      "${pkgs.esbuild}/bin/esbuild"
                     ]
                     buckconfig-template;
 
@@ -308,6 +391,90 @@ in
                   cp ${buckconfig-local-file} .buckconfig.local
                   chmod 644 .buckconfig.local
                   echo "Generated .buckconfig.local with Nix toolchain paths"
+                '';
+
+                # ────────────────────────────────────────────────────────────────────────
+                # sensenet toolchains.dhall generation
+                # ────────────────────────────────────────────────────────────────────────
+                toolchains-dhall-template = builtins.readFile ./devshell/toolchains.dhall.template;
+
+                nv-toolchain-dhall = optional-string (cfg.nv.enable && pkgs ? nvidia-sdk) ''
+                  let nvToolchain : TC.Nv =
+                    { image = None Text
+                    , clang = TC.tool "${clang}/bin/clang++"
+                    , ptxas = TC.tool "${pkgs.nvidia-sdk}/bin/ptxas"
+                    , fatbinary = TC.tool "${pkgs.nvidia-sdk}/bin/fatbinary"
+                    , sdk_path = "${pkgs.nvidia-sdk}"
+                    , sdk = TC.paths 
+                        [ "${pkgs.nvidia-sdk}/include" ]
+                        [ "${pkgs.nvidia-sdk}/lib" ]
+                    , archs = ["sm_90", "sm_100", "sm_120"]
+                    , cxx = cxxToolchain
+                    }
+                '';
+
+                toolchains-dhall-filled =
+                  builtins.replaceStrings
+                    [
+                      "@cc@"
+                      "@cxx@"
+                      "@ar@"
+                      "@ld@"
+                      "@gcc_include@"
+                      "@gcc_include_arch@"
+                      "@clang_resource_dir@"
+                      "@glibc_include@"
+                      "@glibc_lib@"
+                      "@gcc_lib@"
+                      "@gcc_lib_base@"
+                      "@rustc@"
+                      "@cargo@"
+                      "@ghc@"
+                      "@ghc_pkg@"
+                      "@lean@"
+                      "@leanc@"
+                      "@purs@"
+                      "@spago@"
+                      "@node@"
+                      "@esbuild@"
+                      "@nv_toolchain@"
+                      "@nv_value@"
+                    ]
+                    [
+                      "${clang}/bin/clang"
+                      "${clang}/bin/clang++"
+                      "${lld}/bin/llvm-ar"
+                      "${lld}/bin/ld.lld"
+                      "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}"
+                      "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.cc.version}/${pkgs.stdenv.hostPlatform.config}"
+                      "${clang}/lib/clang/22"
+                      "${pkgs.glibc.dev}/include"
+                      "${pkgs.glibc}/lib"
+                      "${pkgs.gcc.cc}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${pkgs.gcc.cc.version}"
+                      "${pkgs.gcc.cc.lib}/lib"
+                      "${pkgs.rustc}/bin/rustc"
+                      "${pkgs.cargo}/bin/cargo"
+                      "${ghc-with-all-deps}/bin/ghc"
+                      "${ghc-with-all-deps}/bin/ghc-pkg"
+                      "${pkgs.lean4}/bin/lean"
+                      "${pkgs.lean4}/bin/leanc"
+                      "${(purs-pkgs.purs or pkgs.purescript)}/bin/purs"
+                      "${(purs-pkgs.spago-unstable or pkgs.spago)}/bin/spago"
+                      "${pkgs.nodejs}/bin/node"
+                      "${pkgs.esbuild}/bin/esbuild"
+                      nv-toolchain-dhall
+                      (if (cfg.nv.enable && pkgs ? nvidia-sdk) then "Some nvToolchain" else "None TC.Nv")
+                    ]
+                    toolchains-dhall-template;
+
+                toolchains-dhall-file = pkgs.writeText "toolchains.dhall" toolchains-dhall-filled;
+
+                toolchains-dhall-hook = ''
+                  # Generate .sensenet/toolchains.dhall with Nix toolchain paths
+                  mkdir -p .sensenet
+                  cp ${toolchains-dhall-file} .sensenet/toolchains.dhall
+                  chmod 644 .sensenet/toolchains.dhall
+                  echo "Generated .sensenet/toolchains.dhall with Nix toolchain paths"
                 '';
 
                 hie-yaml-hook = ''
@@ -324,6 +491,12 @@ in
                 echo "GHC: $(${ghc-with-all-deps}/bin/ghc --version)"
                 ${straylight-nix-check}
                 ${buckconfig-hook}
+                ${toolchains-dhall-hook}
+                # Add sensenet CLI to PATH
+                # 1. Self-built binary (sensenet-out/src/sensenet/sensenet)
+                # 2. Bootstrap binary (result-bootstrap/bin/sensenet)
+                # 3. Root dir for scripts
+                export PATH="$PWD/sensenet-out/src/sensenet:$PWD/result-bootstrap/bin:$PWD:$PATH"
                 ${config.sense.build.shellHook or ""}
                 ${config.sense.shortlist.shellHook or ""}
                 ${config.sense.lre.shellHook or ""}
@@ -332,6 +505,7 @@ in
               '';
           }
           // nv-env
+          // sensenet-env
           // cfg.extra-env
           // optional-attrs (cfg.nv.enable && pkgs ? nvidia-sdk) {
             # Ensure ptxas/fatbinary are in PATH for Clang

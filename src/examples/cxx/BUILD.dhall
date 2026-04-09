@@ -1,10 +1,18 @@
 --| C++ examples using LLVM toolchain
+--|
+--| Uses evring-style constructors via Compat layer
 
-let A = ../../../dhall/prelude/package.dhall
-let S = ../../../dhall/prelude/to-starlark.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
-let hello = A.cxxBinary "hello-cxx" ["hello.cpp"] ([] : List A.Dep)
+let hello = E.cxx_binary "hello-cxx" ["hello.cpp"]
+let foo = E.cxx_binary "foo" ["foo.cpp"]
+let bar = E.cxx_binary "bar" ["bar.cpp"]
+let baz = E.cxx_binary "baz" ["baz.cpp"]
 
-in  { rules = [ S.cxxBinary hello { compiler = [] : List Text, linker = [] : List Text } ]
-    , header = ""
+in  { targets = 
+        [ E.rule.cxxBinary hello
+        , E.rule.cxxBinary foo
+        , E.rule.cxxBinary bar
+        , E.rule.cxxBinary baz
+        ] 
     }

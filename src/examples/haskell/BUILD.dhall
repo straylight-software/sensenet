@@ -1,24 +1,27 @@
---| Haskell examples for Buck2
---|
---| Demonstrates:
---|   - haskell_binary: standalone executable
---|   - Packages and language extensions
+--| Haskell examples
 
-let A = ../../../dhall/prelude/package.dhall
-let S = ../../../dhall/prelude/to-starlark.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
-let hello = A.haskellBinary "hello-hs" ["Main.hs"]
+-- Simple binary (no deps)
+let hello = E.haskell_binary "hello-hs" ["Main.hs"]
+
+-- Library
+let greetlib = E.haskell_library "greetlib" ["Greet.hs"]
+
+-- Binary depending on library
+let greeter =
+      (E.haskell_binary "greeter" ["Main.hs"])
+        with deps = [E.local ":greetlib"]
 
 let json_demo =
-      (A.haskellBinary "json_demo" ["JsonDemo.hs"])
+      (E.haskell_binary "json_demo" ["JsonDemo.hs"])
         with packages = ["base", "aeson", "text", "bytestring"]
         with language_extensions = ["DeriveGeneric", "OverloadedStrings"]
 
-in  { rules =
-        [ S.haskellBinary hello
-        , S.haskellBinary json_demo
+in  { targets =
+        [ E.rule.haskellBinary hello
+        , E.rule.haskellLibrary greetlib
+        , E.rule.haskellBinary greeter
+        , E.rule.haskellBinary json_demo
         ]
-    , header = ''
-        load("@toolchains//:haskell.bzl", "haskell_binary")
-        ''
     }

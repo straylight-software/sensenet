@@ -1,0 +1,129 @@
+# Bootstrap build for sensenet
+#
+# This is the minimum Buck2 configuration needed to build sensenet.
+# Used ONLY as a Nix derivation input - never invoked directly.
+#
+# Usage: nix build .#sensenet-bootstrap
+#
+# The bootstrap binary can then build everything else via sensenet itself.
+
+load("@prelude//haskell:haskell.bzl", "haskell_binary", "haskell_library")
+
+# Core library modules (no remote execution)
+haskell_library(
+    name = "sensenet-lib",
+    srcs = glob(["../src/sensenet/**/*.hs"], exclude = [
+        "../src/sensenet/app/**",
+        "../src/sensenet/SenseNet/Remote.hs",
+        "../src/sensenet/NativeLink/**",
+        "../src/sensenet/Proto/**",
+    ]),
+    compiler_flags = [
+        "-Wall",
+        "-O2",
+        "-XLambdaCase",
+        "-XOverloadedStrings",
+        "-XOverloadedRecordDot",
+    ],
+    deps = [
+        "//third_party/haskell:aeson",
+        "//third_party/haskell:ansi-terminal",
+        "//third_party/haskell:async",
+        "//third_party/haskell:base",
+        "//third_party/haskell:bytestring",
+        "//third_party/haskell:colour",
+        "//third_party/haskell:containers",
+        "//third_party/haskell:crypton",
+        "//third_party/haskell:deepseq",
+        "//third_party/haskell:dhall",
+        "//third_party/haskell:directory",
+        "//third_party/haskell:either",
+        "//third_party/haskell:filepath",
+        "//third_party/haskell:hashable",
+        "//third_party/haskell:hostname",
+        "//third_party/haskell:hyperconsole",
+        "//third_party/haskell:katip",
+        "//third_party/haskell:memory",
+        "//third_party/haskell:microlens",
+        "//third_party/haskell:mtl",
+        "//third_party/haskell:process",
+        "//third_party/haskell:text",
+        "//third_party/haskell:text-short",
+        "//third_party/haskell:time",
+        "//third_party/haskell:unix",
+        "//third_party/haskell:unordered-containers",
+        "//third_party/haskell:vector",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Bootstrap binary - minimal sensenet executable
+haskell_binary(
+    name = "sensenet",
+    srcs = ["../src/sensenet/app/Main.hs"],
+    main = "Main",
+    compiler_flags = [
+        "-Wall",
+        "-O2",
+        "-threaded",
+        "-rtsopts",
+        "-with-rtsopts=-N",
+        "-XLambdaCase",
+        "-XOverloadedStrings",
+        "-XOverloadedRecordDot",
+    ],
+    deps = [
+        ":sensenet-lib",
+        "//third_party/haskell:aeson",
+        "//third_party/haskell:async",
+        "//third_party/haskell:base",
+        "//third_party/haskell:bytestring",
+        "//third_party/haskell:directory",
+        "//third_party/haskell:filepath",
+        "//third_party/haskell:process",
+        "//third_party/haskell:text",
+        "//third_party/haskell:unix",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Test binary
+haskell_binary(
+    name = "sensenet-test",
+    srcs = glob(["../test/**/*.hs"]),
+    main = "Main",
+    compiler_flags = [
+        "-Wall",
+        "-O2",
+        "-threaded",
+        "-rtsopts",
+        "-with-rtsopts=-N",
+        "-XLambdaCase",
+        "-XOverloadedStrings",
+        "-XOverloadedRecordDot",
+        "-XRecordWildCards",
+        "-XScopedTypeVariables",
+    ],
+    deps = [
+        ":sensenet-lib",
+        "//third_party/haskell:async",
+        "//third_party/haskell:base",
+        "//third_party/haskell:bytestring",
+        "//third_party/haskell:containers",
+        "//third_party/haskell:crypton",
+        "//third_party/haskell:deepseq",
+        "//third_party/haskell:directory",
+        "//third_party/haskell:filepath",
+        "//third_party/haskell:memory",
+        "//third_party/haskell:process",
+        "//third_party/haskell:random",
+        "//third_party/haskell:tasty",
+        "//third_party/haskell:tasty-hunit",
+        "//third_party/haskell:tasty-quickcheck",
+        "//third_party/haskell:temporary",
+        "//third_party/haskell:text",
+        "//third_party/haskell:time",
+        "//third_party/haskell:unix",
+    ],
+    visibility = ["PUBLIC"],
+)

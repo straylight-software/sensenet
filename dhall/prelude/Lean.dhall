@@ -6,6 +6,7 @@ let Binary =
       { name : Text
       , srcs : List Text
       , deps : List T.Dep
+      , root_module : Optional Text
       , vis : T.Vis
       }
 
@@ -15,6 +16,7 @@ let binary
       \(srcs : List Text) ->
         { name, srcs
         , deps = [] : List T.Dep
+        , root_module = None Text
         , vis = T.Vis.Public
         }
 

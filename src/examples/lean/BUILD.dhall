@@ -1,13 +1,12 @@
---| Lean 4 examples using hermetic Nix toolchain
+--| Lean 4 examples
 
-let A = ../../../dhall/prelude/package.dhall
-let S = ../../../dhall/prelude/to-starlark.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
-let hello = A.leanBinary "hello-lean" ["Hello.lean"]
-let hashmap = A.leanBinary "hashmap" ["HashMap.lean"]
+let hello = E.lean_binary "hello-lean" ["Hello.lean"]
+let hashmap = E.lean_binary "hashmap" ["HashMap.lean"]
 
-in  { rules = [ S.leanBinary hello, S.leanBinary hashmap ]
-    , header = ''
-        load("@toolchains//:lean.bzl", "lean_binary")
-        ''
+in  { targets =
+        [ E.rule.leanBinary hello
+        , E.rule.leanBinary hashmap
+        ]
     }

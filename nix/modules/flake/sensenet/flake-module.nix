@@ -6,9 +6,6 @@
 #   - packages.sensenet-<name>: Nix derivation that builds the targets
 #   - devShells.sensenet-<name>: Development shell with toolchains configured
 #
-# Backward compatibility:
-#   - packages.buck2-<name> and devShells.buck2-<name> are also created (deprecated)
-#
 # The package derivation runs buck2 build with __noChroot = true, allowing
 # it to use the buck2 daemon and cache.
 #
@@ -72,24 +69,27 @@
           hooglewithdb = hspackages.hoogleWithPackages hspkgsfn;
           python = toolchain.python.package or pkgs.python312;
           inherit (pkgs.python3Packages) pybind11;
-          nvidia-sdk = pkgs.nvidia-sdk or null;
+          # Only evaluate nvidia-sdk when nv toolchain is enabled
+          nvidia-sdk = if nvenabled && pkgs ? nvidia-sdk then pkgs.nvidia-sdk else null;
 
           # ── Generate buckconfig.local ──────────────────────────────────────────
-          buckconfiglocal = toolchainlib.mkbuckconfiglocal {
-            cxx = lib.optionalString cxxenabled (toolchainlib.mkcxxsection { llvmpackages = llvmpackages; });
+          buckconfiglocal = toolchainlib.mkBuckconfigLocal {
+            cxx = lib.optionalString cxxenabled (toolchainlib.mkCxxSection { llvmPackages = llvmpackages; });
             haskell = lib.optionalString haskellenabled (
-              toolchainlib.mkhaskellsection {
+              toolchainlib.mkHaskellSection {
                 inherit ghc;
-                ghcversion = ghcversion;
+                ghcVersion = ghcversion;
+                # ghc-pkg-id wrapper for GHC 9.12 -package workaround
+                ghcPkgWrapper = "${inputs.self}/toolchains/scripts/ghc-pkg-id";
               }
             );
-            rust = lib.optionalString rustenabled (toolchainlib.mkrustsection { });
-            lean = lib.optionalString leanenabled (toolchainlib.mkleansection { });
+            rust = lib.optionalString rustenabled (toolchainlib.mkRustSection { });
+            lean = lib.optionalString leanenabled (toolchainlib.mkLeanSection { });
             python = lib.optionalString pythonenabled (
-              toolchainlib.mkpythonsection { inherit python pybind11; }
+              toolchainlib.mkPythonSection { inherit python pybind11; }
             );
-            nv = lib.optionalString (nvenabled && nvidia-sdk != null) (
-              toolchainlib.mknvsection {
+            nv = lib.optionalString (nvidia-sdk != null) (
+              toolchainlib.mkNvSection {
                 inherit nvidia-sdk;
                 inherit (llvmpackages) clang-unwrapped;
 
@@ -97,15 +97,15 @@
                 mdspan = pkgs.callPackage "${inputs.self}/nix/packages/mdspan.nix" { };
               }
             );
-            purescript = lib.optionalString purescriptenabled (toolchainlib.mkpurescriptsection { });
-            remoteexecution = lib.optionalString reenabled (
-              toolchainlib.mkremoteexecutionsection {
+            purescript = lib.optionalString purescriptenabled (toolchainlib.mkPureScriptSection { });
+            remoteExecution = lib.optionalString reenabled (
+              toolchainlib.mkRemoteExecutionSection {
                 scheduler = rescheduler;
-                schedulerport = reschedulerport;
+                schedulerPort = reschedulerport;
                 cas = recas;
-                casport = recasport;
+                casPort = recasport;
                 tls = retls;
-                instancename = reinstancename;
+                instanceName = reinstancename;
               }
             );
             extra = extrabuckconfigsections;
@@ -152,6 +152,9 @@
           # ── Shell hook ─────────────────────────────────────────────────────────
           shellhooktemplate = builtins.readFile ./shell-hook.bash;
 
+          # Toolchains path (from inputs.self)
+          toolchainspath = inputs.self + "/toolchains";
+
           shellhook =
             builtins.replaceStrings
               [
@@ -162,6 +165,7 @@
                 "@haskellEnabled@"
                 "@ghcBin@"
                 "@preludePath@"
+                "@toolchainsPath@"
                 "@buckconfigLocalFile@"
                 "@configsPath@"
                 "@cxxEnabled@"
@@ -178,11 +182,12 @@
                 (lib.optionalString haskellenabled "true")
                 "${ghc}/bin"
                 (toString preludepath)
+                (toString toolchainspath)
                 (toString buckconfiglocalfile)
                 (toString configspath)
                 (lib.optionalString cxxenabled "true")
                 (lib.optionalString (nvenabled && nvidia-sdk != null) "true")
-                (if nvidia-sdk != null then "${nvidia-sdk}/lib" else "")
+                (lib.optionalString (nvenabled && nvidia-sdk != null) "${nvidia-sdk}/lib")
                 (lib.concatStringsSep " " targets)
                 devshellhook
               ]
@@ -257,7 +262,6 @@
         };
 
       # ── Build all declared projects ──────────────────────────────────────────
-      # sensenet.projects is the primary source (includes merged buck2.projects)
       sensenetprojects = lib.mapAttrs (
         name: proj: mkproject (proj // { inherit name; })
       ) config.sensenet.projects;
@@ -266,15 +270,13 @@
       # ── Primary: sensenet.mkproject ──────────────────────────────────────────
       sensenet.mkproject = mkproject;
 
-      # ── Primary outputs: sensenet-<name> ─────────────────────────────────────
-      packages =
-        lib.mapAttrs' (name: proj: lib.nameValuePair "sensenet-${name}" proj.package) sensenetprojects
-        # Backward compat: buck2-<name> (deprecated)
-        // lib.mapAttrs' (name: proj: lib.nameValuePair "buck2-${name}" proj.package) sensenetprojects;
+      # ── sensenet-<name> outputs ──────────────────────────────────────────────
+      packages = lib.mapAttrs' (
+        name: proj: lib.nameValuePair "sensenet-${name}" proj.package
+      ) sensenetprojects;
 
-      devShells =
-        lib.mapAttrs' (name: proj: lib.nameValuePair "sensenet-${name}" proj.devshell) sensenetprojects
-        # Backward compat: buck2-<name> (deprecated)
-        // lib.mapAttrs' (name: proj: lib.nameValuePair "buck2-${name}" proj.devshell) sensenetprojects;
+      devShells = lib.mapAttrs' (
+        name: proj: lib.nameValuePair "sensenet-${name}" proj.devshell
+      ) sensenetprojects;
     };
 }

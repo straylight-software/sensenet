@@ -1,5 +1,4 @@
-# toolchains/rust_crate.bzl
-#
+# Generated from Dhall - DO NOT EDIT
 # Fetch and build crates from crates.io
 #
 # Simple model:
@@ -16,26 +15,105 @@
 #       deps = [":serde_derive"],
 #   )
 
-load("@straylight_prelude//http_archive.bzl", "http_archive")
 
-# Provider for crate outputs
-RustCrateInfo = provider(fields = [
-    "rlib",           # Compiled .rlib
-    "rmeta",          # Metadata for pipelining
-    "crate_name",     # Crate name (underscores)
-    "edition",        # Rust edition
-    "features",       # Enabled features
-    "is_proc_macro",  # Is this a proc-macro crate?
-    "transitive_deps", # List of all transitive rlib artifacts (for -L paths)
-])
+
+RustCrateInfo = provider(fields = ["rlib", "rmeta", "crate_name", "edition", "features", "is_proc_macro", "transitive_deps"])
 
 def _crate_url(name: str, version: str) -> str:
     """Get crates.io download URL."""
     return "https://static.crates.io/crates/{}/{}/download".format(name, version)
 
-def _rust_crate_impl(ctx: AnalysisContext) -> list[Provider]:
-    """Build a crate from crates.io."""
+# Convenience macro to fetch and build a crate from crates.io
+def crates_io(
+    name: str,
+    version: str,
+    sha256: str,
+    features: list[str] = [],
+    deps: list[str] = [],
+    proc_macro: bool = False,
+    edition: str = "2021",
+    crate_root: str | None = None,
+    rustc_flags: list[str] = [],
+    pkg_name: str | None = None,
+    crate_name: str | None = None,
+    env: dict[str, str] = {},
+    generated_files: dict[str, str] = {},
+    visibility: list[str] = ["PUBLIC"]):
+    """
+    Fetch and build a crate from crates.io.
     
+    Args:
+        name: Buck target name
+        version: Crate version
+        sha256: SHA256 of the crate tarball
+        pkg_name: Package name on crates.io (defaults to name)
+        crate_name: Crate name for rustc --extern (defaults to name with - replaced by _)
+        env: Extra environment variables to set during build
+    
+    Example:
+        crates_io(
+            name = "serde",
+            version = "1.0.228",
+            sha256 = "abc123...",
+            features = ["derive"],
+            deps = [":serde_derive"],
+        )
+    """
+    
+    # pkg_name is the crates.io package name, defaults to target name
+    pkg = pkg_name or name
+    
+    archive_name = "{}-{}.crate".format(name, version)
+    
+    # Fetch the crate
+    native.http_archive(
+        name = archive_name,
+        urls = [_crate_url(pkg, version)],
+        sha256 = sha256,
+        strip_prefix = "{}-{}".format(pkg, version),
+    )
+    
+    # Parse version for Cargo-like env vars
+    version_parts = version.split(".")
+    major = version_parts[0] if len(version_parts) > 0 else "0"
+    minor = version_parts[1] if len(version_parts) > 1 else "0"
+    patch_full = version_parts[2] if len(version_parts) > 2 else "0"
+    # Handle pre-release suffixes like "1.0.25-alpha"
+    patch = patch_full.split("-")[0].split("+")[0]
+    
+    # Generate Cargo-like environment variables
+    cargo_env = {
+        "CARGO_PKG_NAME": pkg,
+        "CARGO_PKG_VERSION": version,
+        "CARGO_PKG_VERSION_MAJOR": major,
+        "CARGO_PKG_VERSION_MINOR": minor,
+        "CARGO_PKG_VERSION_PATCH": patch,
+    }
+    # Merge with user-provided env (user env takes precedence)
+    for k, v in env.items():
+        cargo_env[k] = v
+    
+    # Build it
+    rust_crate(
+        name = name,
+        src = ":{}".format(archive_name),
+        crate_name = crate_name,
+        edition = edition,
+        features = features,
+        deps = deps,
+        proc_macro = proc_macro,
+        crate_root = crate_root,
+        rustc_flags = rustc_flags,
+        env = cargo_env,
+        generated_files = generated_files,
+        visibility = visibility,
+    )
+
+
+
+
+def _rust_crate_impl(ctx: AnalysisContext) -> list[Provider]:
+    """"""
     rustc = read_root_config("rust", "rustc", "rustc")
     
     # Crate name with underscores (Rust convention)
@@ -141,10 +219,11 @@ def _rust_crate_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
     ]
 
+
 rust_crate = rule(
     impl = _rust_crate_impl,
     attrs = {
-        "src": attrs.dep(),  # http_archive target
+        "src": attrs.dep(),
         "crate_name": attrs.option(attrs.string(), default = None),
         "crate_root": attrs.option(attrs.string(), default = None),
         "edition": attrs.string(default = "2021"),
@@ -158,88 +237,3 @@ rust_crate = rule(
     },
 )
 
-# Convenience macro to fetch and build a crate from crates.io
-def crates_io(
-    name: str,
-    version: str,
-    sha256: str,
-    features: list[str] = [],
-    deps: list[str] = [],
-    proc_macro: bool = False,
-    edition: str = "2021",
-    crate_root: str | None = None,
-    rustc_flags: list[str] = [],
-    pkg_name: str | None = None,
-    crate_name: str | None = None,
-    env: dict[str, str] = {},
-    generated_files: dict[str, str] = {},
-    visibility: list[str] = ["PUBLIC"]):
-    """
-    Fetch and build a crate from crates.io.
-    
-    Args:
-        name: Buck target name
-        version: Crate version
-        sha256: SHA256 of the crate tarball
-        pkg_name: Package name on crates.io (defaults to name)
-        crate_name: Crate name for rustc --extern (defaults to name with - replaced by _)
-        env: Extra environment variables to set during build
-    
-    Example:
-        crates_io(
-            name = "serde",
-            version = "1.0.228",
-            sha256 = "abc123...",
-            features = ["derive"],
-            deps = [":serde_derive"],
-        )
-    """
-    
-    # pkg_name is the crates.io package name, defaults to target name
-    pkg = pkg_name or name
-    
-    archive_name = "{}-{}.crate".format(name, version)
-    
-    # Fetch the crate
-    http_archive(
-        name = archive_name,
-        urls = [_crate_url(pkg, version)],
-        sha256 = sha256,
-        strip_prefix = "{}-{}".format(pkg, version),
-    )
-    
-    # Parse version for Cargo-like env vars
-    version_parts = version.split(".")
-    major = version_parts[0] if len(version_parts) > 0 else "0"
-    minor = version_parts[1] if len(version_parts) > 1 else "0"
-    patch_full = version_parts[2] if len(version_parts) > 2 else "0"
-    # Handle pre-release suffixes like "1.0.25-alpha"
-    patch = patch_full.split("-")[0].split("+")[0]
-    
-    # Generate Cargo-like environment variables
-    cargo_env = {
-        "CARGO_PKG_NAME": pkg,
-        "CARGO_PKG_VERSION": version,
-        "CARGO_PKG_VERSION_MAJOR": major,
-        "CARGO_PKG_VERSION_MINOR": minor,
-        "CARGO_PKG_VERSION_PATCH": patch,
-    }
-    # Merge with user-provided env (user env takes precedence)
-    for k, v in env.items():
-        cargo_env[k] = v
-    
-    # Build it
-    rust_crate(
-        name = name,
-        src = ":{}".format(archive_name),
-        crate_name = crate_name,
-        edition = edition,
-        features = features,
-        deps = deps,
-        proc_macro = proc_macro,
-        crate_root = crate_root,
-        rustc_flags = rustc_flags,
-        env = cargo_env,
-        generated_files = generated_files,
-        visibility = visibility,
-    )

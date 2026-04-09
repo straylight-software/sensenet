@@ -1,5 +1,4 @@
-# toolchains/nix.bzl
-#
+# Generated from Dhall - DO NOT EDIT
 # Rules for Nix flake dependencies in Buck2.
 #
 # Resolves nixpkgs#foo to store paths at analysis time via `nix build --print-out-paths`.
@@ -19,43 +18,10 @@
 #       deps = [":zlib"],
 #   )
 
-def _nix_prebuilt_impl(ctx: AnalysisContext) -> list[Provider]:
-    """
-    Resolve a nix flake ref to store paths and expose as prebuilt C library.
-    """
-    flake_ref = ctx.attrs.flake_ref
-    
-    # Read pre-resolved paths from config (set by nix develop shellHook)
-    # Format in .buckconfig.local:
-    #   [nix.resolved]
-    #   nixpkgs#zlib.out = /nix/store/xxx-zlib-1.3.1
-    #   nixpkgs#zlib.dev = /nix/store/xxx-zlib-1.3.1-dev
-    
-    out_path = read_root_config("nix.resolved", flake_ref + ".out", None)
-    dev_path = read_root_config("nix.resolved", flake_ref + ".dev", None)
-    
-    if out_path == None:
-        fail("Nix flake ref not resolved: {}. Run 'nix develop' to populate .buckconfig.local".format(flake_ref))
-    
-    # Use dev path for headers if available, otherwise out path
-    include_path = (dev_path or out_path) + "/include"
-    lib_path = out_path + "/lib"
-    
-    # The library name is usually the package name, but some differ
-    pkg_name = flake_ref.split("#")[-1] if "#" in flake_ref else flake_ref
-    lib_name = _lib_name_map.get(pkg_name, pkg_name)
-    
-    return [
-        DefaultInfo(),
-        # Expose as C++ library provider
-        # Buck2 prelude expects specific providers for prebuilt libs
-        # For now, just use raw compiler/linker flags
-        CxxPrebuiltLibraryInfo(
-            include_dirs = [include_path],
-            lib_dir = lib_path,
-            lib_name = lib_name,
-        ),
-    ]
+
+
+
+CxxPrebuiltLibraryInfo = provider(fields = ["include_dirs", "lib_dir", "lib_name"])
 
 # Map package names to actual library names
 _lib_name_map = {
@@ -65,20 +31,6 @@ _lib_name_map = {
     "libjpeg": "jpeg",
     "sqlite": "sqlite3",
 }
-
-# Simple provider to carry prebuilt lib info
-CxxPrebuiltLibraryInfo = provider(fields = [
-    "include_dirs",
-    "lib_dir", 
-    "lib_name",
-])
-
-nix_prebuilt = rule(
-    impl = _nix_prebuilt_impl,
-    attrs = {
-        "flake_ref": attrs.string(),
-    },
-)
 
 # Macro to generate prebuilt lib from flake ref
 def nix_cxx_library(name: str, flake_ref: str, **kwargs):
@@ -115,3 +67,102 @@ def nix_cxx_library(name: str, flake_ref: str, **kwargs):
         exported_linker_flags = ["-L" + lib_path, "-l" + lib_name],
         **kwargs
     )
+
+
+
+
+def _nix_prebuilt_impl(ctx: AnalysisContext) -> list[Provider]:
+    """"""
+    flake_ref = ctx.attrs.flake_ref
+    
+    # Read pre-resolved paths from config (set by nix develop shellHook)
+    # Format in .buckconfig.local:
+    #   [nix.resolved]
+    #   nixpkgs#zlib.out = /nix/store/xxx-zlib-1.3.1
+    #   nixpkgs#zlib.dev = /nix/store/xxx-zlib-1.3.1-dev
+    
+    out_path = read_root_config("nix.resolved", flake_ref + ".out", None)
+    dev_path = read_root_config("nix.resolved", flake_ref + ".dev", None)
+    
+    if out_path == None:
+        fail("Nix flake ref not resolved: {}. Run 'nix develop' to populate .buckconfig.local".format(flake_ref))
+    
+    # Use dev path for headers if available, otherwise out path
+    include_path = (dev_path or out_path) + "/include"
+    lib_path = out_path + "/lib"
+    
+    # The library name is usually the package name, but some differ
+    pkg_name = flake_ref.split("#")[-1] if "#" in flake_ref else flake_ref
+    lib_name = _lib_name_map.get(pkg_name, pkg_name)
+    
+    return [
+        DefaultInfo(),
+        # Expose as C++ library provider
+        # Buck2 prelude expects specific providers for prebuilt libs
+        # For now, just use raw compiler/linker flags
+        CxxPrebuiltLibraryInfo(
+            include_dirs = [include_path],
+            lib_dir = lib_path,
+            lib_name = lib_name,
+        ),
+    ]
+
+
+nix_prebuilt = rule(
+    impl = _nix_prebuilt_impl,
+    attrs = {
+        "flake_ref": attrs.string(),
+    },
+)
+
+
+# Macro: nix_cxx_binary - C++ binary with nix flake dependencies
+def nix_cxx_binary(
+    name: str,
+    srcs: list[str],
+    deps: list[str] = [],       # Nix flake refs like "nixpkgs#zlib"
+    compiler_flags: list[str] = [],
+    linker_flags: list[str] = [],
+    visibility: list[str] = ["PUBLIC"],
+    **kwargs
+):
+    """
+    Create a cxx_binary with nix flake dependencies resolved to compiler/linker flags.
+    
+    The nix deps must be pre-resolved in .buckconfig.local by `nix develop`.
+    """
+    # Collect compiler and linker flags from all nix deps
+    all_compiler_flags = list(compiler_flags)
+    all_linker_flags = list(linker_flags)
+    
+    for flake_ref in deps:
+        out_path = read_root_config("nix.resolved", flake_ref + ".out", None)
+        dev_path = read_root_config("nix.resolved", flake_ref + ".dev", None)
+        
+        if out_path == None:
+            # Create a failing genrule if dep not resolved
+            native.genrule(
+                name = name,
+                out = "error.txt",
+                cmd = "echo 'Nix dep not resolved: {}. Run nix develop.' && exit 1".format(flake_ref),
+            )
+            return
+        
+        include_path = (dev_path or out_path) + "/include"
+        lib_path = out_path + "/lib"
+        
+        pkg_name = flake_ref.split("#")[-1] if "#" in flake_ref else flake_ref
+        lib_name = _lib_name_map.get(pkg_name, pkg_name)
+        
+        all_compiler_flags.extend(["-isystem", include_path])
+        all_linker_flags.extend(["-L" + lib_path, "-Wl,-rpath," + lib_path, "-l" + lib_name])
+    
+    native.cxx_binary(
+        name = name,
+        srcs = srcs,
+        compiler_flags = all_compiler_flags,
+        linker_flags = all_linker_flags,
+        visibility = visibility,
+        **kwargs
+    )
+

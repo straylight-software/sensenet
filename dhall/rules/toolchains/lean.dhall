@@ -1,0 +1,647 @@
+--| Lean 4 compilation rules for Buck2 with Nix toolchain integration
+--|
+--| Lean 4 compiles to C, which we then compile with our C++ toolchain.
+--| This enables proof-carrying code: Lean theorems constrain generated C,
+--| which links into Rust/Haskell/Python via FFI.
+--|
+--| Key features:
+--|   - lean_library: Build a Lean library (.olean files + C extraction)
+--|   - lean_binary: Build a Lean executable
+--|   - lean_c_library: Extract C code from Lean for FFI linking
+--|   - lean_toolchain: Toolchain definition
+--|   - system_lean_toolchain: Disabled fallback
+--|   - lean_lake_build: Disabled (non-hermetic)
+
+let R = ../Rule.dhall
+let S = ../to-starlark.dhall
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Configuration (globals)
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let globals = ''
+def _get_lean() -> str:
+    """Get lean compiler path from config."""
+    path = read_root_config("lean", "lean", None)
+    if path == None:
+        fail("""
+lean compiler not configured.
+
+Configure your toolchain via Nix:
+
+    [lean]
+    lean = /nix/store/.../bin/lean
+    leanc = /nix/store/.../bin/leanc
+    lean_lib_dir = /nix/store/.../lib/lean
+    lean_include_dir = /nix/store/.../include
+
+Then run: nix develop
+""")
+    return path
+
+def _get_leanc() -> str:
+    """Get leanc (Lean C compiler wrapper) path from config."""
+    path = read_root_config("lean", "leanc", None)
+    if path == None:
+        fail("leanc not configured. See [lean] section in .buckconfig")
+    return path
+
+def _get_lean_lib_dir() -> str | None:
+    """Get Lean standard library directory."""
+    return read_root_config("lean", "lean_lib_dir", None)
+
+def _get_lean_include_dir() -> str | None:
+    """Get Lean C headers directory."""
+    return read_root_config("lean", "lean_include_dir", None)
+''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Providers
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let leanLibraryInfo =
+      R.typedProvider "LeanLibraryInfo"
+        [ R.typedFieldDefault "olean_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "c_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "lib_name" "str" "\"\""
+        , R.typedFieldDefault "deps" "list" "[]"
+        ]
+
+let leanCLibraryInfo =
+      R.typedProvider "LeanCLibraryInfo"
+        [ R.typedFieldDefault "c_sources" "list[Artifact]" "[]"
+        , R.typedFieldDefault "include_dir" "Artifact | None" "None"
+        , R.typedFieldDefault "objects" "list[Artifact]" "[]"
+        , R.typedFieldDefault "archive" "Artifact | None" "None"
+        ]
+
+let leanToolchainInfo =
+      R.typedProvider "LeanToolchainInfo"
+        [ R.typedField "lean" "str"
+        , R.typedField "leanc" "str"
+        , R.typedFieldDefault "lean_lib_dir" "str | None" "None"
+        , R.typedFieldDefault "lean_include_dir" "str | None" "None"
+        ]
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_library
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let leanLibrary =
+      { impl =
+          R.ruleImpl "lean_library" ''
+    lean = _get_lean()
+    lean_lib_dir = _get_lean_lib_dir()
+    
+    if not ctx.attrs.srcs:
+        return [DefaultInfo(), LeanLibraryInfo()]
+    
+    # Output directories
+    olean_dir = ctx.actions.declare_output("olean", dir = True)
+    c_dir = ctx.actions.declare_output("c", dir = True) if ctx.attrs.extract_c else None
+    
+    # Collect dependency olean directories
+    dep_paths = []
+    for dep in ctx.attrs.deps:
+        if LeanLibraryInfo in dep:
+            info = dep[LeanLibraryInfo]
+            if info.olean_dir:
+                dep_paths.append(info.olean_dir)
+    
+    # Build script
+    script_parts = ["set -e"]
+    script_parts.append("mkdir -p $OLEAN_DIR")
+    if c_dir:
+        script_parts.append("mkdir -p $C_DIR")
+    
+    # Build LEAN_PATH from dependencies and stdlib
+    lean_path_parts = ["$OLEAN_DIR"]
+    if lean_lib_dir:
+        lean_path_parts.append(lean_lib_dir)
+    for dep_path in dep_paths:
+        lean_path_parts.append(cmd_args(dep_path))
+    
+    script_parts.append(cmd_args(
+        "export LEAN_PATH=",
+        cmd_args(lean_path_parts, delimiter = ":"),
+        delimiter = "",
+    ))
+    
+    # Compile each source file
+    # Lean requires sources to be in --root directory, so we copy to scratch
+    for src in ctx.attrs.srcs:
+        # Module name from filename (Foo/Bar.lean -> Foo.Bar)
+        # Simplified: just use basename without extension for now
+        module_name = src.basename.removesuffix(".lean")
+        
+        # Copy source to scratch dir (Lean's --root requirement)
+        script_parts.append(cmd_args("cp", src, "$BUCK_SCRATCH_PATH/", delimiter = " "))
+        
+        compile_cmd = [lean, "--root=$BUCK_SCRATCH_PATH"]
+        compile_cmd.extend(ctx.attrs.lean_flags)
+        compile_cmd.extend(["-o", cmd_args("$OLEAN_DIR/", module_name, ".olean", delimiter = "")])
+        
+        if c_dir:
+            compile_cmd.append(cmd_args("--c=$C_DIR/", module_name, ".c", delimiter = ""))
+        
+        compile_cmd.append("$BUCK_SCRATCH_PATH/{}".format(src.basename))
+        
+        script_parts.append(cmd_args(compile_cmd, delimiter = " "))
+    
+    # Assemble full command
+    script = cmd_args(script_parts, delimiter = "\n")
+    
+    outputs = [olean_dir.as_output()]
+    env_parts = ["OLEAN_DIR=", olean_dir.as_output()]
+    
+    if c_dir:
+        outputs.append(c_dir.as_output())
+        env_parts.extend([" C_DIR=", c_dir.as_output()])
+    
+    cmd = cmd_args(
+        "/bin/sh", "-c",
+        cmd_args(env_parts, " && ", script, delimiter = ""),
+    )
+    
+    # Hidden inputs for dependency tracking
+    hidden = list(ctx.attrs.srcs)
+    for dep_path in dep_paths:
+        hidden.append(dep_path)
+    
+    ctx.actions.run(
+        cmd_args(cmd, hidden = hidden),
+        category = "lean_compile",
+        identifier = ctx.attrs.name,
+        local_only = True,  # Lean compilation needs consistent LEAN_PATH
+    )
+    
+    sub_targets = {"olean": [DefaultInfo(default_outputs = [olean_dir])]}
+    if c_dir:
+        sub_targets["c"] = [DefaultInfo(default_outputs = [c_dir])]
+    
+    return [
+        DefaultInfo(
+            default_output = olean_dir,
+            sub_targets = sub_targets,
+        ),
+        LeanLibraryInfo(
+            olean_dir = olean_dir,
+            c_dir = c_dir,
+            lib_name = ctx.attrs.name,
+            deps = ctx.attrs.deps,
+        ),
+    ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.stringListAttr "lean_flags"
+          , R.boolAttr "extract_c" False
+          ]
+      }
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_binary
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let leanBinary =
+      { impl =
+          R.ruleImpl "lean_binary" ''
+    lean = _get_lean()
+    leanc = _get_leanc()
+    lean_lib_dir = _get_lean_lib_dir()
+    
+    if not ctx.attrs.srcs:
+        fail("lean_binary requires at least one source file")
+    
+    # Output
+    exe = ctx.actions.declare_output(ctx.attrs.name)
+    olean_dir = ctx.actions.declare_output("olean", dir = True)
+    c_dir = ctx.actions.declare_output("c", dir = True)
+    
+    # Collect dependency olean directories
+    dep_paths = []
+    dep_c_dirs = []
+    for dep in ctx.attrs.deps:
+        if LeanLibraryInfo in dep:
+            info = dep[LeanLibraryInfo]
+            if info.olean_dir:
+                dep_paths.append(info.olean_dir)
+            if info.c_dir:
+                dep_c_dirs.append(info.c_dir)
+    
+    # Build LEAN_PATH - include scratch dir for local modules
+    lean_path_parts = ["$OLEAN_DIR", "$BUCK_SCRATCH_PATH"]
+    if lean_lib_dir:
+        lean_path_parts.append(lean_lib_dir)
+    for dep_path in dep_paths:
+        lean_path_parts.append(cmd_args(dep_path))
+    
+    # Script: setup, compile to C, then link
+    script_parts = ["set -e"]
+    script_parts.append("mkdir -p $OLEAN_DIR $C_DIR")
+    
+    script_parts.append(cmd_args(
+        "export LEAN_PATH=",
+        cmd_args(lean_path_parts, delimiter = ":"),
+        delimiter = "",
+    ))
+    
+    # Determine module structure
+    root_module = ctx.attrs.root_module
+    
+    # Copy sources to scratch with proper structure
+    # For hierarchical modules: Foo.lean -> $SCRATCH/RootModule/Foo.lean
+    # For flat modules: Foo.lean -> $SCRATCH/Foo.lean
+    c_files = []
+    compile_order = []
+    main_src = None
+    
+    for src in ctx.attrs.srcs:
+        if src.basename == "Main.lean":
+            main_src = src
+        else:
+            compile_order.append(src)
+    
+    # Main.lean must be compiled last
+    if main_src:
+        compile_order.append(main_src)
+    else:
+        # No Main.lean, use first source as main
+        main_src = ctx.attrs.srcs[0]
+    
+    # Setup scratch directory structure
+    if root_module:
+        script_parts.append("mkdir -p $BUCK_SCRATCH_PATH/{}".format(root_module))
+    
+    # Copy and compile each source
+    for src in compile_order:
+        module_name = src.basename.removesuffix(".lean")
+        
+        if root_module and src.basename != "Main.lean":
+            # Hierarchical: copy to RootModule/Foo.lean
+            dest_path = "$BUCK_SCRATCH_PATH/{}/{}".format(root_module, src.basename)
+            full_module = "{}.{}".format(root_module, module_name)
+            c_file = "$C_DIR/{}.{}.c".format(root_module, module_name)
+            olean_file = "$OLEAN_DIR/{}/{}.olean".format(root_module, module_name)
+            script_parts.append("mkdir -p $OLEAN_DIR/{}".format(root_module))
+        else:
+            # Flat: copy to Foo.lean or Main.lean at root
+            dest_path = "$BUCK_SCRATCH_PATH/{}".format(src.basename)
+            full_module = module_name
+            c_file = "$C_DIR/{}.c".format(module_name)
+            olean_file = "$OLEAN_DIR/{}.olean".format(module_name)
+        
+        c_files.append(c_file)
+        
+        # Copy source
+        script_parts.append(cmd_args("cp", src, dest_path, delimiter = " "))
+        
+        # Compile
+        compile_cmd = [
+            lean,
+            "--root=$BUCK_SCRATCH_PATH",
+            "-o", olean_file,
+            "--c={}".format(c_file),
+        ]
+        compile_cmd.extend(ctx.attrs.lean_flags)
+        compile_cmd.append(dest_path)
+        
+        script_parts.append(cmd_args(compile_cmd, delimiter = " "))
+    
+    # Link with leanc
+    link_cmd = [leanc, "-o", exe.as_output()]
+    link_cmd.extend(ctx.attrs.link_flags)
+    
+    # Add all C files
+    for c_file in c_files:
+        link_cmd.append(c_file)
+    
+    # Add dependency C files
+    for dep_c_dir in dep_c_dirs:
+        link_cmd.append(cmd_args(dep_c_dir, "/*.c", delimiter = ""))
+    
+    script_parts.append(cmd_args(link_cmd, delimiter = " "))
+    
+    script = cmd_args(script_parts, delimiter = "\n")
+    
+    cmd = cmd_args(
+        "/bin/sh", "-c",
+        cmd_args(
+            "OLEAN_DIR=", olean_dir.as_output(),
+            " C_DIR=", c_dir.as_output(),
+            " && ", script,
+            delimiter = "",
+        ),
+    )
+    
+    hidden = list(ctx.attrs.srcs)
+    hidden.extend(dep_paths)
+    hidden.extend(dep_c_dirs)
+    
+    ctx.actions.run(
+        cmd_args(cmd, hidden = hidden),
+        category = "lean_link",
+        identifier = ctx.attrs.name,
+        local_only = True,
+    )
+    
+    return [
+        DefaultInfo(default_output = exe),
+        RunInfo(args = cmd_args(exe)),
+    ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.optionStringAttr "root_module"
+          , R.stringListAttr "lean_flags"
+          , R.stringListAttr "link_flags"
+          ]
+      }
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_c_library
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let leanCLibrary =
+      { impl =
+          R.ruleImpl "lean_c_library" ''
+    lean = _get_lean()
+    lean_include_dir = _get_lean_include_dir()
+    lean_lib_dir = _get_lean_lib_dir()
+    
+    if not ctx.attrs.srcs:
+        return [DefaultInfo(), LeanCLibraryInfo()]
+    
+    # Outputs
+    c_dir = ctx.actions.declare_output("c", dir = True)
+    olean_dir = ctx.actions.declare_output("olean", dir = True)
+    include_dir = ctx.actions.declare_output("include", dir = True)
+    obj_dir = ctx.actions.declare_output("obj", dir = True)
+    archive = ctx.actions.declare_output("lib{}.a".format(ctx.attrs.name))
+    
+    # Collect dependencies
+    dep_paths = []
+    for dep in ctx.attrs.deps:
+        if LeanLibraryInfo in dep:
+            info = dep[LeanLibraryInfo]
+            if info.olean_dir:
+                dep_paths.append(info.olean_dir)
+    
+    # Build LEAN_PATH - use env var since olean_dir is output
+    lean_path_parts = ["$OLEAN_DIR"]
+    if lean_lib_dir:
+        lean_path_parts.append(lean_lib_dir)
+    for dep_path in dep_paths:
+        lean_path_parts.append(cmd_args(dep_path))
+    
+    # Get C compiler from cxx config (we use our Clang, not leanc's default)
+    cc = read_root_config("cxx", "cxx", "clang++")
+    
+    script_parts = ["set -e"]
+    script_parts.append("mkdir -p $OLEAN_DIR $C_DIR $INCLUDE_DIR $OBJ_DIR")
+    
+    script_parts.append(cmd_args(
+        "export LEAN_PATH=",
+        cmd_args(lean_path_parts, delimiter = ":"),
+        delimiter = "",
+    ))
+    
+    # Compile Lean to C
+    # Lean requires sources to be in --root directory, so we copy to scratch
+    c_files = []
+    for src in ctx.attrs.srcs:
+        module_name = src.basename.removesuffix(".lean")
+        c_file = "{}.c".format(module_name)
+        c_files.append(c_file)
+        
+        # Copy source to scratch dir (Lean's --root requirement)
+        script_parts.append(cmd_args("cp", src, "$BUCK_SCRATCH_PATH/", delimiter = " "))
+        
+        compile_cmd = [
+            lean,
+            "--root=$BUCK_SCRATCH_PATH",
+            "-o", "$OLEAN_DIR/{}.olean".format(module_name),
+            "--c=$C_DIR/{}".format(c_file),
+        ]
+        compile_cmd.extend(ctx.attrs.lean_flags)
+        compile_cmd.append("$BUCK_SCRATCH_PATH/{}".format(src.basename))
+        
+        script_parts.append(cmd_args(compile_cmd, delimiter = " "))
+    
+    # Generate header file for FFI exports
+    # Lean generates lean.h style headers; we create a wrapper
+    header_content = [
+        "// Generated by lean_c_library: {}".format(ctx.attrs.name),
+        "#pragma once",
+        "#include <lean/lean.h>",
+        "",
+        "// Exported functions from Lean",
+    ]
+    for export in ctx.attrs.exports:
+        header_content.append("extern lean_object* {}(lean_object*);".format(export))
+    
+    script_parts.append(cmd_args(
+        "cat > $INCLUDE_DIR/{}.h << 'LEAN_HEADER_EOF'\n{}\nLEAN_HEADER_EOF".format(
+            ctx.attrs.name,
+            "\n".join(header_content),
+        ),
+    ))
+    
+    # Compile C to objects
+    for c_file in c_files:
+        obj_file = c_file.removesuffix(".c") + ".o"
+        
+        cc_cmd = [cc, "-c", "-O2", "-fPIC"]
+        if lean_include_dir:
+            cc_cmd.extend(["-I", lean_include_dir])
+        cc_cmd.extend(["-I", "$INCLUDE_DIR"])
+        cc_cmd.extend(ctx.attrs.cflags)
+        cc_cmd.extend(["-o", "$OBJ_DIR/{}".format(obj_file)])
+        cc_cmd.append("$C_DIR/{}".format(c_file))
+        
+        script_parts.append(cmd_args(cc_cmd, delimiter = " "))
+    
+    # Archive objects
+    script_parts.append(cmd_args(
+        "ar rcs", archive.as_output(), "$OBJ_DIR/*.o",
+        delimiter = " ",
+    ))
+    
+    script = cmd_args(script_parts, delimiter = "\n")
+    
+    cmd = cmd_args(
+        "/bin/sh", "-c",
+        cmd_args(
+            "OLEAN_DIR=", olean_dir.as_output(),
+            " C_DIR=", c_dir.as_output(),
+            " INCLUDE_DIR=", include_dir.as_output(),
+            " OBJ_DIR=", obj_dir.as_output(),
+            " && ", script,
+            delimiter = "",
+        ),
+    )
+    
+    hidden = list(ctx.attrs.srcs)
+    hidden.extend(dep_paths)
+    
+    ctx.actions.run(
+        cmd_args(cmd, hidden = hidden),
+        category = "lean_c_extract",
+        identifier = ctx.attrs.name,
+        local_only = True,
+    )
+    
+    return [
+        DefaultInfo(
+            default_output = archive,
+            sub_targets = {
+                "c": [DefaultInfo(default_outputs = [c_dir])],
+                "include": [DefaultInfo(default_outputs = [include_dir])],
+                "olean": [DefaultInfo(default_outputs = [olean_dir])],
+            },
+        ),
+        LeanLibraryInfo(
+            olean_dir = olean_dir,
+            c_dir = c_dir,
+            lib_name = ctx.attrs.name,
+            deps = ctx.attrs.deps,
+        ),
+        LeanCLibraryInfo(
+            c_sources = [],  # We don't track individual files in dir output
+            include_dir = include_dir,
+            objects = [],
+            archive = archive,
+        ),
+    ]
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.depListAttr "deps"
+          , R.stringListAttr "lean_flags"
+          , R.stringListAttr "cflags"
+          , R.stringListAttr "exports"
+          ]
+      }
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_toolchain
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let leanToolchain =
+      { impl =
+          (R.ruleImpl "lean_toolchain" ''
+    # Read from config, fall back to attrs
+    lean = read_root_config("lean", "lean", ctx.attrs.lean)
+    leanc = read_root_config("lean", "leanc", ctx.attrs.leanc)
+    lean_lib_dir = read_root_config("lean", "lean_lib_dir", ctx.attrs.lean_lib_dir)
+    lean_include_dir = read_root_config("lean", "lean_include_dir", ctx.attrs.lean_include_dir)
+
+    return [
+        DefaultInfo(),
+        LeanToolchainInfo(
+            lean = lean,
+            leanc = leanc,
+            lean_lib_dir = lean_lib_dir,
+            lean_include_dir = lean_include_dir,
+        ),
+    ]
+'')
+            with doc = "Lean toolchain with paths from .buckconfig.local"
+            with is_toolchain = True
+      , attrs =
+          [ R.stringAttr "lean" (Some "lean")
+          , R.stringAttr "leanc" (Some "leanc")
+          , R.optionStringAttr "lean_lib_dir"
+          , R.optionStringAttr "lean_include_dir"
+          ]
+      }
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- system_lean_toolchain (disabled)
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let systemLeanToolchain =
+      { impl =
+          (R.ruleImpl "system_lean_toolchain" ''
+    fail("""
+system_lean_toolchain is disabled.
+
+Zeitschrift does not support fallback toolchains.
+Configure your Lean toolchain via Nix:
+
+    [lean]
+    lean = /nix/store/.../bin/lean
+    leanc = /nix/store/.../bin/leanc
+    lean_lib_dir = /nix/store/.../lib/lean
+    lean_include_dir = /nix/store/.../include
+
+Then run: nix develop
+
+If you see this error, your .buckconfig.local is missing or stale.
+""")
+'')
+            with is_toolchain = True
+      , attrs = [] : List R.Attr
+      }
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- lean_lake_build (disabled)
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let leanLakeBuild =
+      { impl =
+          R.ruleImpl "lean_lake_build" ''
+    fail("""
+lean_lake_build is disabled.
+
+Lake introduces non-hermetic builds that bypass Buck2's caching and
+content-addressed derivation model. Mathlib downloads (~2GB) and
+.lake/ caches are not tracked.
+
+Options:
+  1. Use lean_library/lean_binary for standalone Lean code (no Lake deps)
+  2. Manage Mathlib via Nix overlay (recommended for large proofs)
+  3. Build outside Buck2 with 'lake build' directly
+
+See: toolchains/lean.bzl for lean_library, lean_binary, lean_c_library
+""")
+''
+      , attrs =
+          [ R.sourceListAttr "srcs"
+          , R.attr "lakefile" (R.AttrType.OptionSource {=})
+          , R.attr "toolchain_file" (R.AttrType.OptionSource {=})
+          ]
+      }
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Complete file
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let file =
+      R.bzlFile
+        with header = ''
+# Lean 4 compilation rules for Buck2 with Nix toolchain integration
+#
+# Lean 4 compiles to C, which we then compile with our C++ toolchain.
+# This enables proof-carrying code: Lean theorems constrain generated C,
+# which links into Rust/Haskell/Python via FFI.
+#
+# Key features:
+#   - lean_library: Build a Lean library (.olean files + C extraction)
+#   - lean_binary: Build a Lean executable
+#   - lean_c_library: Extract C code from Lean for FFI linking
+''
+        with globals = globals
+        with providers = [ leanLibraryInfo, leanCLibraryInfo, leanToolchainInfo ]
+        with rules =
+            [ leanLibrary
+            , leanBinary
+            , leanCLibrary
+            , leanToolchain
+            , systemLeanToolchain
+            , leanLakeBuild
+            ]
+
+in  { file, render = S.renderBzlFile file }

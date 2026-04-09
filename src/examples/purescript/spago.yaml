@@ -18,7 +18,6 @@ package:
     type: app
     module: Main
     outfile: app.js
-
 workspace:
   package_set:
     registry: 59.0.0

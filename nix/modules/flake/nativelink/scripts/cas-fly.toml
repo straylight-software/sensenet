@@ -1,0 +1,35 @@
+# cas-fly.toml - Fly.io deployment config for NativeLink CAS
+#
+# Substituted variables:
+#   @APP_NAME@ - Fly.io app name (e.g., "aleph-cas")
+#   @REGION@ - Primary region (e.g., "iad")
+
+app = "@APP_NAME@"
+primary_region = "@REGION@"
+
+[build]
+image = "ghcr.io/tracemachina/nativelink-cas:latest"
+
+[env]
+RUST_LOG = "info"
+
+[[services]]
+internal_port = 50051
+protocol = "tcp"
+
+[[services.ports]]
+port = 443
+handlers = ["tls"]
+
+[[services.ports]]
+port = 50051
+handlers = ["tls"]
+
+[services.concurrency]
+type = "connections"
+hard_limit = 1000
+soft_limit = 500
+
+[mounts]
+source = "cas_data"
+destination = "/data"

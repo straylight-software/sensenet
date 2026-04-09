@@ -26,5 +26,11 @@ target_platform_detector_spec = target:root//...->prelude//platforms:default
 materializations = deferred
 digest_algorithms = BLAKE3
 
+[buck2_re_client]
+engine_address = grpc://34.28.196.149:50052
+cas_address = grpc://34.28.196.149:50051
+action_cache_address = grpc://34.28.196.149:50051
+tls = false
+
 [build]
 execution_platforms = toolchains//:local

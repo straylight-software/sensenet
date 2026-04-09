@@ -1,8 +1,7 @@
--- src/examples/haskell/Main.hs
---
--- Simple Haskell example for Buck2
-
+-- | Main module that uses the Greet library
 module Main where
 
+import Greet (greet)
+
 main :: IO ()
-main = putStrLn "Hello from Buck2 Haskell!"
+main = putStrLn (greet "World")

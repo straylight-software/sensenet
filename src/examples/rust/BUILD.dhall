@@ -1,25 +1,14 @@
---| Rust examples using hermetic Nix toolchain
---|
---| Demonstrates:
---|   - rustBinary: standalone executable
---|   - rustLibrary: reusable library crate
---|   - Dependency chaining between targets
+--| Rust examples
 
-let A = ../../../dhall/prelude/package.dhall
-let S = ../../../dhall/prelude/to-starlark.dhall
+let E = ../../../dhall/evring/Compat.dhall
 
-let hello = A.rustBinary "hello-rs" ["hello.rs"] ([] : List A.Dep)
+let hello = E.rust_binary "hello-rs" ["hello.rs"]
+let mathlib = E.rust_library "mathlib" ["mathlib.rs"]
+let math_demo = (E.rust_binary "math_demo" ["math_demo.rs"]) with deps = [E.local ":mathlib"]
 
-let mathlib = A.rustLibrary "mathlib" ["mathlib.rs"] ([] : List A.Dep)
-
-let math_demo = A.rustBinary "math_demo" ["math_demo.rs"] [A.local ":mathlib"]
-
-in  { rules =
-        [ S.rustBinary hello
-        , S.rustLibrary mathlib
-        , S.rustBinary math_demo
+in  { targets =
+        [ E.rule.rustBinary hello
+        , E.rule.rustLibrary mathlib
+        , E.rule.rustBinary math_demo
         ]
-    , header = ''
-        load("@toolchains//:rust.bzl", "rust_binary", "rust_library")
-        ''
     }

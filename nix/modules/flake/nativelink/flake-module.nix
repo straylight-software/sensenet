@@ -53,7 +53,7 @@ in
     fly = {
       app-prefix = mk-option {
         type = types.str;
-        default = "sense";
+        default = "aleph";
         description = "Fly.io app name prefix (used for internal DNS)";
       };
 
@@ -313,14 +313,14 @@ in
       engine-address = mk-option {
         type = types.str;
         default = "grpc://${cfg.fly.app-prefix}-scheduler.fly.dev:443";
-        defaultText = "grpc://sense-scheduler.fly.dev:443";
+        defaultText = "grpc://aleph-scheduler.fly.dev:443";
         description = "gRPC address for NativeLink scheduler (execution engine)";
       };
 
       cas-address = mk-option {
         type = types.str;
         default = "grpc://${cfg.fly.app-prefix}-cas.fly.dev:443";
-        defaultText = "grpc://sense-cas.fly.dev:443";
+        defaultText = "grpc://aleph-cas.fly.dev:443";
         description = "gRPC address for NativeLink CAS (content-addressed storage)";
       };
 
@@ -1046,6 +1046,63 @@ in
             "extraEnv" = {
               NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
               SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+            };
+          };
+
+          # Worker container with full Buck2 toolchains (for GCP/bare metal)
+          # Includes LLVM, GCC, glibc - no runtime fetching needed
+          # Larger image (~2-4GB) but works without Nix store on worker
+          nativelink-worker-full = {
+            "systemPackages" =
+              let
+                # Use llvm-git if available, otherwise fallback to llvmPackages_19
+                llvm = pkgs.llvm-git or pkgs.llvmPackages_19.llvm;
+                clang = pkgs.llvm-git or pkgs.llvmPackages_19.clang;
+                lld = pkgs.llvm-git or pkgs.llvmPackages_19.lld;
+                inherit (pkgs) gcc;
+                inherit (pkgs) glibc;
+              in
+              [
+                # NativeLink worker
+                nativelink
+                worker-script
+
+                # Core toolchain - LLVM/Clang
+                llvm
+                clang
+                lld
+
+                # GCC for libstdc++
+                gcc
+                pkgs.gcc.cc.lib
+
+                # C library
+                glibc
+                pkgs.glibc.dev
+
+                # Build essentials
+                pkgs.binutils
+                pkgs.gnumake
+                pkgs.coreutils
+                pkgs.bash
+                pkgs.findutils
+                pkgs.gnugrep
+                pkgs.gnutar
+                pkgs.gzip
+                pkgs.cacert
+              ]
+              # Optional: mdspan for C++23
+              ++ lib.optional (pkgs ? mdspan) pkgs.mdspan;
+
+            services.worker = {
+              imports = [ (mk-nativelink-service { script = worker-script; } { inherit lib pkgs; }) ];
+            };
+
+            registries = [ cfg.registry ];
+
+            "extraEnv" = {
+              RUST_LOG = "info";
+              NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
             };
           };
         };

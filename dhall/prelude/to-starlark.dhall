@@ -8,8 +8,13 @@ let H = ./Haskell.dhall
 let L = ./Lean.dhall
 let N = ./Nv.dhall
 let PS = ./PureScript.dhall
+let G = ./Genrule.dhall
+let RC = ./RustCrate.dhall
+let NC = ./NixCxx.dhall
 
-let q = \(t : Text) -> "\"${t}\""
+-- Use Text/show to properly escape strings for Starlark literals
+-- Text/show handles backslashes, quotes, and control characters
+let q = \(t : Text) -> Text/show t
 
 let list = \(xs : List Text) ->
     "[" ++ P.Text.concatSep ", " (P.List.map Text Text q xs) ++ "]"
@@ -55,14 +60,39 @@ let cxxBinary
         )
         ''
 
+let cxxLibrary
+    : C.Library -> Flags -> Text
+    = \(lib : C.Library) -> \(f : Flags) ->
+        let cf = [cxxStd lib.std] # lib.cflags # f.compiler
+        let hdrs = if P.List.null Text lib.hdrs
+                   then ""
+                   else "    exported_headers = ${list lib.hdrs},\n"
+        in ''
+        cxx_library(
+            name = ${q lib.name},
+            srcs = ${list lib.srcs},
+        ${hdrs}    deps = ${list (locals lib.deps)},
+            compiler_flags = ${list cf},
+            visibility = ${vis lib.vis},
+        )
+        ''
+
 let rustBinary
     : R.Binary -> Text
     = \(b : R.Binary) ->
-        ''
+        -- If there's exactly one source file, use it as crate_root
+        let crateRoot = merge
+              { Some = \(first : Text) ->
+                  if Natural/isZero (Natural/subtract 1 (List/length Text b.srcs))
+                  then "    crate_root = ${q first},\n"
+                  else ""
+              , None = ""
+              } (List/head Text b.srcs)
+        in ''
         rust_binary(
             name = ${q b.name},
             srcs = ${list b.srcs},
-            deps = ${list (locals b.deps)},
+        ${crateRoot}    deps = ${list (locals b.deps)},
             edition = ${q (rustEdition b.edition)},
             visibility = ${vis b.vis},
         )
@@ -130,12 +160,33 @@ let haskellFFIBinary
         let hdrs = if P.List.null Text b.cxx_headers
                    then ""
                    else "    cxx_headers = ${list b.cxx_headers},\n"
+        let pkgs = if P.List.null Text b.packages
+                   then ""
+                   else "    packages = ${list b.packages},\n"
+        let exts = if P.List.null Text b.language_extensions
+                   then ""
+                   else "    language_extensions = ${list b.language_extensions},\n"
+        let opts = if P.List.null Text b.ghc_options
+                   then ""
+                   else "    ghc_options = ${list b.ghc_options},\n"
+        let libs = if P.List.null Text b.extra_libs
+                   then ""
+                   else "    extra_libs = ${list b.extra_libs},\n"
+        let libDirs = if P.List.null Text b.extra_lib_dirs
+                      then ""
+                      else "    extra_lib_dirs = ${list b.extra_lib_dirs},\n"
+        let incDirs = if P.List.null Text b.include_dirs
+                      then ""
+                      else "    include_dirs = ${list b.include_dirs},\n"
+        let lflags = if P.List.null Text b.linker_flags
+                     then ""
+                     else "    linker_flags = ${list b.linker_flags},\n"
         in ''
         haskell_ffi_binary(
             name = ${q b.name},
             hs_srcs = ${list b.hs_srcs},
             cxx_srcs = ${list b.cxx_srcs},
-        ${hdrs}    visibility = ${vis b.vis},
+        ${hdrs}${pkgs}${exts}${opts}${libs}${libDirs}${incDirs}${lflags}    visibility = ${vis b.vis},
         )
         ''
 
@@ -146,11 +197,13 @@ let haskellFFIBinary
 let leanBinary
     : L.Binary -> Text
     = \(b : L.Binary) ->
-        ''
+        let rootModule = merge { Some = \(m : Text) -> "    root_module = ${q m},\n"
+                               , None = "" } b.root_module
+        in ''
         lean_binary(
             name = ${q b.name},
             srcs = ${list b.srcs},
-            visibility = ${vis b.vis},
+        ${rootModule}    visibility = ${vis b.vis},
         )
         ''
 
@@ -198,11 +251,21 @@ let nvLibrary
 -- PureScript
 -- ══════════════════════════════════════════════════════════════════════════════
 
+-- Helper for SrcSpec (explicit list, glob, or multiple globs)
+let srcSpec
+    : PS.SrcSpec -> Text
+    = \(s : PS.SrcSpec) ->
+        merge { Explicit = \(xs : List Text) -> list xs
+              , Glob = \(pattern : Text) -> "glob([${q pattern}])"
+              , Globs = \(patterns : List Text) ->
+                  P.Text.concatSep " + " (P.List.map Text Text (\(p : Text) -> "glob([${q p}])") patterns)
+              } s
+
 let purescriptApp
     : PS.App -> Text
     = \(a : PS.App) ->
-        let packagesDhall = merge { Some = \(f : Text) -> "    packages_dhall = ${q f},\n"
-                                  , None = "" } a.packages_dhall
+        let spagoLock = merge { Some = \(f : Text) -> "    spago_lock = ${q f},\n"
+                              , None = "" } a.spago_lock
         let indexHtml = merge { Some = \(f : Text) -> "    index_html = ${q f},\n"
                               , None = "" } a.index_html
         let styleCss = merge { Some = \(f : Text) -> "    style_css = ${q f},\n"
@@ -210,9 +273,9 @@ let purescriptApp
         in ''
         purescript_app(
             name = ${q a.name},
-            srcs = ${list a.srcs},
-            spago_dhall = ${q a.spago_dhall},
-        ${packagesDhall}    main = ${q a.main},
+            srcs = ${srcSpec a.srcs},
+            spago_yaml = ${q a.spago_yaml},
+        ${spagoLock}    main = ${q a.main},
         ${indexHtml}${styleCss}    visibility = ${vis a.vis},
         )
         ''
@@ -220,14 +283,12 @@ let purescriptApp
 let purescriptBinary
     : PS.Binary -> Text
     = \(b : PS.Binary) ->
-        let packagesDhall = merge { Some = \(f : Text) -> "    packages_dhall = ${q f},\n"
-                                  , None = "" } b.packages_dhall
-        in ''
+        ''
         purescript_binary(
             name = ${q b.name},
-            srcs = ${list b.srcs},
-            spago_dhall = ${q b.spago_dhall},
-        ${packagesDhall}    main = ${q b.main},
+            srcs = ${srcSpec b.srcs},
+            spago_yaml = ${q b.spago_yaml},
+            main = ${q b.main},
             visibility = ${vis b.vis},
         )
         ''
@@ -240,7 +301,7 @@ let purescriptLibrary
         in ''
         purescript_library(
             name = ${q lib.name},
-            srcs = ${list lib.srcs},
+            srcs = ${srcSpec lib.srcs},
         ${spagoYaml}    visibility = ${vis lib.vis},
         )
         ''
@@ -250,6 +311,7 @@ let purescriptLibrary
 -- ══════════════════════════════════════════════════════════════════════════════
 
 let cxxDeps = \(b : C.Binary) -> P.Text.concatSep "\n" (flakes b.deps)
+let cxxLibraryDeps = \(lib : C.Library) -> P.Text.concatSep "\n" (flakes lib.deps)
 let rustBinaryDeps = \(b : R.Binary) -> P.Text.concatSep "\n" (flakes b.deps)
 let rustLibraryDeps = \(lib : R.Library) -> P.Text.concatSep "\n" (flakes lib.deps)
 
@@ -258,11 +320,244 @@ let std = cxxStd
 let binary = cxxBinary
 let deps = cxxDeps
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Toolchains
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let TC = ./Toolchain.dhall
+
+let cxxToolchain
+    : TC.CxxToolchain -> Text
+    = \(t : TC.CxxToolchain) ->
+        ''
+        llvm_toolchain(
+            name = ${q t.name},
+            c_extra_flags = ${list t.c_extra_flags},
+            cxx_extra_flags = ${list t.cxx_extra_flags},
+            link_flags = ${list t.link_flags},
+            link_style = ${q t.link_style},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let haskellToolchain
+    : TC.HaskellToolchain -> Text
+    = \(t : TC.HaskellToolchain) ->
+        ''
+        haskell_toolchain(
+            name = ${q t.name},
+            compiler_flags = ${list t.compiler_flags},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let executionPlatform
+    : TC.ExecutionPlatform -> Text
+    = \(t : TC.ExecutionPlatform) ->
+        let localStr = if t.local_enabled then "True" else "False"
+        let remoteStr = if t.remote_enabled then "True" else "False"
+        in ''
+        lre_execution_platform(
+            name = ${q t.name},
+            cpu_configuration = host_configuration.cpu,
+            os_configuration = host_configuration.os,
+            local_enabled = ${localStr},
+            remote_enabled = ${remoteStr},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let pythonBootstrap
+    : TC.PythonBootstrap -> Text
+    = \(t : TC.PythonBootstrap) ->
+        ''
+        system_python_bootstrap_toolchain(
+            name = ${q t.name},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let genruleToolchain
+    : TC.GenruleToolchain -> Text
+    = \(t : TC.GenruleToolchain) ->
+        ''
+        system_genrule_toolchain(
+            name = ${q t.name},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let nvToolchain
+    : TC.NvToolchain -> Text
+    = \(t : TC.NvToolchain) ->
+        ''
+        nv_toolchain(
+            name = ${q t.name},
+            nv_archs = ${list t.nv_archs},
+            nvidia_sdk_path = ${q t.nvidia_sdk_path},
+            nvidia_sdk_include = ${q t.nvidia_sdk_include},
+            nvidia_sdk_lib = ${q t.nvidia_sdk_lib},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let rustToolchain
+    : TC.RustToolchain -> Text
+    = \(t : TC.RustToolchain) ->
+        ''
+        rust_toolchain(
+            name = ${q t.name},
+            default_edition = ${q t.default_edition},
+            rustc_flags = ${list t.rustc_flags},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let leanToolchain
+    : TC.LeanToolchain -> Text
+    = \(t : TC.LeanToolchain) ->
+        ''
+        lean_toolchain(
+            name = ${q t.name},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+let purescriptToolchain
+    : TC.PureScriptToolchain -> Text
+    = \(t : TC.PureScriptToolchain) ->
+        ''
+        purescript_toolchain(
+            name = ${q t.name},
+            visibility = ${vis t.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Genrule
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let genrule
+    : G.Genrule -> Text
+    = \(g : G.Genrule) ->
+        let srcs = if P.List.null Text g.srcs
+                   then ""
+                   else "    srcs = ${list g.srcs},\n"
+        in ''
+        genrule(
+            name = ${q g.name},
+        ${srcs}    out = ${q g.out},
+            cmd = ${q g.cmd},
+            visibility = ${vis g.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Rust Crates
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let cratesIo
+    : RC.CratesIo -> Text
+    = \(c : RC.CratesIo) ->
+        let features = if P.List.null Text c.features
+                       then ""
+                       else "    features = ${list c.features},\n"
+        let deps = if P.List.null Text c.deps
+                   then ""
+                   else "    deps = ${list c.deps},\n"
+        let procMacro = if c.proc_macro then "    proc_macro = True,\n" else ""
+        in ''
+        crates_io(
+            name = ${q c.name},
+            version = ${q c.version},
+            sha256 = ${q c.sha256},
+        ${features}${deps}${procMacro}    visibility = ${vis c.vis},
+        )
+        ''
+
+let httpArchive
+    : RC.HttpArchive -> Text
+    = \(a : RC.HttpArchive) ->
+        let stripPrefix = merge { Some = \(p : Text) -> "    strip_prefix = ${q p},\n"
+                                , None = "" } a.strip_prefix
+        in ''
+        http_archive(
+            name = ${q a.name},
+            url = ${q a.url},
+            sha256 = ${q a.sha256},
+        ${stripPrefix}    visibility = ${vis a.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Nix C++
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let nixCxxBinary
+    : NC.NixBinary -> Text
+    = \(b : NC.NixBinary) ->
+        let deps = if P.List.null Text b.deps
+                   then ""
+                   else "    deps = ${list b.deps},\n"
+        let cflags = if P.List.null Text b.compiler_flags
+                     then ""
+                     else "    compiler_flags = ${list b.compiler_flags},\n"
+        let lflags = if P.List.null Text b.linker_flags
+                     then ""
+                     else "    linker_flags = ${list b.linker_flags},\n"
+        in ''
+        nix_cxx_binary(
+            name = ${q b.name},
+            srcs = ${list b.srcs},
+            deps = ${list b.nix_deps},
+        ${deps}${cflags}${lflags}    visibility = ${vis b.vis},
+        )
+        ''
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Rule union dispatch
+-- ══════════════════════════════════════════════════════════════════════════════
+
+let Ru = ./Rule.dhall
+
+let emptyFlags = { compiler = [] : List Text, linker = [] : List Text }
+
+let rule
+    : Ru.Rule -> Text
+    = \(r : Ru.Rule) ->
+        merge
+          { CxxBinary = \(b : C.Binary) -> cxxBinary b emptyFlags
+          , CxxLibrary = \(lib : C.Library) -> cxxLibrary lib emptyFlags
+          , RustBinary = rustBinary
+          , RustLibrary = rustLibrary
+          , HaskellBinary = haskellBinary
+          , HaskellLibrary = haskellLibrary
+          , HaskellFFIBinary = haskellFFIBinary
+          , LeanBinary = leanBinary
+          , LeanLibrary = leanLibrary
+          , NvBinary = nvBinary
+          , NvLibrary = nvLibrary
+          , PureScriptApp = purescriptApp
+          , PureScriptBinary = purescriptBinary
+          , PureScriptLibrary = purescriptLibrary
+          , Genrule = genrule
+          , NixCxxBinary = nixCxxBinary
+          , CratesIo = cratesIo
+          , HttpArchive = httpArchive
+          }
+          r
+
+-- Convert a list of rules to BUCK file content
+let rules
+    : List Ru.Rule -> Text
+    = \(rs : List Ru.Rule) ->
+        P.Text.concatSep "\n" (P.List.map Ru.Rule Text rule rs)
+
 in  { q, list, flakes, locals
     , cxxStd, rustEdition, vis, Flags
     -- C++
-    , cxxBinary
-    , cxxDeps
+    , cxxBinary, cxxLibrary
+    , cxxDeps, cxxLibraryDeps
     -- Rust
     , rustBinary, rustLibrary
     , rustBinaryDeps, rustLibraryDeps
@@ -274,6 +569,18 @@ in  { q, list, flakes, locals
     , nvBinary, nvLibrary
     -- PureScript
     , purescriptApp, purescriptBinary, purescriptLibrary
+    -- Genrule
+    , genrule
+    -- Rust crates
+    , cratesIo, httpArchive
+    -- Nix C++
+    , nixCxxBinary
+    -- Toolchains
+    , cxxToolchain, haskellToolchain, executionPlatform
+    , pythonBootstrap, genruleToolchain
+    , nvToolchain, rustToolchain, leanToolchain, purescriptToolchain
+    -- Rule dispatch (for { targets = List Rule } format)
+    , rule, rules
     -- backward compat
     , std, binary, deps
     }

@@ -1,0 +1,135 @@
+cabal-version:   3.0
+name:            hyperconsole
+version:         0.1.0
+synopsis:        A strictly better superconsole - incremental TUI rendering
+description:
+  HyperConsole is a cleanroom implementation of a terminal rendering library
+  that improves upon Meta's superconsole with:
+  .
+  * Incremental rendering via diffing (don't redraw unchanged lines)
+  * Proper Unicode handling (grapheme clusters, wide chars)
+  * Flexbox-like layout engine (no manual dimension threading)
+  * Composable widgets with clean semantics
+  * io_uring/writev backend (single syscall per frame)
+  * Pure functional core, IO at the edges
+
+license:         BSD-3-Clause
+license-file:    LICENSE
+author:          straylight
+maintainer:      dev@straylight.software
+category:        System, Terminal
+build-type:      Simple
+
+library
+  exposed-modules:
+    HyperConsole
+    HyperConsole.Layout
+    HyperConsole.Style
+    HyperConsole.Terminal
+    HyperConsole.Terminal.Evring
+    HyperConsole.Terminal.IoUring
+    HyperConsole.Theme
+    HyperConsole.Widget
+
+  other-modules:
+    HyperConsole.Unicode
+
+  build-depends:
+    , ansi-terminal     >= 1.0 && < 2.0
+    , base              >= 4.18 && < 5
+    , bytestring        >= 0.11
+    , colour            >= 2.3
+    , containers        >= 0.6
+    , primitive         >= 0.9
+    , text              >= 2.0
+    , unix              >= 2.8
+    , vector            >= 0.13
+
+  hs-source-dirs:   src
+  default-language: GHC2021
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-home-modules
+    -Wpartial-fields
+    -Wredundant-constraints
+    -O2
+
+test-suite hyperconsole-test
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   test
+  default-language: GHC2021
+  build-depends:
+    , base           >= 4.18 && < 5
+    , bytestring     >= 0.11
+    , containers     >= 0.6
+    , hyperconsole
+    , tasty          >= 1.4
+    , tasty-hunit    >= 0.10
+    , tasty-quickcheck >= 0.10
+    , QuickCheck     >= 2.14
+    , text           >= 2.0
+    , vector         >= 0.13
+
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+benchmark hyperconsole-bench
+  type:             exitcode-stdio-1.0
+  main-is:          Bench.hs
+  hs-source-dirs:   bench
+  default-language: GHC2021
+  build-depends:
+    , base           >= 4.18 && < 5
+    , bytestring     >= 0.11
+    , containers     >= 0.6
+    , criterion      >= 1.6
+    , deepseq        >= 1.4
+    , hyperconsole
+    , text           >= 2.0
+    , vector         >= 0.13
+
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N -O2
+
+executable hyperconsole-demo
+  main-is:          Demo.hs
+  hs-source-dirs:   app
+  default-language: GHC2021
+  build-depends:
+    , base         >= 4.18 && < 5
+    , containers   >= 0.6
+    , hyperconsole
+    , text         >= 2.0
+    , vector       >= 0.13
+
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hyperconsole-playwright
+  main-is:          Playwright.hs
+  hs-source-dirs:   app
+  default-language: GHC2021
+  build-depends:
+    , base         >= 4.18 && < 5
+    , containers   >= 0.6
+    , hyperconsole
+    , text         >= 2.0
+    , vector       >= 0.13
+
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable sensenet
+  main-is:          Sensenet.hs
+  hs-source-dirs:   app
+  default-language: GHC2021
+  build-depends:
+    , base         >= 4.18 && < 5
+    , containers   >= 0.6
+    , hyperconsole
+    , text         >= 2.0
+    , time         >= 1.12
+    , vector       >= 0.13
+
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
